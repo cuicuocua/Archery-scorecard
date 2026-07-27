@@ -1,12 +1,26 @@
 # Arcieri Senesi — Scorecard
 
-`ArcheryScorecard.jsx` is a single-file React component built for the
-claude.ai artifact runtime (React + `window.storage` + `recharts` +
-`lucide-react`, Tailwind core utilities only). Paste it into a Claude
-artifact to use it on your phone during a session.
+`ArcheryScorecard.jsx` is a single-file React component (React + recharts +
+lucide-react + `@supabase/supabase-js`, Tailwind core utilities only).
+It's built and deployed automatically to GitHub Pages by
+`.github/workflows/deploy-pages.yml` on every push to this branch — see
+`site/` for the build tooling (`entry.jsx` mounts the component,
+`build.js` compiles Tailwind + bundles everything with esbuild into one
+`site/dist/index.html`). `ArcheryScorecard.jsx` itself is the only file
+that matters for the app's behavior; everything under `site/` is just
+plumbing to publish it as a static page.
+
+Data lives in Supabase (Postgres + row-level security), not in browser
+storage — sign in with an email one-time code and your sessions follow
+you to any device. Schema in `supabase/schema.sql`; the project URL and
+publishable ("anon") key are inlined near the top of
+`ArcheryScorecard.jsx` — that key is meant to be public, security comes
+from the RLS policies in the schema, not from hiding it.
 
 This is v1: data model and export are the focus, no service worker /
-PWA / offline install yet — that's a deliberate follow-up.
+full offline install yet — that's a deliberate follow-up (though sync
+across devices, the main reason you'd want that, is already solved via
+Supabase).
 
 ## Round definitions
 
@@ -36,14 +50,15 @@ black, black, white, white.
 
 ## Data model
 
-Everything lives under one `window.storage` key
-(`archery-scorecard-v1`) as `{ sessions: [...] }`. Each session snapshots
-its round config at creation time, so editing `ROUND_TYPES` later never
-corrupts historical data. Arrows keep entry order; UI sorts a copy for
-display. Arrows entered via the tappable face carry `x`/`y` (normalized
--1..1, fraction of face radius); keypad-entered arrows have `x`/`y: null`
-and are excluded from spatial analysis (correctly — there's no position
-to analyze).
+Each session is one row in Supabase's `sessions` table (`id`, `user_id`,
+`data jsonb`) — the whole session object (round snapshot, ends, arrows,
+conditions, etc.) lives in `data`, upserted on every change. Each session
+snapshots its round config at creation time, so editing `ROUND_TYPES`
+later never corrupts historical data. Arrows keep entry order; UI sorts a
+copy for display. Arrows entered via the tappable face carry `x`/`y`
+(normalized -1..1, fraction of face radius); keypad-entered arrows have
+`x`/`y: null` and are excluded from spatial analysis (correctly — there's
+no position to analyze).
 
 ## Export
 
@@ -67,8 +82,7 @@ as JSON, meant to seed the future offline app.
   allenamento score are different achievements and never mixed. Storico
   filters on all three dimensions independently.
 - **Custom sessions**: distance/face/arrows-per-end/ends are editable at
-  session start via "Allenamento libero" (hidden when tipo = Gara, since
-  competitions don't use ad-hoc distances).
+  session start via "Personalizzata", available regardless of tipo.
 - **Analisi avanzata**: unlocks once a round+arco+tipo combination has at
   least `MIN_SESSIONS_FOR_DEEP_ANALYSIS` (5) completed sessions —
   dispersion-over-time, horizontal/vertical bias-over-time, and a score
@@ -78,3 +92,28 @@ as JSON, meant to seed the future offline app.
   (single-select) and other factors like rain or fatigue (multi-select)
   — always by choice, never free text, so it stays analyzable. Feeds a
   "media per condizioni" chart in Analisi avanzata once you have data.
+
+## v1.2 additions
+
+- **Gara sociale**: a third `sessionType` alongside allenamento/gara, for
+  unofficial club competitions with made-up rules. Picking it jumps
+  straight to the "Personalizzata" round picker, since these are usually
+  improvised on the spot. Has its own personal-best bucket, like the
+  other two types.
+- **Personal-best scoping fix**: PB/pace comparisons now match on the
+  actual round snapshot (distance/face/arrows/ends), not just `roundId`
+  — two "Personalizzata" sessions with different made-up rules are not
+  the same round and were previously (incorrectly) compared as if
+  chasing the same PB.
+- **New Session is now a 4-step flow** (tipo → prova → arco → dettagli)
+  instead of one long scrolling form.
+- **Real cross-device sync**: moved persistence from browser storage to
+  Supabase, with an email one-time-code login gate (`AuthGate`). See
+  "Data model" above.
+- **Importa**: the counterpart to Export, on the Storico screen — loads a
+  JSON file in the same shape `exportJson` produces (or a bare array of
+  sessions) and upserts it, so re-importing an updated file is safe.
+  Existing browser-local data from before this version is offered as a
+  one-time import prompt on first login (`findLegacyLocalSessions`).
+- **GitHub Pages deployment**: the app now has a permanent URL independent
+  of any particular conversation or session — see the top of this file.

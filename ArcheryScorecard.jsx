@@ -5,8 +5,9 @@ import {
 } from 'recharts';
 import {
   Target, Clock, ChevronLeft, ChevronRight, Plus, Trash2,
-  Download, RotateCcw, Play, Check, StickyNote,
+  Download, Upload, RotateCcw, Play, Check, StickyNote, LogOut,
 } from 'lucide-react';
+import { createClient } from '@supabase/supabase-js';
 
 /*
  * Arcieri Senesi — Scorecard v1
@@ -30,8 +31,6 @@ import {
  *    WA rule of only scoring the inner 5-10 ("compound face") is NOT
  *    modelled — all bow types score the full 10-zone face here.
  */
-
-const STORAGE_KEY = 'archery-scorecard-v1';
 
 const ROUND_TYPES = [
   { id: 'indoor18', label: 'Indoor 18m', category: 'Indoor', distanceM: 18, faceCm: 40, arrowsPerEnd: 3, ends: 20, editable: false },
@@ -433,25 +432,66 @@ function exportJson(sessions) {
 }
 
 // ---------- storage ----------
+//
+// Sessions live in Supabase (table `sessions`, one row per session, RLS
+// scoped to auth.uid()) so the same data is available from any device you
+// log into — not tied to one browser or one Claude conversation. Every
+// mutation upserts just the changed session; there is no "rewrite the
+// whole array" step like a single-key blob store would need.
 
-async function loadSessions() {
+const SUPABASE_URL = 'https://quomlosgvyrffvplkydc.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_qDItHcsh15cNtjDrZwdOXw_Hf38618_';
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+async function loadSessionsRemote(userId) {
   try {
-    const raw = await window.storage.get(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-    return Array.isArray(parsed?.sessions) ? parsed.sessions : [];
+    const { data, error } = await supabase.from('sessions').select('data').eq('user_id', userId);
+    if (error) throw error;
+    return (data || []).map(row => row.data);
   } catch (err) {
     console.error('Errore nel caricamento dei dati', err);
     return [];
   }
 }
 
-async function persistSessions(sessions) {
+async function upsertSessionRemote(userId, session) {
   try {
-    await window.storage.set(STORAGE_KEY, JSON.stringify({ sessions, savedAt: new Date().toISOString() }));
+    const { error } = await supabase.from('sessions').upsert({
+      id: session.id, user_id: userId, data: session, updated_at: new Date().toISOString(),
+    });
+    if (error) throw error;
   } catch (err) {
     console.error('Errore nel salvataggio dei dati', err);
   }
+}
+
+async function deleteSessionRemote(sessionId) {
+  try {
+    const { error } = await supabase.from('sessions').delete().eq('id', sessionId);
+    if (error) throw error;
+  } catch (err) {
+    console.error('Errore nella eliminazione', err);
+  }
+}
+
+// One-time offer to pull in data saved by the old browser-local demo, if any.
+const LEGACY_STORAGE_KEY = 'archery-scorecard-v1';
+const LEGACY_MIGRATION_FLAG = 'archery-scorecard-migration-done';
+
+function findLegacyLocalSessions() {
+  try {
+    if (localStorage.getItem(LEGACY_MIGRATION_FLAG)) return null;
+    const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed?.sessions) && parsed.sessions.length ? parsed.sessions : null;
+  } catch {
+    return null;
+  }
+}
+
+function markLegacyMigrationDone() {
+  try { localStorage.setItem(LEGACY_MIGRATION_FLAG, '1'); } catch { /* ignore */ }
 }
 
 // ---------- small UI primitives ----------
@@ -499,6 +539,82 @@ function SessionTypeBadge({ sessionType }) {
 
 function LoadingScreen() {
   return <div className="min-h-screen flex items-center justify-center" style={{ background: T.bg, color: T.textDim }}>Caricamento…</div>;
+}
+
+// Email + one-time code, no password. Avoids relying on magic-link email
+// redirects (fragile across mail clients and unfamiliar in a sandboxed
+// context) — you just type the code you receive.
+function AuthGate() {
+  const [stage, setStage] = useState('email');
+  const [email, setEmail] = useState('');
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  async function sendCode() {
+    setBusy(true); setError('');
+    try {
+      const { error } = await supabase.auth.signInWithOtp({ email: email.trim(), options: { shouldCreateUser: true } });
+      if (error) throw error;
+      setStage('code');
+    } catch (err) {
+      setError("Invio non riuscito. Controlla l'indirizzo e riprova.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function verifyCode() {
+    setBusy(true); setError('');
+    try {
+      const { error } = await supabase.auth.verifyOtp({ email: email.trim(), token: code.trim(), type: 'email' });
+      if (error) throw error;
+      // successful verifyOtp fires onAuthStateChange in the root component,
+      // which swaps this screen out — nothing else to do here.
+    } catch (err) {
+      setError('Codice non valido o scaduto.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center px-6 gap-6" style={{ background: T.bg, color: T.text }}>
+      <div className="flex flex-col items-center gap-2 text-center">
+        <Target size={40} color={T.gold} />
+        <div className="text-xl font-bold">Arcieri Senesi</div>
+        <div className="text-sm max-w-xs" style={{ color: T.textDim }}>Accedi per avere i tuoi dati su tutti i dispositivi</div>
+      </div>
+
+      {stage === 'email' ? (
+        <div className="w-full max-w-xs flex flex-col gap-3">
+          <input type="email" inputMode="email" value={email} onChange={e => setEmail(e.target.value)}
+            placeholder="La tua email" onKeyDown={e => e.key === 'Enter' && email && sendCode()}
+            className="rounded-xl px-4 py-3 text-center" style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.text }} />
+          <button onClick={sendCode} disabled={!email || busy}
+            className="rounded-2xl py-3.5 font-bold disabled:opacity-40" style={{ background: T.gold, color: GOLD_TEXT }}>
+            {busy ? 'Invio…' : 'Invia codice'}
+          </button>
+        </div>
+      ) : (
+        <div className="w-full max-w-xs flex flex-col gap-3">
+          <div className="text-xs text-center" style={{ color: T.textDim }}>Codice inviato a {email}</div>
+          <input inputMode="numeric" value={code} onChange={e => setCode(e.target.value)}
+            placeholder="Codice a 6 cifre" onKeyDown={e => e.key === 'Enter' && code && verifyCode()}
+            className="rounded-xl px-4 py-3 text-center text-2xl tracking-widest" style={{ ...numeralStyle, background: T.surface, border: `1px solid ${T.border}`, color: T.text }} />
+          <button onClick={verifyCode} disabled={!code || busy}
+            className="rounded-2xl py-3.5 font-bold disabled:opacity-40" style={{ background: T.gold, color: GOLD_TEXT }}>
+            {busy ? 'Verifica…' : 'Accedi'}
+          </button>
+          <button onClick={() => { setStage('email'); setCode(''); setError(''); }} className="text-sm py-1" style={{ color: T.textDim }}>
+            Usa un'altra email
+          </button>
+        </div>
+      )}
+
+      {error && <div className="text-sm text-center" style={{ color: T.behind }}>{error}</div>}
+    </div>
+  );
 }
 
 // ---------- target face ----------
@@ -1020,6 +1136,52 @@ function NewSessionScreen({ onCreate, onCancel }) {
 
 // ---------- history / analysis ----------
 
+// Accepts the same JSON shape produced by exportJson ({ sessions: [...] })
+// or a bare array of sessions. Imported sessions overwrite existing ones
+// with the same id (so re-importing an updated file is safe) and are
+// otherwise added.
+function ImportButton({ onImport }) {
+  const inputRef = useRef(null);
+  const [status, setStatus] = useState('');
+
+  function handleFile(e) {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(reader.result);
+        const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.sessions) ? parsed.sessions : null;
+        if (!list || !list.length) throw new Error('empty');
+        onImport(list);
+        setStatus(`Importate ${list.length} sessioni`);
+      } catch (err) {
+        console.error('Errore import', err);
+        setStatus('File non valido');
+      } finally {
+        setTimeout(() => setStatus(''), 4000);
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  return (
+    <div className="relative">
+      <input ref={inputRef} type="file" accept="application/json" className="hidden" onChange={handleFile} />
+      <button onClick={() => inputRef.current?.click()} className="p-2 rounded-full" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+        <Upload size={18} />
+      </button>
+      {status && (
+        <div className="absolute right-0 top-full mt-1 whitespace-nowrap text-xs px-2 py-1 rounded-lg z-10"
+          style={{ background: T.surfaceAlt, border: `1px solid ${T.border}`, color: T.textDim }}>
+          {status}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function FilterChip({ active, onClick, label }) {
   return (
     <button onClick={onClick} className="whitespace-nowrap px-3 py-1.5 rounded-full text-sm font-medium"
@@ -1078,7 +1240,7 @@ function SessionRow({ session, onOpen, onDelete }) {
   );
 }
 
-function StoricoScreen({ sessions, onOpen, onResume, onDelete }) {
+function StoricoScreen({ sessions, onOpen, onResume, onDelete, onImport, onSignOut }) {
   const [filterId, setFilterId] = useState('all');
   const [typeFilter, setTypeFilter] = useState('all');
   const [bowFilter, setBowFilter] = useState('all');
@@ -1113,9 +1275,15 @@ function StoricoScreen({ sessions, onOpen, onResume, onDelete }) {
     <div className="max-w-md mx-auto px-4 pt-4 pb-8 flex flex-col gap-5">
       <div className="flex items-center justify-between">
         <div className="text-xl font-bold">Storico</div>
-        <button onClick={() => exportJson(sessions)} className="p-2 rounded-full" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
-          <Download size={18} />
-        </button>
+        <div className="flex items-center gap-2">
+          <ImportButton onImport={onImport} />
+          <button onClick={() => exportJson(sessions)} className="p-2 rounded-full" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+            <Download size={18} />
+          </button>
+          <button onClick={onSignOut} className="p-2 rounded-full" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+            <LogOut size={18} />
+          </button>
+        </div>
       </div>
 
       <div className="flex flex-col gap-2">
@@ -1333,7 +1501,7 @@ function DetailScreen({ session, onBack, onUpdate, onDelete }) {
 
 // ---------- home ----------
 
-function HomeScreen({ sessions, onNew, onResume }) {
+function HomeScreen({ sessions, onNew, onResume, legacyData, onImportLegacy, onDismissLegacy }) {
   const suspended = sessions.filter(s => s.status === 'in_progress').sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt));
   const completedCount = sessions.filter(s => s.status === 'completed').length;
 
@@ -1348,6 +1516,23 @@ function HomeScreen({ sessions, onNew, onResume }) {
           <div className="text-2xl font-bold">Scorecard</div>
         </div>
       </header>
+
+      {legacyData && (
+        <div className="rounded-2xl p-4 flex flex-col gap-2" style={{ background: T.surfaceAlt, border: `1px dashed ${T.gold}` }}>
+          <div className="font-semibold" style={{ color: T.gold }}>Dati locali trovati</div>
+          <div className="text-sm" style={{ color: T.textDim }}>
+            {legacyData.length} sessioni salvate su questo dispositivo prima dell'accesso. Importarle nel tuo account?
+          </div>
+          <div className="flex gap-2 pt-1">
+            <button onClick={onImportLegacy} className="flex-1 rounded-xl py-2 text-sm font-bold" style={{ background: T.gold, color: GOLD_TEXT }}>
+              Importa
+            </button>
+            <button onClick={onDismissLegacy} className="flex-1 rounded-xl py-2 text-sm font-semibold" style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.textDim }}>
+              Ignora
+            </button>
+          </div>
+        </div>
+      )}
 
       {suspended.map(s => (
         <button key={s.id} onClick={() => onResume(s.id)}
@@ -1403,42 +1588,77 @@ function BottomNav({ view, setView }) {
 // ---------- root ----------
 
 export default function ArcheryScorecard() {
+  // undefined = auth still resolving, null = signed out, object = signed in
+  const [authSession, setAuthSession] = useState(undefined);
   const [sessions, setSessions] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [view, setView] = useState('home');
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [detailSessionId, setDetailSessionId] = useState(null);
+  const [legacyData, setLegacyData] = useState(null);
 
   useEffect(() => {
-    let mounted = true;
-    loadSessions().then(s => { if (mounted) { setSessions(s); setLoaded(true); } });
-    return () => { mounted = false; };
+    supabase.auth.getSession().then(({ data }) => setAuthSession(data.session ?? null));
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => setAuthSession(session));
+    return () => sub.subscription.unsubscribe();
   }, []);
+
+  const userId = authSession?.user?.id ?? null;
+
+  useEffect(() => {
+    if (!userId) { setSessions([]); setLoaded(false); return; }
+    let mounted = true;
+    loadSessionsRemote(userId).then(s => {
+      if (!mounted) return;
+      setSessions(s);
+      setLoaded(true);
+      if (s.length === 0) setLegacyData(findLegacyLocalSessions());
+    });
+    return () => { mounted = false; };
+  }, [userId]);
 
   const updateSession = useCallback((id, updater) => {
     setSessions(prev => {
       const next = prev.map(s => (s.id === id ? updater(s) : s));
-      persistSessions(next);
+      const changed = next.find(s => s.id === id);
+      if (changed && userId) upsertSessionRemote(userId, changed);
       return next;
     });
-  }, []);
+  }, [userId]);
 
   const addSession = useCallback((session) => {
-    setSessions(prev => {
-      const next = [...prev, session];
-      persistSessions(next);
-      return next;
-    });
-  }, []);
+    setSessions(prev => [...prev, session]);
+    if (userId) upsertSessionRemote(userId, session);
+  }, [userId]);
 
   const deleteSession = useCallback((id) => {
+    setSessions(prev => prev.filter(s => s.id !== id));
+    if (userId) deleteSessionRemote(id);
+  }, [userId]);
+
+  const importSessions = useCallback((imported) => {
     setSessions(prev => {
-      const next = prev.filter(s => s.id !== id);
-      persistSessions(next);
+      const byId = new Map(prev.map(s => [s.id, s]));
+      imported.forEach(s => byId.set(s.id, s));
+      const next = Array.from(byId.values());
+      if (userId) imported.forEach(s => upsertSessionRemote(userId, s));
       return next;
     });
+  }, [userId]);
+
+  const importLegacyData = useCallback(() => {
+    if (legacyData) importSessions(legacyData);
+    markLegacyMigrationDone();
+    setLegacyData(null);
+  }, [legacyData, importSessions]);
+
+  const dismissLegacyData = useCallback(() => {
+    markLegacyMigrationDone();
+    setLegacyData(null);
   }, []);
 
+  if (authSession === undefined) return <LoadingScreen />;
+  if (authSession === null) return <AuthGate />;
   if (!loaded) return <LoadingScreen />;
 
   const activeSession = sessions.find(s => s.id === activeSessionId) || null;
@@ -1450,7 +1670,8 @@ export default function ArcheryScorecard() {
         {view === 'home' && (
           <HomeScreen sessions={sessions}
             onNew={() => setView('new')}
-            onResume={(id) => { setActiveSessionId(id); setView('shoot'); }} />
+            onResume={(id) => { setActiveSessionId(id); setView('shoot'); }}
+            legacyData={legacyData} onImportLegacy={importLegacyData} onDismissLegacy={dismissLegacyData} />
         )}
 
         {view === 'new' && (
@@ -1469,7 +1690,9 @@ export default function ArcheryScorecard() {
           <StoricoScreen sessions={sessions}
             onOpen={(id) => { setDetailSessionId(id); setView('detail'); }}
             onResume={(id) => { setActiveSessionId(id); setView('shoot'); }}
-            onDelete={deleteSession} />
+            onDelete={deleteSession}
+            onImport={importSessions}
+            onSignOut={() => supabase.auth.signOut()} />
         )}
 
         {view === 'detail' && detailSession && (
