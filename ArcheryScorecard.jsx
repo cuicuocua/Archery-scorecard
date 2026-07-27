@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
-  ResponsiveContainer, LineChart, Line, BarChart, Bar,
-  XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, LineChart, Line, BarChart, Bar, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from 'recharts';
 import {
   Target, Clock, ChevronLeft, ChevronRight, Plus, Trash2,
@@ -35,6 +35,63 @@ const ROUND_TYPES = [
   { id: 'targa50', label: 'Targa 50m', category: 'Targa', distanceM: 50, faceCm: 80, arrowsPerEnd: 6, ends: 12, editable: false },
   { id: 'free', label: 'Allenamento libero', category: 'Allenamento', distanceM: 30, faceCm: 40, arrowsPerEnd: 3, ends: 10, editable: true },
 ];
+
+const BOW_TYPES = [
+  { id: 'ricurvo', label: 'Ricurvo' },
+  { id: 'compound', label: 'Compound' },
+  { id: 'nudo', label: 'Nudo' },
+];
+
+const SESSION_TYPES = [
+  { id: 'allenamento', label: 'Allenamento' },
+  { id: 'gara', label: 'Gara' },
+];
+
+// Conditions are logged after the round (you know the wind after you shot
+// in it, not before), and always by picking a choice — never free text —
+// so they stay analyzable across sessions.
+const WIND_LEVELS = [
+  { id: 'calma', label: 'Calma' },
+  { id: 'leggero', label: 'Leggero' },
+  { id: 'moderato', label: 'Moderato' },
+  { id: 'forte', label: 'Forte' },
+];
+
+const TIME_OF_DAY = [
+  { id: 'mattina', label: 'Mattina' },
+  { id: 'pomeriggio', label: 'Pomeriggio' },
+  { id: 'sera', label: 'Sera' },
+];
+
+const SUN_POSITIONS = [
+  { id: 'assente', label: 'Assente/nuvoloso' },
+  { id: 'alle_spalle', label: 'Alle spalle' },
+  { id: 'laterale', label: 'Laterale' },
+  { id: 'controluce', label: 'Controluce' },
+];
+
+const CONDITION_TAGS = [
+  { id: 'pioggia', label: 'Pioggia' },
+  { id: 'freddo', label: 'Freddo' },
+  { id: 'caldo', label: 'Caldo' },
+  { id: 'rumore', label: 'Rumore/folla' },
+  { id: 'stanchezza', label: 'Stanchezza' },
+  { id: 'materiale_nuovo', label: 'Materiale nuovo' },
+];
+
+const CONDITION_DIMENSIONS = [
+  { id: 'wind', label: 'Vento', options: WIND_LEVELS },
+  { id: 'timeOfDay', label: 'Momento', options: TIME_OF_DAY },
+  { id: 'sun', label: 'Sole', options: SUN_POSITIONS },
+  { id: 'tags', label: 'Altro', options: CONDITION_TAGS },
+];
+
+function emptyConditions() { return { wind: null, timeOfDay: null, sun: null, tags: [] }; }
+
+// Personal-best / pace comparisons and the deeper analysis charts are scoped
+// per round + arco + tipo — a gara score and an allenamento score aren't the
+// same achievement, and neither are a recurve group and a compound group.
+const MIN_SESSIONS_FOR_DEEP_ANALYSIS = 5;
 
 const T = {
   bg: '#14161A',
@@ -132,6 +189,9 @@ function createSession(roundDef, meta) {
       arrowsPerEnd: roundDef.arrowsPerEnd,
       ends: roundDef.ends,
     },
+    sessionType: meta.sessionType || 'allenamento',
+    bowType: meta.bowType || null,
+    conditions: emptyConditions(),
     status: 'in_progress',
     startedAt: new Date().toISOString(),
     completedAt: null,
@@ -181,8 +241,13 @@ function undoLastArrow(session) {
   return session;
 }
 
-function findPersonalBest(sessions, roundId, excludeId) {
-  const candidates = sessions.filter(s => s.roundId === roundId && s.status === 'completed' && s.id !== excludeId);
+function findPersonalBest(sessions, scope, excludeId) {
+  const candidates = sessions.filter(s =>
+    s.roundId === scope.roundId &&
+    s.status === 'completed' &&
+    s.id !== excludeId &&
+    (s.bowType || null) === (scope.bowType || null) &&
+    (s.sessionType || 'allenamento') === (scope.sessionType || 'allenamento'));
   if (!candidates.length) return null;
   return candidates.reduce((best, s) => (totalScore(s) > totalScore(best) ? s : best));
 }
@@ -197,17 +262,24 @@ function paceVsPB(session, pbSession) {
   return curCum[shot - 1] - pbAtShot;
 }
 
-function groupStats(session, arrows) {
-  const pts = arrows.filter(a => a.x != null && a.y != null);
+function computeGroupStats(points, faceCm) {
+  const pts = points.filter(a => a.x != null && a.y != null);
   if (!pts.length) return null;
-  const r = session.round.faceCm / 2;
+  const r = faceCm / 2;
   const cx = pts.reduce((s, a) => s + a.x, 0) / pts.length;
   const cy = pts.reduce((s, a) => s + a.y, 0) / pts.length;
-  const meanRadiusCm = pts.reduce((s, a) => {
+  let sumR = 0, maxR = 0;
+  pts.forEach(a => {
     const dx = (a.x - cx) * r, dy = (a.y - cy) * r;
-    return s + Math.sqrt(dx * dx + dy * dy);
-  }, 0) / pts.length;
-  return { x: cx, y: cy, cxCm: cx * r, cyCm: cy * r, meanRadiusCm, count: pts.length };
+    const d = Math.sqrt(dx * dx + dy * dy);
+    sumR += d;
+    if (d > maxR) maxR = d;
+  });
+  return { x: cx, y: cy, cxCm: cx * r, cyCm: cy * r, meanRadiusCm: sumR / pts.length, maxRadiusCm: maxR, count: pts.length };
+}
+
+function groupStats(session, arrows) {
+  return computeGroupStats(arrows, session.round.faceCm);
 }
 
 function describeBias(cxCm, cyCm) {
@@ -219,13 +291,14 @@ function describeBias(cxCm, cyCm) {
   return parts.join(', ');
 }
 
-function fatigueCurve(sessions, roundId) {
-  const list = sessions.filter(s => s.roundId === roundId && s.status === 'completed');
-  const maxEnds = list.reduce((m, s) => Math.max(m, s.round.ends), 0);
+// completedList: sessions already filtered to status==='completed' and whatever
+// round/arco/tipo scope the caller cares about.
+function fatigueCurve(completedList) {
+  const maxEnds = completedList.reduce((m, s) => Math.max(m, s.round.ends), 0);
   const rows = [];
   for (let i = 0; i < maxEnds; i++) {
     let sum = 0, count = 0;
-    list.forEach(s => {
+    completedList.forEach(s => {
       const end = s.ends[i];
       if (end && end.arrows.length) {
         sum += end.arrows.reduce((a, b) => a + b.score, 0);
@@ -235,6 +308,62 @@ function fatigueCurve(sessions, roundId) {
     rows.push({ end: i + 1, avg: count ? sum / count : null });
   }
   return rows;
+}
+
+function dispersionTrend(completedList) {
+  return completedList
+    .slice()
+    .sort((a, b) => new Date(a.completedAt) - new Date(b.completedAt))
+    .map(s => {
+      const g = computeGroupStats(flattenArrows(s), s.round.faceCm);
+      return g ? { label: formatDateShort(s.completedAt), dispersion: g.meanRadiusCm, biasX: g.cxCm, biasY: g.cyCm } : null;
+    })
+    .filter(Boolean);
+}
+
+const SCORE_DISTRIBUTION_KEYS = ['X', '10', '9', '8', '7', '6', '5', '4', '3', '2', '1', 'M'];
+
+function scoreDistribution(completedList) {
+  const counts = {};
+  SCORE_DISTRIBUTION_KEYS.forEach(k => (counts[k] = 0));
+  completedList.forEach(s => {
+    flattenArrows(s).forEach(a => {
+      const key = a.isX ? 'X' : a.score === 0 ? 'M' : String(a.score);
+      counts[key] += 1;
+    });
+  });
+  return SCORE_DISTRIBUTION_KEYS.map(key => ({
+    key,
+    count: counts[key],
+    color: SCORE_COLORS[key === 'M' ? 'miss' : ringGroupForScore(key === 'X' ? 10 : Number(key))].fill,
+  }));
+}
+
+// dimension: one of CONDITION_DIMENSIONS ('wind' | 'timeOfDay' | 'sun' | 'tags').
+// avg is per-arrow (comparable to the fatigue curve's 0-10 scale), not per-session total.
+function scoreByCondition(completedList, dimension) {
+  const dim = CONDITION_DIMENSIONS.find(d => d.id === dimension);
+  const buckets = {};
+  dim.options.forEach(o => { buckets[o.id] = { sum: 0, arrows: 0, sessions: 0 }; });
+  completedList.forEach(s => {
+    const c = s.conditions;
+    if (!c) return;
+    const values = dimension === 'tags' ? (c.tags || []) : (c[dimension] ? [c[dimension]] : []);
+    values.forEach(v => {
+      if (!buckets[v]) return;
+      buckets[v].sum += totalScore(s);
+      buckets[v].arrows += arrowsShotCount(s);
+      buckets[v].sessions += 1;
+    });
+  });
+  return dim.options
+    .map(o => ({ key: o.label, avg: buckets[o.id].arrows ? buckets[o.id].sum / buckets[o.id].arrows : 0, count: buckets[o.id].sessions }))
+    .filter(r => r.count > 0);
+}
+
+function bowLabel(bowType) {
+  const b = BOW_TYPES.find(x => x.id === bowType);
+  return b ? b.label : null;
 }
 
 function formatDateShort(iso) {
@@ -315,17 +444,34 @@ function StatTile({ label, value, valueColor }) {
   );
 }
 
+function Pill({ children, tone = 'gold' }) {
+  const color = tone === 'gold' ? T.gold : T.textDim;
+  return (
+    <span className="text-xs font-bold px-2 py-0.5 rounded-full uppercase tracking-wide shrink-0" style={{ color, border: `1px solid ${color}` }}>
+      {children}
+    </span>
+  );
+}
+
 function LoadingScreen() {
   return <div className="min-h-screen flex items-center justify-center" style={{ background: T.bg, color: T.textDim }}>Caricamento…</div>;
 }
 
 // ---------- target face ----------
 
-function TargetFace({ faceCm, zoom = 1, interactive = false, onTap, points = [], centroid = null, dense = false }) {
+function TargetFace({ faceCm, zoom = 1, interactive = false, onTap, points = [], centroid = null, dense = false, focus = null }) {
   const svgRef = useRef(null);
   const margin = interactive && zoom === 1 ? 15 : 0;
   const half = FACE_R / zoom + margin;
-  const vb = `${-half} ${-half} ${half * 2} ${half * 2}`;
+  // When zoomed in, recenter the crop on where the group actually is (not
+  // always the bullseye) so a group that has drifted off-centre stays
+  // visible and tappable at high zoom instead of being cropped out.
+  const focusX = zoom > 1 && focus ? focus.x * FACE_R : 0;
+  const focusY = zoom > 1 && focus ? focus.y * FACE_R : 0;
+  const vb = `${focusX - half} ${focusY - half} ${half * 2} ${half * 2}`;
+  const groupRadius = centroid && centroid.maxRadiusCm != null && centroid.maxRadiusCm > 0
+    ? (centroid.maxRadiusCm / (faceCm / 2)) * FACE_R
+    : null;
 
   function handlePointerDown(evt) {
     if (!interactive || !svgRef.current) return;
@@ -353,6 +499,23 @@ function TargetFace({ faceCm, zoom = 1, interactive = false, onTap, points = [],
         })}
         <circle cx={0} cy={0} r={X_OUTER} fill="none" stroke="rgba(15,13,8,0.55)" strokeWidth={0.6} />
 
+        {/* Group trace + crosshair render BEHIND the arrow marks on purpose — at
+            high zoom on a tight group, the crosshair must never hide the very
+            arrows it's summarizing. */}
+        {centroid && (
+          <g>
+            {groupRadius != null && (
+              <circle cx={centroid.x * FACE_R} cy={centroid.y * FACE_R} r={groupRadius} fill="none"
+                stroke={T.text} strokeWidth={0.8} strokeDasharray="3 2" opacity={0.55} />
+            )}
+            <g opacity={0.7}>
+              <line x1={centroid.x * FACE_R - 8} y1={centroid.y * FACE_R} x2={centroid.x * FACE_R + 8} y2={centroid.y * FACE_R} stroke={T.text} strokeWidth={1.2} />
+              <line x1={centroid.x * FACE_R} y1={centroid.y * FACE_R - 8} x2={centroid.x * FACE_R} y2={centroid.y * FACE_R + 8} stroke={T.text} strokeWidth={1.2} />
+              <circle cx={centroid.x * FACE_R} cy={centroid.y * FACE_R} r={3} fill="none" stroke={T.text} strokeWidth={1} />
+            </g>
+          </g>
+        )}
+
         {points.map((p, i) => {
           if (p.x == null || p.y == null) return null;
           const c = SCORE_COLORS[ringGroupForScore(p.score)];
@@ -363,14 +526,6 @@ function TargetFace({ faceCm, zoom = 1, interactive = false, onTap, points = [],
               stroke={p.ghost ? 'none' : '#0c0b08'} strokeWidth={p.ghost ? 0 : 0.5} opacity={opacity} />
           );
         })}
-
-        {centroid && (
-          <g opacity={0.9}>
-            <line x1={centroid.x * FACE_R - 8} y1={centroid.y * FACE_R} x2={centroid.x * FACE_R + 8} y2={centroid.y * FACE_R} stroke={T.text} strokeWidth={1.2} />
-            <line x1={centroid.x * FACE_R} y1={centroid.y * FACE_R - 8} x2={centroid.x * FACE_R} y2={centroid.y * FACE_R + 8} stroke={T.text} strokeWidth={1.2} />
-            <circle cx={centroid.x * FACE_R} cy={centroid.y * FACE_R} r={3} fill="none" stroke={T.text} strokeWidth={1} />
-          </g>
-        )}
       </svg>
     </div>
   );
@@ -446,6 +601,53 @@ function SessionMetaEditor({ session, onUpdate }) {
   );
 }
 
+function ChipSelect({ label, options, value, onChange, multi = false }) {
+  const isActive = (id) => (multi ? (value || []).includes(id) : value === id);
+  function toggle(id) {
+    if (multi) {
+      const set = new Set(value || []);
+      set.has(id) ? set.delete(id) : set.add(id);
+      onChange(Array.from(set));
+    } else {
+      onChange(value === id ? null : id);
+    }
+  }
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="text-xs" style={{ color: T.textDim }}>{label}</div>
+      <div className="flex flex-wrap gap-1.5">
+        {options.map(o => (
+          <button key={o.id} onClick={() => toggle(o.id)}
+            className="px-3 py-1.5 rounded-full text-xs font-medium"
+            style={{
+              background: isActive(o.id) ? T.surfaceAlt : T.surface,
+              border: `1px solid ${isActive(o.id) ? T.gold : T.border}`,
+              color: isActive(o.id) ? T.gold : T.textDim,
+            }}>
+            {o.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ConditionsEditor({ session, onUpdate }) {
+  const conditions = session.conditions || emptyConditions();
+  function patch(fields) {
+    onUpdate(s => ({ ...s, conditions: { ...(s.conditions || emptyConditions()), ...fields } }));
+  }
+  return (
+    <div className="flex flex-col gap-3 w-full rounded-2xl p-4" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+      <div className="text-sm font-semibold" style={{ color: T.textDim }}>Condizioni</div>
+      <ChipSelect label="Vento" options={WIND_LEVELS} value={conditions.wind} onChange={(v) => patch({ wind: v })} />
+      <ChipSelect label="Momento della giornata" options={TIME_OF_DAY} value={conditions.timeOfDay} onChange={(v) => patch({ timeOfDay: v })} />
+      <ChipSelect label="Posizione del sole" options={SUN_POSITIONS} value={conditions.sun} onChange={(v) => patch({ sun: v })} />
+      <ChipSelect label="Altre condizioni" options={CONDITION_TAGS} value={conditions.tags} onChange={(v) => patch({ tags: v })} multi />
+    </div>
+  );
+}
+
 // ---------- shooting screen ----------
 
 function StatsBar({ total, avg, projected, pace, hasPb }) {
@@ -468,13 +670,18 @@ function SessionSummary({ session, onExit, onUpdate }) {
   return (
     <div className="px-4 py-6 flex flex-col gap-5 items-center text-center max-w-md mx-auto">
       <div>
-        <div className="text-sm uppercase tracking-wide" style={{ color: T.textDim }}>Sessione completata</div>
+        <div className="text-sm uppercase tracking-wide flex items-center gap-2 justify-center" style={{ color: T.textDim }}>
+          Sessione completata
+          {session.sessionType === 'gara' && <Pill>Gara</Pill>}
+        </div>
         <div className="text-5xl font-bold" style={numeralStyle}>{total}</div>
         <div className="text-sm mt-1" style={{ color: T.textDim }}>
           {session.round.label} · media {avg.toFixed(2)} · {xCount(session)} X
+          {bowLabel(session.bowType) ? ` · ${bowLabel(session.bowType)}` : ''}
         </div>
       </div>
       <SessionMetaEditor session={session} onUpdate={onUpdate} />
+      <ConditionsEditor session={session} onUpdate={onUpdate} />
       <button onClick={onExit} className="w-full rounded-2xl py-4 font-bold text-lg" style={{ background: T.gold, color: GOLD_TEXT }}>
         Torna alla home
       </button>
@@ -501,7 +708,9 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
   const avg = shot ? total / shot : 0;
   const projected = shot ? Math.round(avg * totalArrowsInRound(session)) : null;
 
-  const pb = useMemo(() => findPersonalBest(sessions, session.roundId, session.id), [sessions, session.roundId, session.id]);
+  const pb = useMemo(
+    () => findPersonalBest(sessions, { roundId: session.roundId, bowType: session.bowType, sessionType: session.sessionType }, session.id),
+    [sessions, session.roundId, session.bowType, session.sessionType, session.id]);
   const pace = shot ? paceVsPB(session, pb) : null;
 
   const last3 = useMemo(() => {
@@ -531,8 +740,14 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
       <header className="sticky top-0 z-10 flex items-center justify-between px-3 py-3" style={{ background: T.bg, borderBottom: `1px solid ${T.border}` }}>
         <button onClick={onExit} className="p-2 -ml-2 rounded-full active:scale-95 transition-transform"><ChevronLeft /></button>
         <div className="text-center">
-          <div className="font-semibold leading-tight">{round.label}</div>
-          <div className="text-xs" style={{ color: T.textDim }}>{isComplete ? 'Completata' : `Volée ${endIdx + 1} di ${round.ends}`}</div>
+          <div className="font-semibold leading-tight flex items-center gap-2 justify-center">
+            {round.label}
+            {session.sessionType === 'gara' && <Pill>Gara</Pill>}
+          </div>
+          <div className="text-xs" style={{ color: T.textDim }}>
+            {isComplete ? 'Completata' : `Volée ${endIdx + 1} di ${round.ends}`}
+            {bowLabel(session.bowType) ? ` · ${bowLabel(session.bowType)}` : ''}
+          </div>
         </div>
         <button onClick={() => setNoteOpen(o => !o)} className="p-2 -mr-2 rounded-full active:scale-95 transition-transform"><StickyNote size={20} /></button>
       </header>
@@ -561,6 +776,7 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
                 onTap={handleFaceTap}
                 points={[...ghostArrows.map(a => ({ ...a, ghost: true })), ...currentEnd.arrows.map(a => ({ ...a, ghost: false }))]}
                 centroid={stats3}
+                focus={stats3}
               />
             ) : (
               <Keypad onScore={(score, isX) => handleAddArrow(score, isX, null, null)} />
@@ -569,7 +785,7 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
 
           {mode === 'face' && stats3 && (
             <div className="px-4 pt-2 text-sm text-center" style={{ color: T.textDim }}>
-              Gruppo (ultime {Math.min(3, endsShotCount)} volée): {describeBias(stats3.cxCm, stats3.cyCm)} · dispersione {stats3.meanRadiusCm.toFixed(1)} cm
+              Gruppo (ultime {Math.min(3, endsShotCount)} volée): {describeBias(stats3.cxCm, stats3.cyCm)} · ampiezza {stats3.maxRadiusCm.toFixed(1)} cm
             </div>
           )}
 
@@ -609,16 +825,24 @@ function Stepper({ label, value, onChange, min, max, step }) {
 
 function NewSessionScreen({ onCreate, onCancel }) {
   const freeDef = ROUND_TYPES.find(r => r.id === 'free');
+  const [sessionType, setSessionType] = useState('allenamento');
+  const availableRounds = sessionType === 'gara' ? ROUND_TYPES.filter(r => r.id !== 'free') : ROUND_TYPES;
   const [selectedId, setSelectedId] = useState(ROUND_TYPES[0].id);
+  const [bowType, setBowType] = useState(null);
   const [free, setFree] = useState({ distanceM: freeDef.distanceM, faceCm: freeDef.faceCm, arrowsPerEnd: freeDef.arrowsPerEnd, ends: freeDef.ends });
   const [location, setLocation] = useState('');
   const [note, setNote] = useState('');
 
-  const selected = ROUND_TYPES.find(r => r.id === selectedId);
+  const selected = availableRounds.find(r => r.id === selectedId) || availableRounds[0];
   const effective = selected.editable ? { ...selected, ...free } : selected;
 
+  function handleTypeChange(next) {
+    setSessionType(next);
+    if (next === 'gara' && selectedId === 'free') setSelectedId(ROUND_TYPES[0].id);
+  }
+
   function handleStart() {
-    onCreate(createSession(effective, { location, note }));
+    onCreate(createSession(effective, { location, note, bowType, sessionType }));
   }
 
   return (
@@ -628,8 +852,10 @@ function NewSessionScreen({ onCreate, onCancel }) {
         <div className="text-xl font-bold">Nuova sessione</div>
       </div>
 
+      <SegmentedControl options={SESSION_TYPES} value={sessionType} onChange={handleTypeChange} />
+
       <div className="flex flex-col gap-2">
-        {ROUND_TYPES.map(r => (
+        {availableRounds.map(r => (
           <button key={r.id} onClick={() => setSelectedId(r.id)}
             className="text-left rounded-2xl px-4 py-3 flex items-center justify-between"
             style={{ background: r.id === selectedId ? T.surfaceAlt : T.surface, border: `1px solid ${r.id === selectedId ? T.gold : T.border}` }}>
@@ -650,6 +876,23 @@ function NewSessionScreen({ onCreate, onCancel }) {
           <Stepper label="Numero di volée" value={free.ends} onChange={v => setFree(f => ({ ...f, ends: v }))} min={1} max={40} step={1} />
         </div>
       )}
+
+      <div className="flex flex-col gap-2">
+        <div className="text-sm" style={{ color: T.textDim }}>Arco (opzionale)</div>
+        <div className="flex gap-2">
+          {BOW_TYPES.map(b => (
+            <button key={b.id} onClick={() => setBowType(bt => (bt === b.id ? null : b.id))}
+              className="flex-1 rounded-xl py-2.5 text-sm font-semibold"
+              style={{
+                background: bowType === b.id ? T.surfaceAlt : T.surface,
+                border: `1px solid ${bowType === b.id ? T.gold : T.border}`,
+                color: bowType === b.id ? T.gold : T.textDim,
+              }}>
+              {b.label}
+            </button>
+          ))}
+        </div>
+      </div>
 
       <div className="flex flex-col gap-2">
         <input value={location} onChange={e => setLocation(e.target.value)} placeholder="Luogo (opzionale)"
@@ -676,11 +919,11 @@ function FilterChip({ active, onClick, label }) {
   );
 }
 
-function ChartCard({ title, children }) {
+function ChartCard({ title, children, tall = false }) {
   return (
     <div className="rounded-2xl p-3 flex flex-col gap-2" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
       <div className="text-sm font-semibold" style={{ color: T.textDim }}>{title}</div>
-      <div className="h-40">{children}</div>
+      <div className={tall ? 'h-48' : 'h-40'}>{children}</div>
     </div>
   );
 }
@@ -702,12 +945,15 @@ function SessionRow({ session, onOpen, onDelete }) {
     <div className="rounded-2xl px-4 py-3 flex items-center gap-3" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
       <button onClick={onOpen} className="flex-1 text-left flex items-center justify-between gap-2 min-w-0">
         <div className="min-w-0">
-          <div className="font-semibold truncate">
-            {session.round.label}
-            {!isDone && <span className="ml-2 text-xs font-normal" style={{ color: T.gold }}>in corso</span>}
+          <div className="font-semibold truncate flex items-center gap-2">
+            <span className="truncate">{session.round.label}</span>
+            {session.sessionType === 'gara' && <Pill>Gara</Pill>}
+            {!isDone && <span className="text-xs font-normal shrink-0" style={{ color: T.gold }}>in corso</span>}
           </div>
           <div className="text-xs truncate" style={{ color: T.textDim }}>
-            {formatDateFull(session.startedAt)}{session.location ? ` · ${session.location}` : ''}{session.note ? ` · ${session.note}` : ''}
+            {formatDateFull(session.startedAt)}
+            {bowLabel(session.bowType) ? ` · ${bowLabel(session.bowType)}` : ''}
+            {session.location ? ` · ${session.location}` : ''}{session.note ? ` · ${session.note}` : ''}
           </div>
         </div>
         <div className="text-lg font-bold shrink-0" style={numeralStyle}>
@@ -724,7 +970,14 @@ function SessionRow({ session, onOpen, onDelete }) {
 
 function StoricoScreen({ sessions, onOpen, onResume, onDelete }) {
   const [filterId, setFilterId] = useState('all');
-  const filtered = filterId === 'all' ? sessions : sessions.filter(s => s.roundId === filterId);
+  const [typeFilter, setTypeFilter] = useState('all');
+  const [bowFilter, setBowFilter] = useState('all');
+  const [conditionDim, setConditionDim] = useState('wind');
+
+  const filtered = sessions.filter(s =>
+    (filterId === 'all' || s.roundId === filterId) &&
+    (typeFilter === 'all' || (s.sessionType || 'allenamento') === typeFilter) &&
+    (bowFilter === 'all' || s.bowType === bowFilter));
   const completed = filtered.filter(s => s.status === 'completed');
   const roundDef = filterId === 'all' ? null : ROUND_TYPES.find(r => r.id === filterId);
 
@@ -736,18 +989,15 @@ function StoricoScreen({ sessions, onOpen, onResume, onDelete }) {
   const pb = completed.length ? completed.reduce((b, s) => (totalScore(s) > totalScore(b) ? s : b)) : null;
   const avgScore = completed.length ? completed.reduce((s, x) => s + totalScore(x), 0) / completed.length : null;
 
-  const fatigue = useMemo(() => (filterId === 'all' ? [] : fatigueCurve(sessions, filterId)), [sessions, filterId]);
+  const fatigue = useMemo(() => (filterId === 'all' ? [] : fatigueCurve(completed)), [completed, filterId]);
 
   const allArrows = useMemo(() => completed.flatMap(s => flattenArrows(s)), [completed]);
-  const cumGroup = useMemo(() => {
-    if (!roundDef) return null;
-    const pts = allArrows.filter(a => a.x != null);
-    if (!pts.length) return null;
-    const r = roundDef.faceCm / 2;
-    const cx = pts.reduce((s, a) => s + a.x, 0) / pts.length;
-    const cy = pts.reduce((s, a) => s + a.y, 0) / pts.length;
-    return { x: cx, y: cy, cxCm: cx * r, cyCm: cy * r, count: pts.length };
-  }, [allArrows, roundDef]);
+  const cumGroup = useMemo(() => (roundDef ? computeGroupStats(allArrows, roundDef.faceCm) : null), [allArrows, roundDef]);
+
+  const dispersion = useMemo(() => (filterId === 'all' ? [] : dispersionTrend(completed)), [completed, filterId]);
+  const distribution = useMemo(() => (filterId === 'all' ? [] : scoreDistribution(completed)), [completed, filterId]);
+  const byCondition = useMemo(() => (filterId === 'all' ? [] : scoreByCondition(completed, conditionDim)), [completed, filterId, conditionDim]);
+  const deepAnalysisReady = filterId !== 'all' && completed.length >= MIN_SESSIONS_FOR_DEEP_ANALYSIS;
 
   return (
     <div className="max-w-md mx-auto px-4 pt-4 pb-8 flex flex-col gap-5">
@@ -758,13 +1008,23 @@ function StoricoScreen({ sessions, onOpen, onResume, onDelete }) {
         </button>
       </div>
 
-      <div className="flex gap-2 overflow-x-auto pb-1">
-        <FilterChip active={filterId === 'all'} onClick={() => setFilterId('all')} label="Tutte le prove" />
-        {ROUND_TYPES.map(r => <FilterChip key={r.id} active={filterId === r.id} onClick={() => setFilterId(r.id)} label={r.label} />)}
+      <div className="flex flex-col gap-2">
+        <div className="flex gap-2 overflow-x-auto pb-1">
+          <FilterChip active={filterId === 'all'} onClick={() => setFilterId('all')} label="Tutte le prove" />
+          {ROUND_TYPES.map(r => <FilterChip key={r.id} active={filterId === r.id} onClick={() => setFilterId(r.id)} label={r.label} />)}
+        </div>
+        <div className="flex gap-2 overflow-x-auto pb-1">
+          <FilterChip active={typeFilter === 'all'} onClick={() => setTypeFilter('all')} label="Tutti i tipi" />
+          {SESSION_TYPES.map(t => <FilterChip key={t.id} active={typeFilter === t.id} onClick={() => setTypeFilter(t.id)} label={t.label} />)}
+        </div>
+        <div className="flex gap-2 overflow-x-auto pb-1">
+          <FilterChip active={bowFilter === 'all'} onClick={() => setBowFilter('all')} label="Tutti gli archi" />
+          {BOW_TYPES.map(b => <FilterChip key={b.id} active={bowFilter === b.id} onClick={() => setBowFilter(b.id)} label={b.label} />)}
+        </div>
       </div>
 
       {filterId === 'all' ? (
-        <div className="text-sm" style={{ color: T.textDim }}>{sessions.length} sessioni salvate. Seleziona una prova per le statistiche dettagliate.</div>
+        <div className="text-sm" style={{ color: T.textDim }}>{filtered.length} sessioni. Seleziona una prova per le statistiche dettagliate.</div>
       ) : (
         <>
           <div className="grid grid-cols-3 gap-2">
@@ -812,6 +1072,81 @@ function StoricoScreen({ sessions, onOpen, onResume, onDelete }) {
               </div>
             ) : <div className="text-sm" style={{ color: T.textDim }}>Nessuna freccia con posizione registrata (modalità tastierino).</div>}
           </div>
+
+          <div className="flex flex-col gap-2">
+            <div className="text-sm font-semibold" style={{ color: T.textDim }}>Analisi avanzata</div>
+            {!deepAnalysisReady ? (
+              <div className="rounded-2xl p-4 text-sm" style={{ background: T.surface, border: `1px dashed ${T.border}`, color: T.textDim }}>
+                Servono almeno {MIN_SESSIONS_FOR_DEEP_ANALYSIS} sessioni completate per questa combinazione di prova, tipo e arco
+                {' '}(ne hai {completed.length}). Continua a registrare i tuoi allenamenti e le tue gare.
+              </div>
+            ) : (
+              <>
+                <ChartCard title="Dispersione media nel tempo (cm)">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={dispersion}>
+                      <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
+                      <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
+                      <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 'auto']} />
+                      <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                        formatter={(v) => [`${Number(v).toFixed(1)} cm`, 'dispersione']} />
+                      <Line type="monotone" dataKey="dispersion" stroke={T.blue} strokeWidth={2} dot={{ r: 3, fill: T.blue }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </ChartCard>
+
+                <ChartCard title="Deriva orizzontale e verticale (cm)" tall>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={dispersion}>
+                      <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
+                      <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
+                      <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={['auto', 'auto']} />
+                      <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                        formatter={(v, name) => [`${Number(v).toFixed(1)} cm`, name === 'biasX' ? 'orizzontale' : 'verticale']} />
+                      <Legend formatter={(value) => (value === 'biasX' ? 'Orizzontale' : 'Verticale')} wrapperStyle={{ fontSize: 11, color: T.textDim }} />
+                      <Line type="monotone" dataKey="biasX" stroke={T.gold} strokeWidth={2} dot={{ r: 2, fill: T.gold }} />
+                      <Line type="monotone" dataKey="biasY" stroke={T.red} strokeWidth={2} dot={{ r: 2, fill: T.red }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </ChartCard>
+
+                <ChartCard title="Distribuzione dei punteggi">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={distribution}>
+                      <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
+                      <XAxis dataKey="key" stroke={T.textDim} tick={{ fontSize: 11 }} />
+                      <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} allowDecimals={false} />
+                      <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }} />
+                      <Bar dataKey="count" radius={[3, 3, 0, 0]}>
+                        {distribution.map((d, i) => <Cell key={i} fill={d.color} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </ChartCard>
+
+                <div className="rounded-2xl p-3 flex flex-col gap-2" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+                  <div className="text-sm font-semibold" style={{ color: T.textDim }}>Media per condizioni</div>
+                  <div className="overflow-x-auto pb-1">
+                    <SegmentedControl options={CONDITION_DIMENSIONS} value={conditionDim} onChange={setConditionDim} small />
+                  </div>
+                  <div className="h-40">
+                    {byCondition.length ? (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={byCondition}>
+                          <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
+                          <XAxis dataKey="key" stroke={T.textDim} tick={{ fontSize: 10 }} interval={0} angle={-20} textAnchor="end" height={40} />
+                          <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 10]} />
+                          <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                            formatter={(v, name, item) => [`${Number(v).toFixed(2)} (${item.payload.count} sessioni)`, 'media']} />
+                          <Bar dataKey="avg" fill={T.blue} radius={[3, 3, 0, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    ) : <EmptyChart text="Nessuna condizione registrata per queste sessioni ancora" />}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
         </>
       )}
 
@@ -844,11 +1179,16 @@ function DetailScreen({ session, onBack, onUpdate, onDelete }) {
     <div className="max-w-md mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
         <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
-        <div className="text-xl font-bold">{session.round.label}</div>
+        <div className="text-xl font-bold flex items-center gap-2">
+          {session.round.label}
+          {session.sessionType === 'gara' && <Pill>Gara</Pill>}
+        </div>
       </div>
 
       <div className="text-sm" style={{ color: T.textDim }}>
-        {formatDateFull(session.startedAt)}{session.location ? ` · ${session.location}` : ''}
+        {formatDateFull(session.startedAt)}
+        {bowLabel(session.bowType) ? ` · ${bowLabel(session.bowType)}` : ''}
+        {session.location ? ` · ${session.location}` : ''}
       </div>
 
       <div className="text-center py-2">
@@ -861,6 +1201,7 @@ function DetailScreen({ session, onBack, onUpdate, onDelete }) {
       <TargetFace faceCm={session.round.faceCm} points={flattenArrows(session).filter(a => a.x != null)} />
 
       <SessionMetaEditor session={session} onUpdate={onUpdate} />
+      <ConditionsEditor session={session} onUpdate={onUpdate} />
 
       <div className="flex flex-col gap-2">
         <div className="text-sm font-semibold" style={{ color: T.textDim }}>Volée</div>
@@ -904,8 +1245,13 @@ function HomeScreen({ sessions, onNew, onResume }) {
           style={{ background: T.surfaceAlt, border: `1px solid ${T.borderStrong}` }}>
           <div>
             <div className="text-sm" style={{ color: T.textDim }}>Sessione in corso</div>
-            <div className="text-lg font-semibold">{s.round.label}</div>
-            <div className="text-sm" style={{ color: T.textDim }}>Volée {currentEndIndex(s) + 1} di {s.round.ends}</div>
+            <div className="text-lg font-semibold flex items-center gap-2">
+              {s.round.label}
+              {s.sessionType === 'gara' && <Pill>Gara</Pill>}
+            </div>
+            <div className="text-sm" style={{ color: T.textDim }}>
+              Volée {currentEndIndex(s) + 1} di {s.round.ends}{bowLabel(s.bowType) ? ` · ${bowLabel(s.bowType)}` : ''}
+            </div>
           </div>
           <ChevronRight color={T.textDim} />
         </button>

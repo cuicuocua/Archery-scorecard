@@ -43,3 +43,32 @@ to analyze).
 
 The download icon on the Storico screen exports the full sessions array
 as JSON, meant to seed the future offline app.
+
+## v1.1 additions
+
+- **Zoom recentring**: at 2×/4× on the shooting face, the crop follows the
+  centroid of the last 3 volée instead of always centring on the
+  bullseye, so a group that's drifted off-centre stays visible and
+  tappable at high zoom.
+- **Group-size trace**: the live crosshair now draws a dashed circle at
+  the group's actual radius (furthest arrow from centroid), not just a
+  centre point. It renders behind the arrow marks so a tight group is
+  never hidden under the crosshair itself.
+- **Arco + tipo (gara/allenamento)**: every session records an optional
+  bow (`ricurvo`/`compound`/`nudo`) and a required `sessionType`
+  (`allenamento`/`gara`, defaults to allenamento). Personal-best and pace
+  comparisons are scoped by round + arco + tipo — a gara score and an
+  allenamento score are different achievements and never mixed. Storico
+  filters on all three dimensions independently.
+- **Custom sessions**: distance/face/arrows-per-end/ends are editable at
+  session start via "Allenamento libero" (hidden when tipo = Gara, since
+  competitions don't use ad-hoc distances).
+- **Analisi avanzata**: unlocks once a round+arco+tipo combination has at
+  least `MIN_SESSIONS_FOR_DEEP_ANALYSIS` (5) completed sessions —
+  dispersion-over-time, horizontal/vertical bias-over-time, and a score
+  distribution histogram.
+- **Condizioni**: after finishing a round (and editable later from a
+  session's detail view), pick wind / time of day / sun position
+  (single-select) and other factors like rain or fatigue (multi-select)
+  — always by choice, never free text, so it stays analyzable. Feeds a
+  "media per condizioni" chart in Analisi avanzata once you have data.
