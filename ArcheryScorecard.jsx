@@ -11,18 +11,24 @@ import {
 /*
  * Arcieri Senesi — Scorecard v1
  *
- * FITARCO assumptions (round definitions live in ROUND_TYPES below and are
- * meant to be edited freely — nothing about them is hardcoded elsewhere):
+ * FITARCO / World Archery assumptions (round definitions live in
+ * ROUND_TYPES below and are meant to be edited freely — nothing about
+ * them is hardcoded elsewhere; "Personalizzata" also lets you pick any
+ * distance/face/arrows/ends combination on the fly, for anything not
+ * listed as a preset):
  *  - Indoor 18m: 40cm face, 3 frecce/volée, 20 volée (60 frecce) — standard.
  *  - Indoor 25m: 60cm face, 3 frecce/volée, 20 volée — mirrors the 18m
  *    structure for the Italian indoor 25+18 combined round; verify locally.
- *  - Targa 70m / 60m: 122cm face, 6 frecce/volée, 12 volée (72 frecce) —
- *    70m is the WA1440/720 distance; 60m is used for some categories.
- *  - Targa 50m: 80cm face, 6 frecce/volée, 12 volée — typical compound/
- *    barebow 50m setup.
+ *  - Targa 90/70/60m: 122cm face, 6 frecce/volée, 12 volée (72 frecce) —
+ *    90/70m are WA1440 long distances (70m is also the current WA ranking
+ *    round distance); 60m covers some categories (para, juniors).
+ *  - Targa 50/40/30m: 80cm face, 6 frecce/volée, 12 volée — the WA1440
+ *    short distances, and the standard compound/barebow distances.
  *  - Scoring: 10 zones, X is the inner half of the 10 ring, counted
  *    separately but worth 10. Ring colours centre-out: gold, gold, red,
- *    red, blue, blue, black, black, white, white (as specified).
+ *    red, blue, blue, black, black, white, white (as specified). Compound's
+ *    WA rule of only scoring the inner 5-10 ("compound face") is NOT
+ *    modelled — all bow types score the full 10-zone face here.
  */
 
 const STORAGE_KEY = 'archery-scorecard-v1';
@@ -30,11 +36,32 @@ const STORAGE_KEY = 'archery-scorecard-v1';
 const ROUND_TYPES = [
   { id: 'indoor18', label: 'Indoor 18m', category: 'Indoor', distanceM: 18, faceCm: 40, arrowsPerEnd: 3, ends: 20, editable: false },
   { id: 'indoor25', label: 'Indoor 25m', category: 'Indoor', distanceM: 25, faceCm: 60, arrowsPerEnd: 3, ends: 20, editable: false },
-  { id: 'targa70', label: 'Targa 70m', category: 'Targa', distanceM: 70, faceCm: 122, arrowsPerEnd: 6, ends: 12, editable: false },
-  { id: 'targa60', label: 'Targa 60m', category: 'Targa', distanceM: 60, faceCm: 122, arrowsPerEnd: 6, ends: 12, editable: false },
-  { id: 'targa50', label: 'Targa 50m', category: 'Targa', distanceM: 50, faceCm: 80, arrowsPerEnd: 6, ends: 12, editable: false },
-  { id: 'free', label: 'Allenamento libero', category: 'Allenamento', distanceM: 30, faceCm: 40, arrowsPerEnd: 3, ends: 10, editable: true },
+
+  { id: 'targa90', label: 'Targa 90m', category: 'Targa 122cm', distanceM: 90, faceCm: 122, arrowsPerEnd: 6, ends: 12, editable: false },
+  { id: 'targa70', label: 'Targa 70m', category: 'Targa 122cm', distanceM: 70, faceCm: 122, arrowsPerEnd: 6, ends: 12, editable: false },
+  { id: 'targa60', label: 'Targa 60m', category: 'Targa 122cm', distanceM: 60, faceCm: 122, arrowsPerEnd: 6, ends: 12, editable: false },
+
+  { id: 'targa50', label: 'Targa 50m', category: 'Targa 80cm', distanceM: 50, faceCm: 80, arrowsPerEnd: 6, ends: 12, editable: false },
+  { id: 'targa40', label: 'Targa 40m', category: 'Targa 80cm', distanceM: 40, faceCm: 80, arrowsPerEnd: 6, ends: 12, editable: false },
+  { id: 'targa30', label: 'Targa 30m', category: 'Targa 80cm', distanceM: 30, faceCm: 80, arrowsPerEnd: 6, ends: 12, editable: false },
+
+  // Fully custom: distance, face, arrows/end and ends are all pickable at
+  // session start, for anything not covered above (para/youth classes,
+  // club rounds, field-style faces, etc.) — see the editable steppers.
+  { id: 'custom', label: 'Personalizzata', category: 'Personalizzata', distanceM: 30, faceCm: 40, arrowsPerEnd: 3, ends: 10, editable: true },
 ];
+
+// ROUND_TYPES grouped by category, in declaration order — drives the
+// grouped headings in the round picker without hardcoding group names twice.
+const ROUND_GROUPS = (() => {
+  const groups = [];
+  ROUND_TYPES.forEach(r => {
+    const last = groups[groups.length - 1];
+    if (last && last.category === r.category) last.rounds.push(r);
+    else groups.push({ category: r.category, rounds: [r] });
+  });
+  return groups;
+})();
 
 const BOW_TYPES = [
   { id: 'ricurvo', label: 'Ricurvo' },
@@ -824,22 +851,16 @@ function Stepper({ label, value, onChange, min, max, step }) {
 }
 
 function NewSessionScreen({ onCreate, onCancel }) {
-  const freeDef = ROUND_TYPES.find(r => r.id === 'free');
+  const customDef = ROUND_TYPES.find(r => r.id === 'custom');
   const [sessionType, setSessionType] = useState('allenamento');
-  const availableRounds = sessionType === 'gara' ? ROUND_TYPES.filter(r => r.id !== 'free') : ROUND_TYPES;
   const [selectedId, setSelectedId] = useState(ROUND_TYPES[0].id);
   const [bowType, setBowType] = useState(null);
-  const [free, setFree] = useState({ distanceM: freeDef.distanceM, faceCm: freeDef.faceCm, arrowsPerEnd: freeDef.arrowsPerEnd, ends: freeDef.ends });
+  const [free, setFree] = useState({ distanceM: customDef.distanceM, faceCm: customDef.faceCm, arrowsPerEnd: customDef.arrowsPerEnd, ends: customDef.ends });
   const [location, setLocation] = useState('');
   const [note, setNote] = useState('');
 
-  const selected = availableRounds.find(r => r.id === selectedId) || availableRounds[0];
+  const selected = ROUND_TYPES.find(r => r.id === selectedId);
   const effective = selected.editable ? { ...selected, ...free } : selected;
-
-  function handleTypeChange(next) {
-    setSessionType(next);
-    if (next === 'gara' && selectedId === 'free') setSelectedId(ROUND_TYPES[0].id);
-  }
 
   function handleStart() {
     onCreate(createSession(effective, { location, note, bowType, sessionType }));
@@ -852,25 +873,32 @@ function NewSessionScreen({ onCreate, onCancel }) {
         <div className="text-xl font-bold">Nuova sessione</div>
       </div>
 
-      <SegmentedControl options={SESSION_TYPES} value={sessionType} onChange={handleTypeChange} />
+      <SegmentedControl options={SESSION_TYPES} value={sessionType} onChange={setSessionType} />
 
-      <div className="flex flex-col gap-2">
-        {availableRounds.map(r => (
-          <button key={r.id} onClick={() => setSelectedId(r.id)}
-            className="text-left rounded-2xl px-4 py-3 flex items-center justify-between"
-            style={{ background: r.id === selectedId ? T.surfaceAlt : T.surface, border: `1px solid ${r.id === selectedId ? T.gold : T.border}` }}>
-            <div>
-              <div className="font-semibold">{r.label}</div>
-              <div className="text-xs" style={{ color: T.textDim }}>{r.distanceM} m · {r.faceCm} cm · {r.arrowsPerEnd}×{r.ends} frecce</div>
-            </div>
-            {r.id === selectedId && <Check color={T.gold} size={20} />}
-          </button>
+      <div className="flex flex-col gap-3">
+        {ROUND_GROUPS.map(g => (
+          <div key={g.category} className="flex flex-col gap-2">
+            <div className="text-xs uppercase tracking-wide" style={{ color: T.textFaint }}>{g.category}</div>
+            {g.rounds.map(r => (
+              <button key={r.id} onClick={() => setSelectedId(r.id)}
+                className="text-left rounded-2xl px-4 py-3 flex items-center justify-between"
+                style={{ background: r.id === selectedId ? T.surfaceAlt : T.surface, border: `1px solid ${r.id === selectedId ? T.gold : T.border}` }}>
+                <div>
+                  <div className="font-semibold">{r.label}</div>
+                  <div className="text-xs" style={{ color: T.textDim }}>
+                    {r.editable ? 'Scegli distanza, bersaglio, frecce e volée' : `${r.distanceM} m · ${r.faceCm} cm · ${r.arrowsPerEnd}×${r.ends} frecce`}
+                  </div>
+                </div>
+                {r.id === selectedId && <Check color={T.gold} size={20} />}
+              </button>
+            ))}
+          </div>
         ))}
       </div>
 
       {selected.editable && (
         <div className="rounded-2xl p-4 flex flex-col gap-3" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
-          <Stepper label="Distanza (m)" value={free.distanceM} onChange={v => setFree(f => ({ ...f, distanceM: v }))} min={5} max={90} step={5} />
+          <Stepper label="Distanza (m)" value={free.distanceM} onChange={v => setFree(f => ({ ...f, distanceM: v }))} min={5} max={100} step={5} />
           <Stepper label="Diametro bersaglio (cm)" value={free.faceCm} onChange={v => setFree(f => ({ ...f, faceCm: v }))} min={20} max={122} step={10} />
           <Stepper label="Frecce a volée" value={free.arrowsPerEnd} onChange={v => setFree(f => ({ ...f, arrowsPerEnd: v }))} min={1} max={6} step={1} />
           <Stepper label="Numero di volée" value={free.ends} onChange={v => setFree(f => ({ ...f, ends: v }))} min={1} max={40} step={1} />

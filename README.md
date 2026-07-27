@@ -14,15 +14,21 @@ Edit the `ROUND_TYPES` array at the top of the file — every field
 (distance, face diameter, arrows/end, number of ends) drives the whole
 app, nothing about a round is hardcoded elsewhere.
 
-Assumptions made, to check against FITARCO rules:
+Assumptions made, to check against FITARCO/World Archery rules:
 - **Indoor 18m**: 40cm face, 3 frecce/volée, 20 volée (60 frecce) — standard.
 - **Indoor 25m**: 60cm face, 3×20 — mirrors the 18m structure for the
   Italian indoor 25+18 combined round.
-- **Targa 70m / 60m**: 122cm face, 6×12 (72 frecce) — 70m is the
-  WA1440/720 distance; 60m covers some categories.
-- **Targa 50m**: 80cm face, 6×12 — typical compound/barebow setup.
-- **Allenamento libero**: fully editable at session start (distance,
-  face, arrows/end, ends), defaults are just a starting point.
+- **Targa 90m / 70m / 60m**: 122cm face, 6×12 (72 frecce) — 90/70m are the
+  WA1440 long distances (70m is also the current WA outdoor ranking-round
+  distance); 60m covers some categories (para, juniors).
+- **Targa 50m / 40m / 30m**: 80cm face, 6×12 — the WA1440 short distances,
+  and the standard compound/barebow distances.
+- **Personalizzata**: fully editable at session start (distance, face,
+  arrows/end, ends) — for anything not covered above (para/youth classes,
+  club rounds, etc.), and available for both allenamento and gara.
+- Compound's WA rule of only scoring the inner 5-10 zone ("compound
+  face") is **not** modelled — every bow type scores the full 10-zone
+  face here.
 
 Scoring: 10 zones, X is the inner half of the 10 ring (worth 10, counted
 separately). Ring colours centre-out: gold, gold, red, red, blue, blue,
