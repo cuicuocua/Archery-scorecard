@@ -70,8 +70,11 @@ const BOW_TYPES = [
 ];
 
 const SESSION_TYPES = [
-  { id: 'allenamento', label: 'Allenamento' },
-  { id: 'gara', label: 'Gara' },
+  { id: 'allenamento', label: 'Allenamento', hint: 'Sessione di pratica personale' },
+  { id: 'gara', label: 'Gara', hint: 'Competizione ufficiale FITARCO' },
+  // Unofficial, just-for-fun club competitions with made-up rules — the
+  // FITARCO/club term for "not a federal gara" is "gara sociale".
+  { id: 'sociale', label: 'Gara sociale', hint: 'Competizione informale, regole libere' },
 ];
 
 // Conditions are logged after the round (you know the wind after you shot
@@ -268,11 +271,19 @@ function undoLastArrow(session) {
   return session;
 }
 
+// Compares the actual round snapshot (distance/face/arrows/ends), not just
+// roundId — two "Personalizzata" sessions with different made-up rules
+// (common for gara sociale) are not the same round and must not be
+// compared as if chasing the same personal best.
+function sameRound(a, b) {
+  return a.distanceM === b.distanceM && a.faceCm === b.faceCm && a.arrowsPerEnd === b.arrowsPerEnd && a.ends === b.ends;
+}
+
 function findPersonalBest(sessions, scope, excludeId) {
   const candidates = sessions.filter(s =>
-    s.roundId === scope.roundId &&
     s.status === 'completed' &&
     s.id !== excludeId &&
+    sameRound(s.round, scope.round) &&
     (s.bowType || null) === (scope.bowType || null) &&
     (s.sessionType || 'allenamento') === (scope.sessionType || 'allenamento'));
   if (!candidates.length) return null;
@@ -472,12 +483,18 @@ function StatTile({ label, value, valueColor }) {
 }
 
 function Pill({ children, tone = 'gold' }) {
-  const color = tone === 'gold' ? T.gold : T.textDim;
+  const color = tone === 'gold' ? T.gold : tone === 'blue' ? T.blue : T.textDim;
   return (
     <span className="text-xs font-bold px-2 py-0.5 rounded-full uppercase tracking-wide shrink-0" style={{ color, border: `1px solid ${color}` }}>
       {children}
     </span>
   );
+}
+
+function SessionTypeBadge({ sessionType }) {
+  if (sessionType === 'gara') return <Pill>Gara</Pill>;
+  if (sessionType === 'sociale') return <Pill tone="blue">Sociale</Pill>;
+  return null;
 }
 
 function LoadingScreen() {
@@ -699,7 +716,7 @@ function SessionSummary({ session, onExit, onUpdate }) {
       <div>
         <div className="text-sm uppercase tracking-wide flex items-center gap-2 justify-center" style={{ color: T.textDim }}>
           Sessione completata
-          {session.sessionType === 'gara' && <Pill>Gara</Pill>}
+          <SessionTypeBadge sessionType={session.sessionType} />
         </div>
         <div className="text-5xl font-bold" style={numeralStyle}>{total}</div>
         <div className="text-sm mt-1" style={{ color: T.textDim }}>
@@ -736,8 +753,8 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
   const projected = shot ? Math.round(avg * totalArrowsInRound(session)) : null;
 
   const pb = useMemo(
-    () => findPersonalBest(sessions, { roundId: session.roundId, bowType: session.bowType, sessionType: session.sessionType }, session.id),
-    [sessions, session.roundId, session.bowType, session.sessionType, session.id]);
+    () => findPersonalBest(sessions, { round: session.round, bowType: session.bowType, sessionType: session.sessionType }, session.id),
+    [sessions, session.round, session.bowType, session.sessionType, session.id]);
   const pace = shot ? paceVsPB(session, pb) : null;
 
   const last3 = useMemo(() => {
@@ -769,7 +786,7 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
         <div className="text-center">
           <div className="font-semibold leading-tight flex items-center gap-2 justify-center">
             {round.label}
-            {session.sessionType === 'gara' && <Pill>Gara</Pill>}
+            <SessionTypeBadge sessionType={session.sessionType} />
           </div>
           <div className="text-xs" style={{ color: T.textDim }}>
             {isComplete ? 'Completata' : `Volée ${endIdx + 1} di ${round.ends}`}
@@ -850,17 +867,48 @@ function Stepper({ label, value, onChange, min, max, step }) {
   );
 }
 
+const NEW_SESSION_STEPS = ['type', 'round', 'bow', 'details'];
+const NEW_SESSION_TITLES = { type: 'Che tipo di sessione?', round: 'Che prova?', bow: 'Con che arco?', details: 'Ultimi dettagli' };
+
 function NewSessionScreen({ onCreate, onCancel }) {
   const customDef = ROUND_TYPES.find(r => r.id === 'custom');
+  const [step, setStep] = useState('type');
   const [sessionType, setSessionType] = useState('allenamento');
-  const [selectedId, setSelectedId] = useState(ROUND_TYPES[0].id);
+  const [selectedId, setSelectedId] = useState(null);
   const [bowType, setBowType] = useState(null);
   const [free, setFree] = useState({ distanceM: customDef.distanceM, faceCm: customDef.faceCm, arrowsPerEnd: customDef.arrowsPerEnd, ends: customDef.ends });
   const [location, setLocation] = useState('');
   const [note, setNote] = useState('');
 
   const selected = ROUND_TYPES.find(r => r.id === selectedId);
-  const effective = selected.editable ? { ...selected, ...free } : selected;
+  const effective = selected && selected.editable ? { ...selected, ...free } : selected;
+
+  function goBack() {
+    const idx = NEW_SESSION_STEPS.indexOf(step);
+    if (idx <= 0) onCancel();
+    else setStep(NEW_SESSION_STEPS[idx - 1]);
+  }
+
+  function chooseType(id) {
+    setSessionType(id);
+    // Gara sociale rounds are usually made up on the spot, so land directly
+    // on the custom distance/face picker instead of the fixed presets.
+    if (id === 'sociale') setSelectedId('custom');
+    setStep('round');
+  }
+
+  function chooseRound(id) {
+    setSelectedId(id);
+    const r = ROUND_TYPES.find(x => x.id === id);
+    if (!r.editable) setStep('bow');
+    // editable (custom) rounds stay on this step so the steppers are visible;
+    // advancing happens via the explicit "Continua" button below.
+  }
+
+  function chooseBow(id) {
+    setBowType(id);
+    setStep('details');
+  }
 
   function handleStart() {
     onCreate(createSession(effective, { location, note, bowType, sessionType }));
@@ -869,69 +917,103 @@ function NewSessionScreen({ onCreate, onCancel }) {
   return (
     <div className="max-w-md mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
-        <button onClick={onCancel} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
-        <div className="text-xl font-bold">Nuova sessione</div>
+        <button onClick={goBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
+        <div className="text-xl font-bold">{NEW_SESSION_TITLES[step]}</div>
       </div>
 
-      <SegmentedControl options={SESSION_TYPES} value={sessionType} onChange={setSessionType} />
-
-      <div className="flex flex-col gap-3">
-        {ROUND_GROUPS.map(g => (
-          <div key={g.category} className="flex flex-col gap-2">
-            <div className="text-xs uppercase tracking-wide" style={{ color: T.textFaint }}>{g.category}</div>
-            {g.rounds.map(r => (
-              <button key={r.id} onClick={() => setSelectedId(r.id)}
-                className="text-left rounded-2xl px-4 py-3 flex items-center justify-between"
-                style={{ background: r.id === selectedId ? T.surfaceAlt : T.surface, border: `1px solid ${r.id === selectedId ? T.gold : T.border}` }}>
-                <div>
-                  <div className="font-semibold">{r.label}</div>
-                  <div className="text-xs" style={{ color: T.textDim }}>
-                    {r.editable ? 'Scegli distanza, bersaglio, frecce e volée' : `${r.distanceM} m · ${r.faceCm} cm · ${r.arrowsPerEnd}×${r.ends} frecce`}
-                  </div>
-                </div>
-                {r.id === selectedId && <Check color={T.gold} size={20} />}
-              </button>
-            ))}
-          </div>
+      <div className="flex gap-1.5">
+        {NEW_SESSION_STEPS.map(s => (
+          <div key={s} className="h-1 flex-1 rounded-full"
+            style={{ background: NEW_SESSION_STEPS.indexOf(s) <= NEW_SESSION_STEPS.indexOf(step) ? T.gold : T.border }} />
         ))}
       </div>
 
-      {selected.editable && (
-        <div className="rounded-2xl p-4 flex flex-col gap-3" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
-          <Stepper label="Distanza (m)" value={free.distanceM} onChange={v => setFree(f => ({ ...f, distanceM: v }))} min={5} max={100} step={5} />
-          <Stepper label="Diametro bersaglio (cm)" value={free.faceCm} onChange={v => setFree(f => ({ ...f, faceCm: v }))} min={20} max={122} step={10} />
-          <Stepper label="Frecce a volée" value={free.arrowsPerEnd} onChange={v => setFree(f => ({ ...f, arrowsPerEnd: v }))} min={1} max={6} step={1} />
-          <Stepper label="Numero di volée" value={free.ends} onChange={v => setFree(f => ({ ...f, ends: v }))} min={1} max={40} step={1} />
-        </div>
-      )}
-
-      <div className="flex flex-col gap-2">
-        <div className="text-sm" style={{ color: T.textDim }}>Arco (opzionale)</div>
-        <div className="flex gap-2">
-          {BOW_TYPES.map(b => (
-            <button key={b.id} onClick={() => setBowType(bt => (bt === b.id ? null : b.id))}
-              className="flex-1 rounded-xl py-2.5 text-sm font-semibold"
-              style={{
-                background: bowType === b.id ? T.surfaceAlt : T.surface,
-                border: `1px solid ${bowType === b.id ? T.gold : T.border}`,
-                color: bowType === b.id ? T.gold : T.textDim,
-              }}>
-              {b.label}
+      {step === 'type' && (
+        <div className="flex flex-col gap-2">
+          {SESSION_TYPES.map(t => (
+            <button key={t.id} onClick={() => chooseType(t.id)}
+              className="text-left rounded-2xl px-4 py-4 flex items-center justify-between"
+              style={{ background: t.id === sessionType ? T.surfaceAlt : T.surface, border: `1px solid ${t.id === sessionType ? T.gold : T.border}` }}>
+              <div>
+                <div className="font-semibold text-lg">{t.label}</div>
+                <div className="text-xs" style={{ color: T.textDim }}>{t.hint}</div>
+              </div>
+              <ChevronRight color={T.textDim} />
             </button>
           ))}
         </div>
-      </div>
+      )}
 
-      <div className="flex flex-col gap-2">
-        <input value={location} onChange={e => setLocation(e.target.value)} placeholder="Luogo (opzionale)"
-          className="rounded-xl px-3 py-2.5" style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.text }} />
-        <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} placeholder="Note (opzionale): vento, materiale, sensazioni..."
-          className="rounded-xl px-3 py-2.5 resize-none" style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.text }} />
-      </div>
+      {step === 'round' && (
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-3">
+            {ROUND_GROUPS.map(g => (
+              <div key={g.category} className="flex flex-col gap-2">
+                <div className="text-xs uppercase tracking-wide" style={{ color: T.textFaint }}>{g.category}</div>
+                {g.rounds.map(r => (
+                  <button key={r.id} onClick={() => chooseRound(r.id)}
+                    className="text-left rounded-2xl px-4 py-3 flex items-center justify-between"
+                    style={{ background: r.id === selectedId ? T.surfaceAlt : T.surface, border: `1px solid ${r.id === selectedId ? T.gold : T.border}` }}>
+                    <div>
+                      <div className="font-semibold">{r.label}</div>
+                      <div className="text-xs" style={{ color: T.textDim }}>
+                        {r.editable ? 'Scegli distanza, bersaglio, frecce e volée' : `${r.distanceM} m · ${r.faceCm} cm · ${r.arrowsPerEnd}×${r.ends} frecce`}
+                      </div>
+                    </div>
+                    {r.id === selectedId && <Check color={T.gold} size={20} />}
+                  </button>
+                ))}
+              </div>
+            ))}
+          </div>
 
-      <button onClick={handleStart} className="rounded-2xl py-4 font-bold text-lg flex items-center justify-center gap-2" style={{ background: T.gold, color: GOLD_TEXT }}>
-        <Play size={20} /> Inizia volée
-      </button>
+          {selected && selected.editable && (
+            <>
+              <div className="rounded-2xl p-4 flex flex-col gap-3" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+                <Stepper label="Distanza (m)" value={free.distanceM} onChange={v => setFree(f => ({ ...f, distanceM: v }))} min={5} max={100} step={5} />
+                <Stepper label="Diametro bersaglio (cm)" value={free.faceCm} onChange={v => setFree(f => ({ ...f, faceCm: v }))} min={20} max={122} step={10} />
+                <Stepper label="Frecce a volée" value={free.arrowsPerEnd} onChange={v => setFree(f => ({ ...f, arrowsPerEnd: v }))} min={1} max={6} step={1} />
+                <Stepper label="Numero di volée" value={free.ends} onChange={v => setFree(f => ({ ...f, ends: v }))} min={1} max={40} step={1} />
+              </div>
+              <button onClick={() => setStep('bow')} className="rounded-2xl py-3.5 font-bold" style={{ background: T.gold, color: GOLD_TEXT }}>
+                Continua
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {step === 'bow' && (
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-2">
+            {BOW_TYPES.map(b => (
+              <button key={b.id} onClick={() => chooseBow(b.id)}
+                className="text-left rounded-2xl px-4 py-4 flex items-center justify-between"
+                style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+                <div className="font-semibold text-lg">{b.label}</div>
+                <ChevronRight color={T.textDim} />
+              </button>
+            ))}
+          </div>
+          <button onClick={() => setStep('details')} className="text-sm py-2" style={{ color: T.textDim }}>
+            Non specificato
+          </button>
+        </div>
+      )}
+
+      {step === 'details' && (
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-2">
+            <input value={location} onChange={e => setLocation(e.target.value)} placeholder="Luogo (opzionale)"
+              className="rounded-xl px-3 py-2.5" style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.text }} />
+            <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} placeholder="Note (opzionale): vento, materiale, sensazioni..."
+              className="rounded-xl px-3 py-2.5 resize-none" style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.text }} />
+          </div>
+          <button onClick={handleStart} className="rounded-2xl py-4 font-bold text-lg flex items-center justify-center gap-2" style={{ background: T.gold, color: GOLD_TEXT }}>
+            <Play size={20} /> Inizia volée
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -975,7 +1057,7 @@ function SessionRow({ session, onOpen, onDelete }) {
         <div className="min-w-0">
           <div className="font-semibold truncate flex items-center gap-2">
             <span className="truncate">{session.round.label}</span>
-            {session.sessionType === 'gara' && <Pill>Gara</Pill>}
+            <SessionTypeBadge sessionType={session.sessionType} />
             {!isDone && <span className="text-xs font-normal shrink-0" style={{ color: T.gold }}>in corso</span>}
           </div>
           <div className="text-xs truncate" style={{ color: T.textDim }}>
@@ -1209,7 +1291,7 @@ function DetailScreen({ session, onBack, onUpdate, onDelete }) {
         <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
         <div className="text-xl font-bold flex items-center gap-2">
           {session.round.label}
-          {session.sessionType === 'gara' && <Pill>Gara</Pill>}
+          <SessionTypeBadge sessionType={session.sessionType} />
         </div>
       </div>
 
@@ -1275,7 +1357,7 @@ function HomeScreen({ sessions, onNew, onResume }) {
             <div className="text-sm" style={{ color: T.textDim }}>Sessione in corso</div>
             <div className="text-lg font-semibold flex items-center gap-2">
               {s.round.label}
-              {s.sessionType === 'gara' && <Pill>Gara</Pill>}
+              <SessionTypeBadge sessionType={s.sessionType} />
             </div>
             <div className="text-sm" style={{ color: T.textDim }}>
               Volée {currentEndIndex(s) + 1} di {s.round.ends}{bowLabel(s.bowType) ? ` · ${bowLabel(s.bowType)}` : ''}
