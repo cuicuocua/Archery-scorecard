@@ -2036,22 +2036,9 @@ function StatisticheScreen({ sessions }) {
   const entries = useMemo(() => stageEntries(completedSessions), [completedSessions]);
 
   const totalArrows = entries.reduce((s, e) => s + arrowsShotCount(e), 0);
-  const totalScoreSum = entries.reduce((s, e) => s + totalScore(e), 0);
-  const avgPerArrow = totalArrows ? totalScoreSum / totalArrows : 0;
   const totalX = entries.reduce((s, e) => s + xCount(e), 0);
 
-  const colorData = useMemo(() => hitRateByColor(entries), [entries]);
   const shapeRows = useMemo(() => bestByShape(entries), [entries]);
-
-  const trend = useMemo(() =>
-    completedSessions.slice()
-      .sort((a, b) => new Date(a.completedAt) - new Date(b.completedAt))
-      .map(s => {
-        const arrows = sessionArrowsShot(s);
-        return arrows ? { label: formatDateShort(s.completedAt), avg: sessionTotalScore(s) / arrows } : null;
-      })
-      .filter(Boolean),
-    [completedSessions]);
 
   const typeCounts = useMemo(() => {
     const counts = {};
@@ -2059,6 +2046,17 @@ function StatisticheScreen({ sessions }) {
     completedSessions.forEach(s => { counts[s.sessionType || 'allenamento'] += 1; });
     return counts;
   }, [completedSessions]);
+
+  // Defaults to whichever round shape was most recently completed, so the
+  // scoped section below always opens on something relevant instead of an
+  // empty "pick one" state. Lazy initializer: only needs to run once, since
+  // `entries` at mount time is what a first-time visitor sees regardless of
+  // later data changes (re-selecting explicitly is what chip taps are for).
+  const [filterId, setFilterId] = useState(() => {
+    if (!entries.length) return null;
+    const latest = entries.reduce((a, b) => (new Date(b.completedAt) > new Date(a.completedAt) ? b : a));
+    return roundShapeKey(latest.round);
+  });
 
   if (!completedSessions.length) {
     return (
@@ -2075,62 +2073,37 @@ function StatisticheScreen({ sessions }) {
     <div className="w-full mx-auto px-4 pt-4 pb-8 flex flex-col gap-5">
       <h1 className="text-xl font-bold">Statistiche</h1>
 
-      <div className="grid grid-cols-4 gap-2">
+      <div className="grid grid-cols-3 gap-2">
         <StatTile label="Sessioni" value={completedSessions.length} />
         <StatTile label="Frecce" value={totalArrows} />
-        <StatTile label="Media/freccia" value={avgPerArrow.toFixed(2)} />
         <StatTile label="X totali" value={totalX} />
-      </div>
-
-      <ChartCard title="Frecce per colore">
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={colorData}>
-            <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
-            <XAxis dataKey="key" stroke={T.textDim} tick={{ fontSize: 11 }} />
-            <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={32} unit="%" />
-            <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
-              formatter={(v, name, item) => [`${item.payload.count} frecce (${Number(v).toFixed(1)}%)`, 'frecce']} />
-            <Bar dataKey="pct" radius={[3, 3, 0, 0]}>
-              {colorData.map((d, i) => <Cell key={i} fill={d.color} />)}
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
-      </ChartCard>
-
-      <ChartCard title="Andamento generale (media a freccia)">
-        {trend.length >= 2 ? (
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={trend}>
-              <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
-              <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
-              <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 10]} />
-              <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
-                formatter={(v) => [Number(v).toFixed(2), 'media a freccia']} />
-              <Line type="monotone" dataKey="avg" stroke={T.gold} strokeWidth={2} dot={{ r: 3, fill: T.gold }} />
-            </LineChart>
-          </ResponsiveContainer>
-        ) : <EmptyChart text="Servono almeno 2 sessioni completate" />}
-      </ChartCard>
-
-      <div className="flex flex-col gap-2">
-        <div className="text-sm font-semibold" style={{ color: T.textDim }}>Primati per distanza</div>
-        <div className="flex flex-col gap-2">
-          {shapeRows.map(row => (
-            <div key={roundShapeKey(row.round)} className="rounded-2xl px-4 py-3 flex items-center justify-between gap-2" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
-              <div className="min-w-0">
-                <div className="font-semibold truncate">{roundShapeLabel(row.round)}</div>
-                <div className="text-xs" style={{ color: T.textDim }}>media {row.avg.toFixed(1)} · {row.count} sessioni</div>
-              </div>
-              <div className="text-lg font-bold shrink-0" style={numeralStyle}>{row.best}</div>
-            </div>
-          ))}
-        </div>
       </div>
 
       <div className="flex flex-col gap-2">
         <div className="text-sm font-semibold" style={{ color: T.textDim }}>Sessioni per tipo</div>
         <div className="grid grid-cols-3 gap-2">
           {SESSION_TYPES.map(t => <StatTile key={t.id} label={t.label} value={typeCounts[t.id]} />)}
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <div className="text-sm font-semibold" style={{ color: T.textDim }}>Le tue prove</div>
+        <div className="flex flex-col gap-2">
+          {shapeRows.map(row => {
+            const key = roundShapeKey(row.round);
+            const active = key === filterId;
+            return (
+              <button key={key} onClick={() => setFilterId(key)}
+                className="text-left rounded-2xl px-4 py-3 flex items-center justify-between gap-2"
+                style={{ background: active ? T.surfaceAlt : T.surface, border: `1px solid ${active ? T.gold : T.border}` }}>
+                <div className="min-w-0">
+                  <div className="font-semibold truncate">{roundShapeLabel(row.round)}</div>
+                  <div className="text-xs" style={{ color: T.textDim }}>media {row.avg.toFixed(1)} · {row.count} sessioni</div>
+                </div>
+                <div className="text-lg font-bold shrink-0" style={numeralStyle}>{row.best}</div>
+              </button>
+            );
+          })}
         </div>
       </div>
     </div>
