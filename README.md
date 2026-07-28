@@ -412,3 +412,23 @@ a single-elimination tournament with live match scoring.
   (`ScrollFadeRow`) so a row with more chips than fit on screen fades at
   the edge instead of hard-clipping with no indication more options exist
   off to the side.
+- **Full-width layout**: every screen's outer wrapper dropped the
+  `max-w-...-6xl` column cap in favor of `w-full` — on a wide desktop
+  screen the app now fills the available viewport instead of sitting in a
+  centered column with the bottom nav bar spanning wider than the content
+  above it. `TargetFace` keeps its own `max-w-2xl` cap so the target
+  diagram doesn't balloon to viewport width on an ultra-wide monitor;
+  charts and lists scale with the new full-width columns as intended.
+- **`ChipSelect` signals its mode**: a multi-select row (`multi` prop,
+  currently just "Altre condizioni") now shows a small checkbox glyph on
+  each chip, filled when active — single-select rows stay plain pills.
+  Previously both modes looked identical, so there was no visual cue
+  for whether tapping a chip would toggle it independently or swap out
+  the whole selection.
+- **Auth inputs have `aria-label`s**: email/password fields across sign-in,
+  password reset, and set-new-password relied on placeholder text alone
+  for a screen reader.
+- **More breathing room under the bracket screen's last section**:
+  `BracketScreen`'s bottom padding grew from `pb-8` to `pb-12` so the
+  final podium-format section never sits flush against the sticky bottom
+  nav.
