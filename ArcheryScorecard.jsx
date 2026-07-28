@@ -2641,6 +2641,33 @@ function resolveMatchRef(tournament, ref) {
   return null;
 }
 
+function refEquals(a, b) {
+  if (!a || !b) return false;
+  return a.kind === b.kind && a.roundIdx === b.roundIdx && a.matchIdx === b.matchIdx;
+}
+
+// Every openable match/final in a tournament, in the same order the
+// bracket screen lists them — used for superuser mode's arrow-key
+// navigation (see the root component's keydown handler).
+function flatMatchRefs(tournament) {
+  const refs = [];
+  tournament.rounds.forEach((round, ri) => round.forEach((_, mi) => refs.push({ kind: 'round', roundIdx: ri, matchIdx: mi })));
+  if (tournament.finalFormat === 'standard' && tournament.thirdPlaceMatch) refs.push({ kind: 'thirdPlace' });
+  if (tournament.finalFormat === 'threeway' && tournament.finalStage) refs.push({ kind: 'prelim' }, { kind: 'threeFinal' });
+  if (tournament.finalFormat === 'lancaster' && tournament.finalStage) refs.push({ kind: 'lancaster1' }, { kind: 'lancaster2' }, { kind: 'lancaster3' });
+  return refs;
+}
+
+const PLAYABLE_MATCH_STATUSES = new Set(['pending', 'in_progress', 'shootoff']);
+function isRefPlayable(tournament, ref) {
+  if (ref.kind === 'threeFinal') {
+    const s = tournament.finalStage.final.status;
+    return s === 'pending' || s === 'in_progress' || s === 'shootoff3' || s === 'runoff';
+  }
+  const resolved = resolveMatchRef(tournament, ref);
+  return !!resolved && PLAYABLE_MATCH_STATUSES.has(resolved.match.status);
+}
+
 // Applies a completed (or in-progress) match's result back into the
 // tournament. `ref` identifies where the match lives:
 //   { kind: 'round', roundIdx, matchIdx }  — a normal bracket position
@@ -3069,14 +3096,15 @@ function TournamentEditParticipantsScreen({ tournament, onSave, onCancel }) {
 
 // ---------- tournament: bracket + match ----------
 
-function MatchCard({ match, onOpen }) {
+function MatchCard({ match, onOpen, focused }) {
   const playable = match.status === 'pending' || match.status === 'in_progress' || match.status === 'shootoff';
   const statusLabel = match.status === 'bye' ? 'Bye' : match.status === 'waiting' ? 'In attesa' :
     match.status === 'completed' ? 'Conclusa' : match.status === 'shootoff' ? 'Spareggio' : 'Da giocare';
   return (
     <button onClick={() => playable && onOpen()} disabled={!playable}
       className="w-full text-left rounded-2xl px-4 py-3 flex flex-col gap-2"
-      style={{ background: T.surface, border: `1px solid ${playable ? T.gold : T.border}`, opacity: match.status === 'waiting' ? 0.6 : 1 }}>
+      style={{ background: T.surface, border: `1px solid ${playable ? T.gold : T.border}`, opacity: match.status === 'waiting' ? 0.6 : 1,
+        boxShadow: focused ? `0 0 0 2px ${T.blue}` : undefined }}>
       <div className="flex items-center justify-between text-xs" style={{ color: T.textDim }}>
         <span>{statusLabel}{match.forfeit ? ' · W.O.' : ''}</span>
         {(match.status === 'completed' || match.status === 'in_progress' || match.status === 'shootoff') && (
@@ -3128,14 +3156,15 @@ function computeBracketLayout(rounds) {
   return { centers, totalHeight: n0 * BRACKET_UNIT };
 }
 
-function CompactMatchCard({ match, x, y, onOpen }) {
+function CompactMatchCard({ match, x, y, onOpen, focused }) {
   const playable = match.status === 'pending' || match.status === 'in_progress' || match.status === 'shootoff';
   const scored = match.status === 'completed' || match.status === 'in_progress' || match.status === 'shootoff';
   return (
     <button onClick={() => playable && onOpen()} disabled={!playable}
       className="absolute rounded-xl px-2.5 py-1.5 flex flex-col justify-center gap-0.5 text-left"
       style={{ left: x, top: y, width: BRACKET_CARD_W, height: BRACKET_CARD_H,
-        background: T.surface, border: `1px solid ${playable ? T.gold : T.border}`, opacity: match.status === 'waiting' ? 0.55 : 1 }}>
+        background: T.surface, border: `1px solid ${playable ? T.gold : T.border}`, opacity: match.status === 'waiting' ? 0.55 : 1,
+        boxShadow: focused ? `0 0 0 2px ${T.blue}` : undefined }}>
       <div className={`text-xs truncate ${match.winnerSlot === 'A' ? 'font-bold' : ''}`} style={{ color: match.winnerSlot === 'B' ? T.textDim : T.text }}>
         {match.slotA ? `${match.slotA.seed}. ${match.slotA.name}` : '—'}
       </div>
@@ -3147,7 +3176,7 @@ function CompactMatchCard({ match, x, y, onOpen }) {
   );
 }
 
-function BracketTree({ tournament, onOpenMatch }) {
+function BracketTree({ tournament, onOpenMatch, focusRef }) {
   const { rounds } = tournament;
   const { centers, totalHeight } = useMemo(() => computeBracketLayout(rounds), [rounds]);
   const colWidth = BRACKET_CARD_W + BRACKET_COL_GAP;
@@ -3182,7 +3211,9 @@ function BracketTree({ tournament, onOpenMatch }) {
               {roundName(rounds.length, r)}
             </div>
             {round.map((m, i) => (
-              <CompactMatchCard key={i} match={m} x={r * colWidth} y={centers[r][i] - BRACKET_CARD_H / 2 + BRACKET_Y_OFFSET} onOpen={() => onOpenMatch({ kind: 'round', roundIdx: r, matchIdx: i })} />
+              <CompactMatchCard key={i} match={m} x={r * colWidth} y={centers[r][i] - BRACKET_CARD_H / 2 + BRACKET_Y_OFFSET}
+                onOpen={() => onOpenMatch({ kind: 'round', roundIdx: r, matchIdx: i })}
+                focused={refEquals(focusRef, { kind: 'round', roundIdx: r, matchIdx: i })} />
             ))}
           </React.Fragment>
         ))}
@@ -3194,7 +3225,7 @@ function BracketTree({ tournament, onOpenMatch }) {
 // Compact summary of the 3-way final's live state — three names instead of
 // the usual two, with each side's running set-points and, once decided,
 // gold/silver markers (bronze is implied: whoever's left).
-function ThreeWayFinalCard({ final, onOpen }) {
+function ThreeWayFinalCard({ final, onOpen, focused }) {
   const playable = final.status === 'pending' || final.status === 'in_progress' || final.status === 'shootoff3' || final.status === 'runoff';
   const statusLabel = final.status === 'waiting' ? 'In attesa' : final.status === 'pending' ? 'Da giocare'
     : final.status === 'shootoff3' ? 'Spareggio per l’oro' : final.status === 'runoff' ? 'Spareggio 2°/3° posto'
@@ -3202,7 +3233,8 @@ function ThreeWayFinalCard({ final, onOpen }) {
   return (
     <button onClick={() => playable && onOpen()} disabled={!playable}
       className="w-full text-left rounded-2xl px-4 py-3 flex flex-col gap-2"
-      style={{ background: T.surface, border: `1px solid ${playable ? T.gold : T.border}`, opacity: final.status === 'waiting' ? 0.6 : 1 }}>
+      style={{ background: T.surface, border: `1px solid ${playable ? T.gold : T.border}`, opacity: final.status === 'waiting' ? 0.6 : 1,
+        boxShadow: focused ? `0 0 0 2px ${T.blue}` : undefined }}>
       <div className="text-xs" style={{ color: T.textDim }}>{statusLabel}</div>
       {[0, 1, 2].map(i => (
         <div key={i} className="flex items-center justify-between gap-2">
@@ -3262,7 +3294,7 @@ function ResetTournamentButton({ onReset }) {
   );
 }
 
-function BracketScreen({ tournament, onBack, onOpenMatch, onOpenThreeFinal, onDelete, onEditParticipants, onReset }) {
+function BracketScreen({ tournament, onBack, onOpenMatch, onOpenThreeFinal, onDelete, onEditParticipants, onReset, focusRef }) {
   const [viewMode, setViewMode] = useState('list');
   const started = tournamentHasStarted(tournament);
   const podium = tournamentPodium(tournament);
@@ -3290,13 +3322,16 @@ function BracketScreen({ tournament, onBack, onOpenMatch, onOpenThreeFinal, onDe
       )}
 
       {viewMode === 'bracket' && tournament.rounds.length > 0 ? (
-        <BracketTree tournament={tournament} onOpenMatch={onOpenMatch} />
+        <BracketTree tournament={tournament} onOpenMatch={onOpenMatch} focusRef={focusRef} />
       ) : (
         tournament.rounds.map((round, ri) => (
           <div key={ri} className="flex flex-col gap-2">
             <div className="text-sm font-semibold" style={{ color: T.textDim }}>{roundName(tournament.rounds.length, ri)}</div>
             <div className="flex flex-col gap-2">
-              {round.map((m, mi) => <MatchCard key={mi} match={m} onOpen={() => onOpenMatch({ kind: 'round', roundIdx: ri, matchIdx: mi })} />)}
+              {round.map((m, mi) => (
+                <MatchCard key={mi} match={m} onOpen={() => onOpenMatch({ kind: 'round', roundIdx: ri, matchIdx: mi })}
+                  focused={refEquals(focusRef, { kind: 'round', roundIdx: ri, matchIdx: mi })} />
+              ))}
             </div>
           </div>
         ))
@@ -3305,7 +3340,8 @@ function BracketScreen({ tournament, onBack, onOpenMatch, onOpenThreeFinal, onDe
       {tournament.finalFormat === 'standard' && tournament.thirdPlaceMatch && (
         <div className="flex flex-col gap-2">
           <div className="text-sm font-semibold" style={{ color: T.textDim }}>Finale 3°/4° posto</div>
-          <MatchCard match={tournament.thirdPlaceMatch} onOpen={() => onOpenMatch({ kind: 'thirdPlace' })} />
+          <MatchCard match={tournament.thirdPlaceMatch} onOpen={() => onOpenMatch({ kind: 'thirdPlace' })}
+            focused={refEquals(focusRef, { kind: 'thirdPlace' })} />
         </div>
       )}
 
@@ -3313,11 +3349,13 @@ function BracketScreen({ tournament, onBack, onOpenMatch, onOpenThreeFinal, onDe
         <>
           <div className="flex flex-col gap-2">
             <div className="text-sm font-semibold" style={{ color: T.textDim }}>Preliminare 3°/4° posto</div>
-            <MatchCard match={fs.prelim} onOpen={() => onOpenMatch({ kind: 'prelim' })} />
+            <MatchCard match={fs.prelim} onOpen={() => onOpenMatch({ kind: 'prelim' })}
+              focused={refEquals(focusRef, { kind: 'prelim' })} />
           </div>
           <div className="flex flex-col gap-2">
             <div className="text-sm font-semibold" style={{ color: T.textDim }}>Finale a 3 — oro/argento/bronzo</div>
-            <ThreeWayFinalCard final={fs.final} onOpen={onOpenThreeFinal} />
+            <ThreeWayFinalCard final={fs.final} onOpen={onOpenThreeFinal}
+              focused={refEquals(focusRef, { kind: 'threeFinal' })} />
           </div>
         </>
       )}
@@ -3326,9 +3364,9 @@ function BracketScreen({ tournament, onBack, onOpenMatch, onOpenThreeFinal, onDe
         <div className="flex flex-col gap-2">
           <div className="text-sm font-semibold" style={{ color: T.textDim }}>Finale Lancaster (per punteggio di qualifica)</div>
           <div className="flex flex-col gap-2">
-            <MatchCard match={fs.match1} onOpen={() => onOpenMatch({ kind: 'lancaster1' })} />
-            <MatchCard match={fs.match2} onOpen={() => onOpenMatch({ kind: 'lancaster2' })} />
-            <MatchCard match={fs.match3} onOpen={() => onOpenMatch({ kind: 'lancaster3' })} />
+            <MatchCard match={fs.match1} onOpen={() => onOpenMatch({ kind: 'lancaster1' })} focused={refEquals(focusRef, { kind: 'lancaster1' })} />
+            <MatchCard match={fs.match2} onOpen={() => onOpenMatch({ kind: 'lancaster2' })} focused={refEquals(focusRef, { kind: 'lancaster2' })} />
+            <MatchCard match={fs.match3} onOpen={() => onOpenMatch({ kind: 'lancaster3' })} focused={refEquals(focusRef, { kind: 'lancaster3' })} />
           </div>
         </div>
       )}
@@ -3421,6 +3459,11 @@ function MatchScreen({ match, title, formatId, onBack, onComplete, keyboardScori
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       const tag = e.target && e.target.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        setActiveSide(s => (s === 'A' ? 'B' : 'A'));
+        return;
+      }
       if (e.key === 'Backspace') {
         e.preventDefault();
         if (match.status === 'shootoff') (activeSide === 'A' ? setShootA : setShootB)(l => l.slice(0, -1));
@@ -3582,6 +3625,12 @@ function ThreeWayFinalScreen({ tournament, onBack, onComplete, keyboardScoring }
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
       const inShootoff = final.status === 'shootoff3';
       const contenders = final.shootoffContenders || [0, 1, 2];
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const options = inShootoff ? contenders : [0, 1, 2];
+        setActiveSide(s => options[(options.indexOf(s) + 1) % options.length]);
+        return;
+      }
       if (inShootoff && !contenders.includes(activeSide)) return;
       if (e.key === 'Backspace') {
         e.preventDefault();
@@ -3781,6 +3830,9 @@ export default function ArcheryScorecard() {
   const [activeMatchRef, setActiveMatchRef] = useState(null); // { roundIdx, matchIdx }
   const [saveError, setSaveError] = useState(null);
   const [superuser, setSuperuser] = useState(false);
+  const [bracketCursor, setBracketCursor] = useState(null);
+
+  const activeTournament = tournaments.find(t => t.id === activeTournamentId) || null;
 
   const flagSaveError = useCallback((ok, message) => {
     if (!ok) setSaveError(message);
@@ -3816,6 +3868,39 @@ export default function ArcheryScorecard() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [activeMatchRef]);
+
+  useEffect(() => { setBracketCursor(null); }, [activeTournamentId]);
+
+  // Superuser bracket navigation: ArrowUp/Down move a cursor through the
+  // playable matches (same order as the bracket screen lists them), Enter
+  // opens whichever one the cursor is on — docking it in the split view
+  // exactly like a click would (see onOpenMatch). Lets a whole round get
+  // scored without ever touching the mouse.
+  useEffect(() => {
+    if (!superuser || view !== 'bracket' || !activeTournament) return;
+    function handleKeyDown(e) {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Enter') return;
+      const tag = e.target && e.target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
+      const navigable = flatMatchRefs(activeTournament).filter(r => isRefPlayable(activeTournament, r));
+      if (navigable.length === 0) return;
+      const cursor = bracketCursor && navigable.some(r => refEquals(r, bracketCursor)) ? bracketCursor
+        : (activeMatchRef && navigable.some(r => refEquals(r, activeMatchRef)) ? activeMatchRef : navigable[0]);
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        setActiveMatchRef(cursor);
+        setBracketCursor(cursor);
+        return;
+      }
+      e.preventDefault();
+      const idx = navigable.findIndex(r => refEquals(r, cursor));
+      const delta = e.key === 'ArrowDown' ? 1 : -1;
+      setBracketCursor(navigable[(idx + delta + navigable.length) % navigable.length]);
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [superuser, view, activeTournament, bracketCursor, activeMatchRef]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setAuthSession(data.session ?? null));
@@ -3905,7 +3990,6 @@ export default function ArcheryScorecard() {
 
   const activeSession = sessions.find(s => s.id === activeSessionId) || null;
   const detailSession = sessions.find(s => s.id === detailSessionId) || null;
-  const activeTournament = tournaments.find(t => t.id === activeTournamentId) || null;
   const resolvedMatch = (activeTournament && activeMatchRef && activeMatchRef.kind !== 'threeFinal')
     ? resolveMatchRef(activeTournament, activeMatchRef) : null;
 
@@ -3978,8 +4062,12 @@ export default function ArcheryScorecard() {
         )}
 
         {view === 'bracket' && activeTournament && (() => {
+          const navigable = superuser ? flatMatchRefs(activeTournament).filter(r => isRefPlayable(activeTournament, r)) : [];
+          const bracketFocusRef = navigable.length === 0 ? null
+            : (bracketCursor && navigable.some(r => refEquals(r, bracketCursor)) ? bracketCursor
+              : (activeMatchRef && navigable.some(r => refEquals(r, activeMatchRef)) ? activeMatchRef : navigable[0]));
           const bracket = (
-            <BracketScreen tournament={activeTournament}
+            <BracketScreen tournament={activeTournament} focusRef={bracketFocusRef}
               onBack={() => { setActiveMatchRef(null); setActiveTournamentId(null); setView('tornei'); }}
               onOpenMatch={(ref) => { setActiveMatchRef(ref); if (!superuser) setView('match'); }}
               onOpenThreeFinal={() => { setActiveMatchRef({ kind: 'threeFinal' }); if (!superuser) setView('threefinal'); }}

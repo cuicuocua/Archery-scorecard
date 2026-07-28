@@ -338,7 +338,12 @@ a single-elimination tournament with live match scoring.
   (`keyToScore()`): digits `1`-`9`, `0` for a plain 10, `x` for an X, `m`
   for a miss, `Enter` to confirm a set/end (only once both sides have
   enough arrows, same as the button), `Backspace` to undo the active
-  side's last arrow. Deliberately not shown anywhere in the UI — it's a
+  side's last arrow, `Tab` to switch the active side (cycles 0/1/2 in the
+  3-way final, restricted to the live contenders during a shoot-off). While
+  browsing the bracket, `↑`/`↓` move a cursor through the playable matches
+  (highlighted with a ring) and `Enter` opens whichever one it's on, docking
+  it exactly like a click would — a full round can be scored without
+  touching the mouse. Deliberately not shown anywhere in the UI — it's a
   shortcut for whoever already knows it's there. Declaring a shoot-off
   winner still requires a manual tap, keyboard or not, since that's a
   judgment call.
