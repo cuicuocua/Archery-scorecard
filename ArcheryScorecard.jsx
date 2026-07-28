@@ -974,10 +974,22 @@ function withSessionDate(session, dateStr) {
 function SessionMetaEditor({ session, onUpdate }) {
   const [location, setLocation] = useState(session.location);
   const [note, setNote] = useState(session.note);
+  const [roundLabel, setRoundLabel] = useState(session.roundLabel);
 
   return (
     <div className="flex flex-col gap-3 w-full rounded-2xl p-4" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
       <div className="text-sm font-semibold" style={{ color: T.textDim }}>Dettagli</div>
+
+      <div className="flex flex-col gap-1.5">
+        <div className="text-xs" style={{ color: T.textDim }}>Nome prova</div>
+        <input value={roundLabel} onChange={e => setRoundLabel(e.target.value)}
+          onBlur={() => { const t = roundLabel.trim(); t ? onUpdate(s => ({ ...s, roundLabel: t })) : setRoundLabel(session.roundLabel); }}
+          list="round-label-suggestions" placeholder="es. Targa 70m"
+          className="rounded-lg px-3 py-2 text-sm w-full" style={{ background: T.surfaceAlt, border: `1px solid ${T.border}`, color: T.text }} />
+        <datalist id="round-label-suggestions">
+          {ROUND_TYPES.map(r => <option key={r.id} value={r.label} />)}
+        </datalist>
+      </div>
 
       <input type="date" value={session.startedAt.slice(0, 10)} onChange={e => e.target.value && onUpdate(s => withSessionDate(s, e.target.value))}
         className="rounded-lg px-3 py-2 text-sm w-full" style={{ background: T.surfaceAlt, border: `1px solid ${T.border}`, color: T.text, colorScheme: 'dark' }} />

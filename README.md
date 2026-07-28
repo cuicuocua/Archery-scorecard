@@ -245,3 +245,13 @@ a single-elimination tournament with live match scoring.
   (40/60/80/122cm) instead of a stepper whose increments didn't land on
   any actual target size; the distance stepper is bounded to WA's real
   competition range (10-90m).
+- **Editable round name**: `session.roundLabel` (the display name shown in
+  Storico/Home/Detail) is now an editable field in `SessionMetaEditor`, with
+  autocomplete suggestions from `ROUND_TYPES`. Purely cosmetic — it doesn't
+  touch the recorded round shape or affect PB/analysis grouping, which is
+  always keyed on the actual distance/face/arrows/ends, not the label — but
+  useful for renaming an imported session (e.g. "WA 70m" as printed on an
+  old scoresheet) to match the label you'd normally recognize it by
+  ("Targa 70m").
+- **Manual reload button** on the Home header — a static page cached by the
+  browser doesn't always pick up a new deploy on its own.
