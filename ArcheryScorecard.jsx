@@ -3459,9 +3459,9 @@ function MatchScreen({ match, title, formatId, onBack, onComplete, keyboardScori
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       const tag = e.target && e.target.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-      if (e.key === 'Tab') {
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         e.preventDefault();
-        setActiveSide(s => (s === 'A' ? 'B' : 'A'));
+        setActiveSide(e.key === 'ArrowLeft' ? 'A' : 'B');
         return;
       }
       if (e.key === 'Backspace') {
@@ -3625,10 +3625,12 @@ function ThreeWayFinalScreen({ tournament, onBack, onComplete, keyboardScoring }
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
       const inShootoff = final.status === 'shootoff3';
       const contenders = final.shootoffContenders || [0, 1, 2];
-      if (e.key === 'Tab') {
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         e.preventDefault();
         const options = inShootoff ? contenders : [0, 1, 2];
-        setActiveSide(s => options[(options.indexOf(s) + 1) % options.length]);
+        const idx = options.indexOf(activeSide);
+        const delta = e.key === 'ArrowRight' ? 1 : -1;
+        setActiveSide(options[idx === -1 ? 0 : (idx + delta + options.length) % options.length]);
         return;
       }
       if (inShootoff && !contenders.includes(activeSide)) return;
@@ -4005,9 +4007,19 @@ export default function ArcheryScorecard() {
         </div>
       )}
       {superuser && (
-        <div className="fixed top-3 right-3 z-40 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold shadow-lg pointer-events-none"
-          style={{ background: T.gold, color: GOLD_TEXT }}>
-          <Unlock size={12} /> Superuser (q per uscire)
+        <div className="fixed top-3 right-3 z-40 flex flex-col items-end gap-2 pointer-events-none">
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold shadow-lg"
+            style={{ background: T.gold, color: GOLD_TEXT }}>
+            <Unlock size={12} /> Superuser (q per uscire)
+          </div>
+          <div className="flex flex-col gap-1 px-3 py-2 rounded-xl text-[11px] shadow-lg" style={{ background: T.surfaceAlt, border: `1px solid ${T.border}` }}>
+            {[['↑ ↓', 'sfoglia match'], ['←  →', 'cambia lato'], ['Invio', 'apri / conferma'], ['⌫', 'annulla freccia']].map(([key, label]) => (
+              <div key={key} className="flex items-center justify-between gap-4">
+                <span className="font-semibold" style={{ color: T.text }}>{key}</span>
+                <span style={{ color: T.textDim }}>{label}</span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
       <div className="flex-1">
