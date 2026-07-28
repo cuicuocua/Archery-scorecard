@@ -432,3 +432,36 @@ a single-elimination tournament with live match scoring.
   `BracketScreen`'s bottom padding grew from `pb-8` to `pb-12` so the
   final podium-format section never sits flush against the sticky bottom
   nav.
+
+## v1.8 additions — `/impeccable audit` fixes
+
+- **Semantic page titles**: every screen's title (`Storico`, `Tornei`,
+  `Scorecard`, the per-step tournament/session wizard titles, match
+  titles, etc.) is now an `<h1>` instead of a plain `<div>` — 18 sites.
+  Screen readers previously had zero page-structure landmarks anywhere in
+  the app; now every screen announces its topic.
+- **Every icon-only button has an `aria-label`**: back chevrons (11
+  sites), import/export/sign-out, edit-participants, add/remove
+  participant, refresh, new-tournament, and both delete-with-confirm
+  buttons (which now announce "Elimina sessione/torneo" unarmed and
+  "Conferma eliminazione" once armed, matching their actual behavior)
+  were previously blank buttons to assistive tech.
+- **`T.textFaint` now clears WCAG AA contrast**: lightened from `#6B707A`
+  to `#8B929F` (same cool-gray hue, ~1.3x brighter) — the old value
+  measured 3.64:1 against `T.bg` and 3.13:1 against `T.surfaceAlt` (need
+  4.5:1), despite being used for real text throughout (category labels,
+  "Annulla" links, nav labels), not just decorative borders. The new
+  value clears 4.5:1 against every surface tone in the app while staying
+  the faintest of the three text tiers.
+- **Touch targets cleared to 44×44px**: `FilterChip` and `ChipSelect`
+  chips, and every icon-only button, get `min-w-11 min-h-11` (or
+  `min-h-11` alone for chips, whose width already comes from their
+  label). Verified live — Storico alone had 33 of 37 interactive
+  elements measuring 34-36px before this; all now clear 44px except the
+  bottom nav tabs, whose full-height flex-1 hit area is generous despite
+  being narrower than 44px wide.
+- **Stray hex colors tokenized**: the ~10 scattered `'#fff'` literals
+  (white text on a red delete-confirm background) became `T.onRed`; the
+  arrow-mark outline in `TargetFace` became `T.markStroke`. Every color
+  in the file now lives in the `T`/`SCORE_COLORS` token objects — no
+  loose hex values elsewhere.

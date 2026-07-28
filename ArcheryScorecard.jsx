@@ -152,12 +152,23 @@ const T = {
   borderStrong: '#3C424C',
   text: '#F1EFE7',
   textDim: '#9BA0AA',
-  textFaint: '#6B707A',
+  // Lightened from #6B707A (same cool-gray hue, scaled ~1.3x) — the
+  // original failed WCAG AA (3.64:1 on bg, 3.13:1 on surfaceAlt) despite
+  // being used for real text (category labels, "Annulla" links, nav
+  // labels), not just decorative borders/icons. This clears 4.5:1 against
+  // every surface tone in the app (bg 5.79:1, surface 4.98:1, surfaceAlt
+  // 4.55:1) while staying visually the faintest of the three text tiers.
+  textFaint: '#8B929F',
   gold: '#E7B933',
   blue: '#3373B0',
   red: '#D8434A',
   ahead: '#5FBE7A',
   behind: '#E0A23C',
+  onRed: '#FFFFFF',
+  // Near-black outline for arrow-hit dots on TargetFace — deliberately
+  // darker/more neutral than T.bg so it reads against any ring color
+  // (gold/red/blue/black/white) the dot might land on.
+  markStroke: '#0C0B08',
 };
 
 const SCORE_COLORS = {
@@ -861,7 +872,7 @@ function AuthGate() {
       <div className="min-h-screen flex flex-col items-center justify-center px-6 gap-6" style={{ background: T.bg, color: T.text }}>
         <div className="flex flex-col items-center gap-2 text-center">
           <Target size={40} color={T.gold} />
-          <div className="text-xl font-bold">Recupera password</div>
+          <h1 className="text-xl font-bold">Recupera password</h1>
           <div className="text-sm max-w-xs" style={{ color: T.textDim }}>
             {resetSent ? 'Controlla la tua email per il link di reimpostazione.' : 'Ti mandiamo un link per reimpostare la password'}
           </div>
@@ -890,7 +901,7 @@ function AuthGate() {
     <div className="min-h-screen flex flex-col items-center justify-center px-6 gap-6" style={{ background: T.bg, color: T.text }}>
       <div className="flex flex-col items-center gap-2 text-center">
         <Target size={40} color={T.gold} />
-        <div className="text-xl font-bold">Arcieri Senesi</div>
+        <h1 className="text-xl font-bold">Arcieri Senesi</h1>
         <div className="text-sm max-w-xs" style={{ color: T.textDim }}>Accedi per avere i tuoi dati su tutti i dispositivi</div>
       </div>
 
@@ -951,7 +962,7 @@ function SetNewPasswordScreen({ onDone }) {
     <div className="min-h-screen flex flex-col items-center justify-center px-6 gap-6" style={{ background: T.bg, color: T.text }}>
       <div className="flex flex-col items-center gap-2 text-center">
         <Target size={40} color={T.gold} />
-        <div className="text-xl font-bold">Imposta una nuova password</div>
+        <h1 className="text-xl font-bold">Imposta una nuova password</h1>
       </div>
       <div className="w-full max-w-xs flex flex-col gap-3">
         <input type="password" autoComplete="new-password" aria-label="Nuova password" value={password} onChange={e => setPassword(e.target.value)}
@@ -1034,7 +1045,7 @@ function TargetFace({ faceCm, zoom = 1, interactive = false, onTap, points = [],
           const opacity = p.ghost ? 0.35 : (dense ? 0.6 : 0.95);
           return (
             <circle key={i} cx={p.x * FACE_R} cy={p.y * FACE_R} r={r} fill={c.fill}
-              stroke={p.ghost ? 'none' : '#0c0b08'} strokeWidth={p.ghost ? 0 : 0.5} opacity={opacity} />
+              stroke={p.ghost ? 'none' : T.markStroke} strokeWidth={p.ghost ? 0 : 0.5} opacity={opacity} />
           );
         })}
       </svg>
@@ -1169,7 +1180,7 @@ function ChipSelect({ label, options, value, onChange, multi = false }) {
       <div className="flex flex-wrap gap-1.5">
         {options.map(o => (
           <button key={o.id} onClick={() => toggle(o.id)}
-            className="px-3 py-1.5 rounded-full text-xs font-medium flex items-center gap-1.5"
+            className="px-3 py-1.5 rounded-full text-xs font-medium flex items-center gap-1.5 min-h-11"
             style={{
               background: isActive(o.id) ? T.surfaceAlt : T.surface,
               border: `1px solid ${isActive(o.id) ? T.gold : T.border}`,
@@ -1329,7 +1340,7 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
   return (
     <div className="flex flex-col w-full mx-auto min-h-screen">
       <header className="sticky top-0 z-10 flex items-center justify-between px-3 py-3" style={{ background: T.bg, borderBottom: `1px solid ${T.border}` }}>
-        <button onClick={onExit} className="p-2 -ml-2 rounded-full active:scale-95 transition-transform"><ChevronLeft /></button>
+        <button onClick={onExit} className="p-2 -ml-2 rounded-full active:scale-95 transition-transform min-w-11 min-h-11 flex items-center justify-center" aria-label="Indietro"><ChevronLeft /></button>
         <div className="text-center">
           <div className="font-semibold leading-tight flex items-center gap-2 justify-center">
             {session.roundLabel}
@@ -1481,8 +1492,8 @@ function NewSessionScreen({ onCreate, onCancel }) {
   return (
     <div className="w-full mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
-        <button onClick={goBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
-        <div className="text-xl font-bold">{NEW_SESSION_TITLES[step]}</div>
+        <button onClick={goBack} className="p-2 -ml-2 rounded-full min-w-11 min-h-11 flex items-center justify-center" aria-label="Indietro"><ChevronLeft /></button>
+        <h1 className="text-xl font-bold">{NEW_SESSION_TITLES[step]}</h1>
       </div>
 
       <div className="flex gap-1.5">
@@ -1537,7 +1548,7 @@ function NewSessionScreen({ onCreate, onCancel }) {
                     {free.length > 1 && (
                       <div className="flex items-center justify-between">
                         <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: T.textFaint }}>Tappa {i + 1}</div>
-                        <button onClick={() => setFree(f => f.filter((_, j) => j !== i))} className="p-1.5 rounded-full" style={{ color: T.textDim }}>
+                        <button onClick={() => setFree(f => f.filter((_, j) => j !== i))} className="p-1.5 rounded-full min-w-11 min-h-11 flex items-center justify-center" style={{ color: T.textDim }} aria-label={`Rimuovi tappa ${i + 1}`}>
                           <Trash2 size={14} />
                         </button>
                       </div>
@@ -1631,7 +1642,7 @@ function ImportButton({ onImport }) {
   return (
     <div className="relative">
       <input ref={inputRef} type="file" accept="application/json" className="hidden" onChange={handleFile} />
-      <button onClick={() => inputRef.current?.click()} className="p-2 rounded-full" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+      <button onClick={() => inputRef.current?.click()} className="p-2 rounded-full min-w-11 min-h-11 flex items-center justify-center" style={{ background: T.surface, border: `1px solid ${T.border}` }} aria-label="Importa sessioni">
         <Upload size={18} />
       </button>
       {status && (
@@ -1662,7 +1673,7 @@ function ScrollFadeRow({ children }) {
 
 function FilterChip({ active, onClick, label }) {
   return (
-    <button onClick={onClick} className="whitespace-nowrap px-3 py-1.5 rounded-full text-sm font-medium"
+    <button onClick={onClick} className="whitespace-nowrap px-3 py-1.5 rounded-full text-sm font-medium min-h-11 flex items-center"
       style={{ background: active ? T.gold : T.surface, color: active ? GOLD_TEXT : T.textDim, border: `1px solid ${active ? T.gold : T.border}` }}>
       {label}
     </button>
@@ -1693,7 +1704,7 @@ function SessionRow({ session, onOpen, onDelete }) {
   const isDone = session.status === 'completed';
   return (
     <div className="rounded-2xl px-4 py-3 flex items-center gap-3" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
-      <button onClick={onOpen} className="flex-1 text-left flex items-center justify-between gap-2 min-w-0">
+      <button onClick={onOpen} className="flex-1 text-left flex items-center justify-between gap-2 min-w-0 min-h-11">
         <div className="min-w-0">
           <div className="font-semibold truncate flex items-center gap-2">
             <span className="truncate">{session.roundLabel}</span>
@@ -1710,8 +1721,9 @@ function SessionRow({ session, onOpen, onDelete }) {
           {isDone ? sessionTotalScore(session) : sessionProgressBadge(session)}
         </div>
       </button>
-      <button onClick={() => (confirming ? onDelete() : setConfirming(true))} className="p-2 rounded-full shrink-0"
-        style={{ background: confirming ? T.red : 'transparent', color: confirming ? '#fff' : T.textFaint }}>
+      <button onClick={() => (confirming ? onDelete() : setConfirming(true))} className="p-2 rounded-full shrink-0 min-w-11 min-h-11 flex items-center justify-center"
+        style={{ background: confirming ? T.red : 'transparent', color: confirming ? T.onRed : T.textFaint }}
+        aria-label={confirming ? 'Conferma eliminazione' : 'Elimina sessione'}>
         <Trash2 size={16} />
       </button>
     </div>
@@ -1777,13 +1789,13 @@ function StoricoScreen({ sessions, onOpen, onResume, onDelete, onImport, onSignO
   return (
     <div className="w-full mx-auto px-4 pt-4 pb-8 flex flex-col gap-5">
       <div className="flex items-center justify-between">
-        <div className="text-xl font-bold">Storico</div>
+        <h1 className="text-xl font-bold">Storico</h1>
         <div className="flex items-center gap-2">
           <ImportButton onImport={onImport} />
-          <button onClick={() => exportJson(sessions)} className="p-2 rounded-full" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+          <button onClick={() => exportJson(sessions)} className="p-2 rounded-full min-w-11 min-h-11 flex items-center justify-center" style={{ background: T.surface, border: `1px solid ${T.border}` }} aria-label="Esporta sessioni">
             <Download size={18} />
           </button>
-          <button onClick={onSignOut} className="p-2 rounded-full" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+          <button onClick={onSignOut} className="p-2 rounded-full min-w-11 min-h-11 flex items-center justify-center" style={{ background: T.surface, border: `1px solid ${T.border}` }} aria-label="Esci">
             <LogOut size={18} />
           </button>
         </div>
@@ -2064,7 +2076,7 @@ function StatisticheScreen({ sessions }) {
   if (!completedSessions.length) {
     return (
       <div className="w-full mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
-        <div className="text-xl font-bold">Statistiche</div>
+        <h1 className="text-xl font-bold">Statistiche</h1>
         <div className="rounded-2xl p-4 text-sm" style={{ background: T.surface, border: `1px dashed ${T.border}`, color: T.textDim }}>
           Completa qualche sessione per iniziare a vedere le tue statistiche cumulative.
         </div>
@@ -2074,7 +2086,7 @@ function StatisticheScreen({ sessions }) {
 
   return (
     <div className="w-full mx-auto px-4 pt-4 pb-8 flex flex-col gap-5">
-      <div className="text-xl font-bold">Statistiche</div>
+      <h1 className="text-xl font-bold">Statistiche</h1>
 
       <div className="grid grid-cols-4 gap-2">
         <StatTile label="Sessioni" value={completedSessions.length} />
@@ -2145,7 +2157,7 @@ function DeleteSessionButton({ onDelete, label = 'Elimina sessione' }) {
   return (
     <button onClick={() => (confirming ? onDelete() : setConfirming(true))}
       className="rounded-2xl py-3 font-semibold flex items-center justify-center gap-2"
-      style={{ background: confirming ? T.red : T.surface, color: confirming ? '#fff' : T.textDim, border: `1px solid ${confirming ? T.red : T.border}` }}>
+      style={{ background: confirming ? T.red : T.surface, color: confirming ? T.onRed : T.textDim, border: `1px solid ${confirming ? T.red : T.border}` }}>
       <Trash2 size={16} /> {confirming ? 'Conferma eliminazione' : label}
     </button>
   );
@@ -2173,11 +2185,11 @@ function DetailScreen({ session, sessions, onBack, onUpdate, onDelete }) {
   return (
     <div className="w-full mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
-        <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
-        <div className="text-xl font-bold flex items-center gap-2">
+        <button onClick={onBack} className="p-2 -ml-2 rounded-full min-w-11 min-h-11 flex items-center justify-center" aria-label="Indietro"><ChevronLeft /></button>
+        <h1 className="text-xl font-bold flex items-center gap-2">
           {session.roundLabel}
           <SessionTypeBadge sessionType={session.sessionType} />
-        </div>
+        </h1>
       </div>
 
       <div className="text-sm" style={{ color: T.textDim }}>
@@ -2241,10 +2253,10 @@ function HomeScreen({ sessions, onNew, onResume, legacyData, onImportLegacy, onD
         </div>
         <div>
           <div className="text-xs uppercase tracking-wide" style={{ color: T.textDim }}>Arcieri Senesi</div>
-          <div className="text-2xl font-bold">Scorecard</div>
+          <h1 className="text-2xl font-bold">Scorecard</h1>
         </div>
-        <button onClick={() => window.location.reload()} className="ml-auto p-2 rounded-full active:scale-95 transition-transform"
-          style={{ background: T.surface, border: `1px solid ${T.border}` }} title="Ricarica l'app per aggiornamenti">
+        <button onClick={() => window.location.reload()} className="ml-auto p-2 rounded-full active:scale-95 transition-transform min-w-11 min-h-11 flex items-center justify-center"
+          style={{ background: T.surface, border: `1px solid ${T.border}` }} title="Ricarica l'app per aggiornamenti" aria-label="Aggiorna">
           <RefreshCw size={18} color={T.textDim} />
         </button>
       </header>
@@ -3143,7 +3155,7 @@ function ParticipantEditor({ formatId, participants, setParticipants }) {
           className="flex-1 rounded-xl px-3 py-2.5" style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.text }} />
         <input value={score} onChange={e => setScore(e.target.value.replace(/[^0-9]/g, ''))} placeholder="Punteggio" inputMode="numeric"
           className="w-24 rounded-xl px-3 py-2.5" style={{ ...numeralStyle, background: T.surface, border: `1px solid ${T.border}`, color: T.text }} />
-        <button onClick={add} disabled={!name.trim()} className="w-11 h-11 rounded-xl flex items-center justify-center disabled:opacity-40" style={{ background: T.gold, color: GOLD_TEXT }}>
+        <button onClick={add} disabled={!name.trim()} className="w-11 h-11 rounded-xl flex items-center justify-center disabled:opacity-40" style={{ background: T.gold, color: GOLD_TEXT }} aria-label="Aggiungi arciere">
           <UserPlus size={18} />
         </button>
       </div>
@@ -3155,7 +3167,7 @@ function ParticipantEditor({ formatId, participants, setParticipants }) {
               <div className="w-6 text-xs shrink-0" style={{ color: T.textFaint, ...numeralStyle }}>{i + 1}</div>
               <div className="flex-1 truncate font-medium">{p.name}</div>
               <div className="text-sm shrink-0" style={{ ...numeralStyle, color: T.textDim }}>{p.seedScore}</div>
-              <button onClick={() => remove(p.id)} className="p-1 rounded-full shrink-0" style={{ color: T.textFaint }}><Trash2 size={14} /></button>
+              <button onClick={() => remove(p.id)} className="p-1 rounded-full shrink-0 min-w-11 min-h-11 flex items-center justify-center" style={{ color: T.textFaint }} aria-label={`Rimuovi ${p.name}`}><Trash2 size={14} /></button>
             </div>
           ))}
         </div>
@@ -3216,8 +3228,8 @@ function TournamentCreateScreen({ onCreate, onCancel }) {
   return (
     <div className="w-full mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
-        <button onClick={goBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
-        <div className="text-xl font-bold">{TOURNAMENT_STEP_TITLES[step]}</div>
+        <button onClick={goBack} className="p-2 -ml-2 rounded-full min-w-11 min-h-11 flex items-center justify-center" aria-label="Indietro"><ChevronLeft /></button>
+        <h1 className="text-xl font-bold">{TOURNAMENT_STEP_TITLES[step]}</h1>
       </div>
 
       <div className="flex gap-1.5">
@@ -3307,8 +3319,8 @@ function TournamentEditParticipantsScreen({ tournament, onSave, onCancel }) {
   return (
     <div className="w-full mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
-        <button onClick={onCancel} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
-        <div className="text-xl font-bold">Modifica partecipanti</div>
+        <button onClick={onCancel} className="p-2 -ml-2 rounded-full min-w-11 min-h-11 flex items-center justify-center" aria-label="Indietro"><ChevronLeft /></button>
+        <h1 className="text-xl font-bold">Modifica partecipanti</h1>
       </div>
       <div className="text-sm" style={{ color: T.textDim }}>
         Il tabellone verrà rigenerato da zero con il nuovo elenco. Puoi farlo solo prima che sia stato giocato o dichiarato ritirato il primo match.
@@ -3540,7 +3552,7 @@ function ResetTournamentButton({ tournament, onReset }) {
       <FinalFormatPicker value={finalFormat} onChange={setFinalFormat} />
       <button onClick={() => onReset(finalFormat)}
         className="rounded-xl py-2.5 font-semibold flex items-center justify-center gap-2"
-        style={{ background: T.red, color: '#fff' }}>
+        style={{ background: T.red, color: T.onRed }}>
         <RotateCcw size={16} /> Conferma: cancella tutti i risultati
       </button>
       <button onClick={() => setOpen(false)} className="text-xs self-center" style={{ color: T.textFaint }}>Annulla</button>
@@ -3557,10 +3569,10 @@ function BracketScreen({ tournament, onBack, onOpenMatch, onOpenThreeFinal, onDe
   return (
     <div className="w-full mx-auto px-4 pt-4 pb-12 flex flex-col gap-4">
       <div className="flex items-center gap-2">
-        <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
-        <div className="text-xl font-bold flex-1 truncate">{tournament.name}</div>
+        <button onClick={onBack} className="p-2 -ml-2 rounded-full min-w-11 min-h-11 flex items-center justify-center" aria-label="Indietro"><ChevronLeft /></button>
+        <h1 className="text-xl font-bold flex-1 truncate">{tournament.name}</h1>
         {!started && (
-          <button onClick={onEditParticipants} className="p-2 rounded-full" style={{ background: T.surface, border: `1px solid ${T.border}` }} title="Modifica partecipanti">
+          <button onClick={onEditParticipants} className="p-2 rounded-full min-w-11 min-h-11 flex items-center justify-center" style={{ background: T.surface, border: `1px solid ${T.border}` }} title="Modifica partecipanti" aria-label="Modifica partecipanti">
             <Users size={18} color={T.textDim} />
           </button>
         )}
@@ -3656,12 +3668,12 @@ function WithdrawalControl({ match, onForfeit }) {
       <div className="flex gap-2">
         <button onClick={() => (confirmSlot === 'A' ? onForfeit('B') : setConfirmSlot('A'))}
           className="flex-1 rounded-xl py-2 text-sm font-semibold"
-          style={{ background: confirmSlot === 'A' ? T.red : T.surface, color: confirmSlot === 'A' ? '#fff' : T.text, border: `1px solid ${confirmSlot === 'A' ? T.red : T.border}` }}>
+          style={{ background: confirmSlot === 'A' ? T.red : T.surface, color: confirmSlot === 'A' ? T.onRed : T.text, border: `1px solid ${confirmSlot === 'A' ? T.red : T.border}` }}>
           {confirmSlot === 'A' ? 'Conferma ritiro' : sideLabel(match.slotA)}
         </button>
         <button onClick={() => (confirmSlot === 'B' ? onForfeit('A') : setConfirmSlot('B'))}
           className="flex-1 rounded-xl py-2 text-sm font-semibold"
-          style={{ background: confirmSlot === 'B' ? T.red : T.surface, color: confirmSlot === 'B' ? '#fff' : T.text, border: `1px solid ${confirmSlot === 'B' ? T.red : T.border}` }}>
+          style={{ background: confirmSlot === 'B' ? T.red : T.surface, color: confirmSlot === 'B' ? T.onRed : T.text, border: `1px solid ${confirmSlot === 'B' ? T.red : T.border}` }}>
           {confirmSlot === 'B' ? 'Conferma ritiro' : sideLabel(match.slotB)}
         </button>
       </div>
@@ -3883,8 +3895,8 @@ function MatchScreen({ match, title, formatId, onBack, onDone, onComplete, keybo
     return (
       <div className="w-full mx-auto px-4 pt-4 pb-8 flex flex-col gap-4 items-center text-center">
         <div className="flex items-center gap-2 self-start">
-          <button onClick={finish} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
-          <div className="text-xl font-bold">{title}</div>
+          <button onClick={finish} className="p-2 -ml-2 rounded-full min-w-11 min-h-11 flex items-center justify-center" aria-label="Indietro"><ChevronLeft /></button>
+          <h1 className="text-xl font-bold">{title}</h1>
         </div>
         <Trophy color={T.gold} size={32} />
         <div className="text-2xl font-bold">{match.winnerSlot === 'A' ? sideLabel(match.slotA) : sideLabel(match.slotB)}</div>
@@ -3905,8 +3917,8 @@ function MatchScreen({ match, title, formatId, onBack, onDone, onComplete, keybo
   return (
     <div className="w-full mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
-        <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
-        <div className="text-xl font-bold">{title}</div>
+        <button onClick={onBack} className="p-2 -ml-2 rounded-full min-w-11 min-h-11 flex items-center justify-center" aria-label="Indietro"><ChevronLeft /></button>
+        <h1 className="text-xl font-bold">{title}</h1>
       </div>
 
       <div className="rounded-2xl p-4 flex items-center justify-around" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
@@ -4043,8 +4055,8 @@ function ThreeWayFinalScreen({ tournament, onBack, onDone, onComplete, keyboardS
     return (
       <div className="w-full mx-auto px-4 pt-4 pb-8 flex flex-col gap-4 items-center text-center">
         <div className="flex items-center gap-2 self-start">
-          <button onClick={finish} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
-          <div className="text-xl font-bold">Finale a 3</div>
+          <button onClick={finish} className="p-2 -ml-2 rounded-full min-w-11 min-h-11 flex items-center justify-center" aria-label="Indietro"><ChevronLeft /></button>
+          <h1 className="text-xl font-bold">Finale a 3</h1>
         </div>
         <Trophy color={T.gold} size={32} />
         <div className="text-2xl font-bold">{final.sides[final.goldSlot].name}</div>
@@ -4086,8 +4098,8 @@ function ThreeWayFinalScreen({ tournament, onBack, onDone, onComplete, keyboardS
     return (
       <div className="w-full mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
         <div className="flex items-center gap-2">
-          <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
-          <div className="text-xl font-bold">Finale a 3</div>
+          <button onClick={onBack} className="p-2 -ml-2 rounded-full min-w-11 min-h-11 flex items-center justify-center" aria-label="Indietro"><ChevronLeft /></button>
+          <h1 className="text-xl font-bold">Finale a 3</h1>
         </div>
         <div className="text-center text-sm font-semibold" style={{ color: T.gold }}>Spareggio per l’oro — chi ha piazzato la freccia più vicina al centro?</div>
         <div className="flex gap-3">
@@ -4113,8 +4125,8 @@ function ThreeWayFinalScreen({ tournament, onBack, onDone, onComplete, keyboardS
   return (
     <div className="w-full mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
-        <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
-        <div className="text-xl font-bold">Finale a 3</div>
+        <button onClick={onBack} className="p-2 -ml-2 rounded-full min-w-11 min-h-11 flex items-center justify-center" aria-label="Indietro"><ChevronLeft /></button>
+        <h1 className="text-xl font-bold">Finale a 3</h1>
       </div>
 
       <div className="rounded-2xl p-4 flex items-center justify-around" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
@@ -4155,7 +4167,7 @@ function TournamentRow({ tournament, onOpen, onDelete }) {
   const complete = tournamentIsComplete(tournament);
   return (
     <div className="rounded-2xl px-4 py-3 flex items-center gap-3" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
-      <button onClick={onOpen} className="flex-1 text-left min-w-0">
+      <button onClick={onOpen} className="flex-1 text-left min-w-0 min-h-11">
         <div className="font-semibold truncate flex items-center gap-2">
           <span className="truncate">{tournament.name}</span>
           {complete && <Trophy size={14} color={T.gold} />}
@@ -4164,8 +4176,9 @@ function TournamentRow({ tournament, onOpen, onDelete }) {
           {formatDateShort(tournament.date)} · {matchFormatDef(tournament.formatId).label} · {tournament.participants.length} partecipanti
         </div>
       </button>
-      <button onClick={() => (confirming ? onDelete() : setConfirming(true))} className="p-2 rounded-full shrink-0"
-        style={{ background: confirming ? T.red : 'transparent', color: confirming ? '#fff' : T.textFaint }}>
+      <button onClick={() => (confirming ? onDelete() : setConfirming(true))} className="p-2 rounded-full shrink-0 min-w-11 min-h-11 flex items-center justify-center"
+        style={{ background: confirming ? T.red : 'transparent', color: confirming ? T.onRed : T.textFaint }}
+        aria-label={confirming ? 'Conferma eliminazione' : 'Elimina torneo'}>
         <Trash2 size={16} />
       </button>
     </div>
@@ -4176,8 +4189,8 @@ function TorneiScreen({ tournaments, onNew, onOpen, onDelete }) {
   return (
     <div className="w-full mx-auto px-4 pt-6 pb-8 flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <div className="text-2xl font-bold">Tornei</div>
-        <button onClick={onNew} className="p-2.5 rounded-full" style={{ background: T.gold, color: GOLD_TEXT }}><Plus size={20} /></button>
+        <h1 className="text-2xl font-bold">Tornei</h1>
+        <button onClick={onNew} className="p-2.5 rounded-full min-w-11 min-h-11 flex items-center justify-center" style={{ background: T.gold, color: GOLD_TEXT }} aria-label="Nuovo torneo"><Plus size={20} /></button>
       </div>
       {tournaments.length === 0 ? (
         <div className="rounded-2xl p-4 text-sm" style={{ background: T.surface, border: `1px dashed ${T.border}`, color: T.textDim }}>
@@ -4383,9 +4396,9 @@ export default function ArcheryScorecard() {
       {saveError && (
         <div className="fixed top-0 left-0 right-0 z-50 px-4 pt-3 flex justify-center pointer-events-none">
           <div className="w-full rounded-xl px-4 py-3 text-sm font-medium flex items-start gap-3 shadow-lg pointer-events-auto"
-            style={{ background: T.red, color: '#fff' }}>
+            style={{ background: T.red, color: T.onRed }}>
             <span className="flex-1">{saveError}</span>
-            <button onClick={() => setSaveError(null)} className="font-bold shrink-0" aria-label="Chiudi avviso">✕</button>
+            <button onClick={() => setSaveError(null)} className="font-bold shrink-0 min-w-11 min-h-11 flex items-center justify-center -my-2 -mr-2" aria-label="Chiudi avviso">✕</button>
           </div>
         </div>
       )}
