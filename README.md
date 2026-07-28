@@ -311,3 +311,27 @@ a single-elimination tournament with live match scoring.
     (`ThreeWayFinalScreen`). Tournaments saved before this feature default
     to "Finale classica" with no bronze match (`normalizeTournament()`),
     exactly how they behaved before.
+- **Reset tournament**: once a tournament has started (`tournamentHasStarted()`),
+  a two-tap "Reset torneo" button on the bracket screen wipes every match
+  result and redraws the bracket from scratch against the exact same seeded
+  participant list (`resetTournamentBracket()` — same rebuild the
+  edit-participants flow uses, just fed the tournament's own current
+  `participants` instead of an edited list). A do-over, not a redraw: who's
+  entered and how they're seeded doesn't change, only the results played so
+  far are discarded. Available at any point, including after the
+  tournament's finished, unlike editing participants which locks once play
+  begins.
+- **Superuser mode** (desktop only): pressing `q` toggles a mode where
+  opening a match docks its scoring card in a side panel next to the
+  bracket instead of navigating full-screen over it. No extra plumbing was
+  needed for the bracket to update live as each end is saved — match
+  updates already flow straight back into tournament state after every
+  unit via `applyMatchResult()` (see "Live scoring" above), so the bracket
+  card for that match simply re-renders with the new score as you score it.
+  Gated to real desktop input (`pointer: fine` + `innerWidth >= 1024`) so a
+  stray "q" while typing on a touch device never triggers it, and ignored
+  while focus is in a text field. Toggling mid-match folds/unfolds the
+  split view without losing your place — turning it on while a match is
+  open full-screen brings the bracket back on screen with that match now
+  docked beside it; turning it off pops the docked match back to
+  full-screen.

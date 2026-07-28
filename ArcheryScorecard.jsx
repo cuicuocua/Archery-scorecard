@@ -6,7 +6,7 @@ import {
 import {
   Target, Clock, ChevronLeft, ChevronRight, Plus, Trash2,
   Download, Upload, RotateCcw, Play, Check, StickyNote, LogOut, BarChart3,
-  Swords, Trophy, Users, UserPlus, Shuffle, Minus, RefreshCw,
+  Swords, Trophy, Users, UserPlus, Shuffle, Minus, RefreshCw, Unlock,
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
@@ -2810,6 +2810,16 @@ function rebuildTournamentBracket(tournament, participants) {
   return { ...tournament, participants: seeded, bracketSize: size, rounds, finalStage, thirdPlaceMatch };
 }
 
+// Wipes every match result and redraws the bracket against the exact same
+// seeded participant list — a do-over, not a redraw. Unlike
+// rebuildTournamentBracket (which is only safe pre-start, since it can
+// change who's in the draw), this is meant to be used at any point,
+// including mid- or post-tournament, when the scorer wants to throw away
+// what's been played and start the bracket fresh.
+function resetTournamentBracket(tournament) {
+  return rebuildTournamentBracket(tournament, tournament.participants);
+}
+
 // ---------- tournament: create / setup ----------
 
 // Parses one participant per line — "Name Score", "Name, Score",
@@ -3219,7 +3229,27 @@ function PodiumCard({ podium }) {
   );
 }
 
-function BracketScreen({ tournament, onBack, onOpenMatch, onOpenThreeFinal, onDelete, onEditParticipants }) {
+// Two-tap confirm, same pattern as DeleteSessionButton — resets the whole
+// bracket back to "just seeded", discarding every match result played so
+// far. Shown only once the tournament has actually started (nothing to
+// reset before that).
+function ResetTournamentButton({ onReset }) {
+  const [confirming, setConfirming] = useState(false);
+  useEffect(() => {
+    if (!confirming) return;
+    const t = setTimeout(() => setConfirming(false), 3000);
+    return () => clearTimeout(t);
+  }, [confirming]);
+  return (
+    <button onClick={() => (confirming ? onReset() : setConfirming(true))}
+      className="rounded-2xl py-3 font-semibold flex items-center justify-center gap-2"
+      style={{ background: confirming ? T.red : T.surface, color: confirming ? '#fff' : T.textDim, border: `1px solid ${confirming ? T.red : T.border}` }}>
+      <RotateCcw size={16} /> {confirming ? 'Conferma: cancella tutti i risultati' : 'Reset torneo'}
+    </button>
+  );
+}
+
+function BracketScreen({ tournament, onBack, onOpenMatch, onOpenThreeFinal, onDelete, onEditParticipants, onReset }) {
   const [viewMode, setViewMode] = useState('list');
   const started = tournamentHasStarted(tournament);
   const podium = tournamentPodium(tournament);
@@ -3290,6 +3320,7 @@ function BracketScreen({ tournament, onBack, onOpenMatch, onOpenThreeFinal, onDe
         </div>
       )}
 
+      {started && <ResetTournamentButton onReset={onReset} />}
       <DeleteSessionButton onDelete={onDelete} label="Elimina torneo" />
     </div>
   );
@@ -3670,10 +3701,42 @@ export default function ArcheryScorecard() {
   const [activeTournamentId, setActiveTournamentId] = useState(null);
   const [activeMatchRef, setActiveMatchRef] = useState(null); // { roundIdx, matchIdx }
   const [saveError, setSaveError] = useState(null);
+  const [superuser, setSuperuser] = useState(false);
 
   const flagSaveError = useCallback((ok, message) => {
     if (!ok) setSaveError(message);
   }, []);
+
+  // Superuser mode: desktop-only (real keyboard + pointer), toggled with
+  // "q". While on, opening a match keeps the bracket on screen and docks
+  // the scoring card next to it instead of navigating away — the bracket
+  // re-renders live as each end is saved, since match updates already flow
+  // straight back into tournament state (see applyMatchResult). Toggling
+  // mid-match folds/unfolds the split view instead of losing your place.
+  useEffect(() => {
+    function isDesktopEnv() {
+      return typeof window !== 'undefined' && window.matchMedia
+        && window.matchMedia('(pointer: fine)').matches && window.innerWidth >= 1024;
+    }
+    function handleKeyDown(e) {
+      if (e.key !== 'q' && e.key !== 'Q') return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const tag = e.target && e.target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
+      if (!isDesktopEnv()) return;
+      setSuperuser(prev => {
+        const next = !prev;
+        setView(v => {
+          if (!activeMatchRef || (v !== 'bracket' && v !== 'match' && v !== 'threefinal')) return v;
+          if (next) return 'bracket';
+          return activeMatchRef.kind === 'threeFinal' ? 'threefinal' : 'match';
+        });
+        return next;
+      });
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeMatchRef]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setAuthSession(data.session ?? null));
@@ -3778,6 +3841,12 @@ export default function ArcheryScorecard() {
           </div>
         </div>
       )}
+      {superuser && (
+        <div className="fixed top-3 right-3 z-40 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold shadow-lg pointer-events-none"
+          style={{ background: T.gold, color: GOLD_TEXT }}>
+          <Unlock size={12} /> Superuser (q per uscire)
+        </div>
+      )}
       <div className="flex-1">
         {view === 'home' && (
           <HomeScreen sessions={sessions}
@@ -3819,7 +3888,7 @@ export default function ArcheryScorecard() {
         {view === 'tornei' && (
           <TorneiScreen tournaments={tournaments}
             onNew={() => setView('tornei-new')}
-            onOpen={(id) => { setActiveTournamentId(id); setView('bracket'); }}
+            onOpen={(id) => { setActiveMatchRef(null); setActiveTournamentId(id); setView('bracket'); }}
             onDelete={deleteTournament} />
         )}
 
@@ -3829,14 +3898,39 @@ export default function ArcheryScorecard() {
             onCancel={() => setView('tornei')} />
         )}
 
-        {view === 'bracket' && activeTournament && (
-          <BracketScreen tournament={activeTournament}
-            onBack={() => { setActiveTournamentId(null); setView('tornei'); }}
-            onOpenMatch={(ref) => { setActiveMatchRef(ref); setView('match'); }}
-            onOpenThreeFinal={() => { setActiveMatchRef({ kind: 'threeFinal' }); setView('threefinal'); }}
-            onDelete={() => { deleteTournament(activeTournament.id); setActiveTournamentId(null); setView('tornei'); }}
-            onEditParticipants={() => setView('tornei-edit')} />
-        )}
+        {view === 'bracket' && activeTournament && (() => {
+          const bracket = (
+            <BracketScreen tournament={activeTournament}
+              onBack={() => { setActiveMatchRef(null); setActiveTournamentId(null); setView('tornei'); }}
+              onOpenMatch={(ref) => { setActiveMatchRef(ref); if (!superuser) setView('match'); }}
+              onOpenThreeFinal={() => { setActiveMatchRef({ kind: 'threeFinal' }); if (!superuser) setView('threefinal'); }}
+              onDelete={() => { setActiveMatchRef(null); deleteTournament(activeTournament.id); setActiveTournamentId(null); setView('tornei'); }}
+              onEditParticipants={() => setView('tornei-edit')}
+              onReset={() => updateTournament(activeTournament.id, t => resetTournamentBracket(t))} />
+          );
+          if (!superuser || !activeMatchRef) return bracket;
+
+          const splitMatch = activeMatchRef.kind === 'threeFinal' ? (
+            <ThreeWayFinalScreen tournament={activeTournament}
+              onBack={() => setActiveMatchRef(null)}
+              onComplete={(updatedFinal) => updateTournament(activeTournament.id, t => applyMatchResult(t, { kind: 'threeFinal' }, updatedFinal))} />
+          ) : (resolvedMatch && (
+            <MatchScreen match={resolvedMatch.match} title={resolvedMatch.title} formatId={activeTournament.formatId}
+              onBack={() => setActiveMatchRef(null)}
+              onComplete={(updatedMatch) => updateTournament(activeTournament.id, t => applyMatchResult(t, activeMatchRef, updatedMatch))} />
+          ));
+          if (!splitMatch) return bracket;
+
+          return (
+            <div className="flex flex-col lg:flex-row lg:items-start">
+              <div className="flex-1 min-w-0">{bracket}</div>
+              <div className="w-full lg:w-[26rem] shrink-0 lg:sticky lg:top-4 lg:max-h-screen lg:overflow-y-auto border-t lg:border-t-0 lg:border-l"
+                style={{ borderColor: T.border }}>
+                {splitMatch}
+              </div>
+            </div>
+          );
+        })()}
 
         {view === 'tornei-edit' && activeTournament && (
           <TournamentEditParticipantsScreen tournament={activeTournament}
