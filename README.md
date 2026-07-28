@@ -120,3 +120,14 @@ as JSON, meant to seed the future offline app.
   one-time import prompt on first login (`findLegacyLocalSessions`).
 - **GitHub Pages deployment**: the app now has a permanent URL independent
   of any particular conversation or session — see the top of this file.
+
+## v1.3 additions
+
+- **Editable session details**: the Storico detail screen now lets you
+  change a recorded session's date, tipo, and arco after the fact (not
+  just location/note as before) — useful for correcting historical
+  imports. Round parameters (distance/face/arrows/ends) stay fixed once a
+  session exists, since the recorded arrows are tied to that shape;
+  delete and re-enter if the round itself was wrong. Changing the date
+  shifts `startedAt`/`completedAt` together, preserving time-of-day and
+  the gap between them.

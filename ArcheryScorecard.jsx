@@ -725,12 +725,37 @@ function EndChips({ end, arrowsPerEnd }) {
 
 // ---------- session metadata editor ----------
 
+const BOW_TYPE_OPTIONS_WITH_NONE = [{ id: 'none', label: 'Non specificato' }, ...BOW_TYPES];
+
+// Shifts startedAt (and completedAt, if set) to a new calendar date while
+// preserving each timestamp's time-of-day and the gap between the two —
+// editing the date of a past session shouldn't invent a shooting time.
+function withSessionDate(session, dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  if (!y || !m || !d) return session;
+  const oldStart = new Date(session.startedAt);
+  const newStart = new Date(oldStart);
+  newStart.setFullYear(y, m - 1, d);
+  const deltaMs = newStart.getTime() - oldStart.getTime();
+  const newCompletedAt = session.completedAt ? new Date(new Date(session.completedAt).getTime() + deltaMs).toISOString() : session.completedAt;
+  return { ...session, startedAt: newStart.toISOString(), completedAt: newCompletedAt };
+}
+
 function SessionMetaEditor({ session, onUpdate }) {
   const [location, setLocation] = useState(session.location);
   const [note, setNote] = useState(session.note);
 
   return (
-    <div className="flex flex-col gap-2 w-full">
+    <div className="flex flex-col gap-3 w-full rounded-2xl p-4" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+      <div className="text-sm font-semibold" style={{ color: T.textDim }}>Dettagli</div>
+
+      <input type="date" value={session.startedAt.slice(0, 10)} onChange={e => e.target.value && onUpdate(s => withSessionDate(s, e.target.value))}
+        className="rounded-lg px-3 py-2 text-sm w-full" style={{ background: T.surfaceAlt, border: `1px solid ${T.border}`, color: T.text, colorScheme: 'dark' }} />
+
+      <ChipSelect label="Tipo" options={SESSION_TYPES} value={session.sessionType} onChange={(v) => v && onUpdate(s => ({ ...s, sessionType: v }))} />
+      <ChipSelect label="Arco" options={BOW_TYPE_OPTIONS_WITH_NONE} value={session.bowType || 'none'}
+        onChange={(v) => onUpdate(s => ({ ...s, bowType: v === 'none' ? null : v }))} />
+
       <input value={location} onChange={e => setLocation(e.target.value)} onBlur={() => onUpdate(s => ({ ...s, location }))}
         placeholder="Luogo (es. Campo Arcieri Senesi)"
         className="rounded-lg px-3 py-2 text-sm w-full" style={{ background: T.surfaceAlt, border: `1px solid ${T.border}`, color: T.text }} />
