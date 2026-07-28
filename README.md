@@ -378,3 +378,37 @@ a single-elimination tournament with live match scoring.
   that specific button; the ordinary back-chevron shown mid-match still just
   un-docks without advancing, since leaving a match half-scored shouldn't
   skip ahead.
+
+## v1.7 additions
+
+- **Correct a confirmed set/end**: `MatchScreen` now lists every already-
+  scored unit for the open match (`UnitHistory`) with each row tappable to
+  reopen it — previously the only recovery from a scoring mistake was
+  "Reset torneo," which discards every result in the bracket, not just the
+  one wrong entry. Reopening a unit re-seeds the keypad with its recorded
+  arrows and, on save, resubmits just that unit through the existing
+  `recordUnit()` — which already recomputes cumulative set-points from the
+  full unit list regardless of which index changed, so no separate undo
+  data model was needed. This works even on a completed match: correcting
+  an earlier unit can flip the outcome and un-completes the match back to
+  `in_progress` or `shootoff` exactly as if it had never finished.
+- **Password recovery**: the sign-in screen has a "Password dimenticata?"
+  link that calls `supabase.auth.resetPasswordForEmail()`. Clicking the
+  emailed link brings the user back with a `PASSWORD_RECOVERY` auth event,
+  which the root component intercepts (`passwordRecovery` state) to show a
+  dedicated "set a new password" screen (`supabase.auth.updateUser()`)
+  before dropping them into the app — otherwise the recovery session would
+  log them in without ever letting them actually replace the password they
+  forgot.
+- **Tournament creation is a 4-step wizard** (`TournamentCreateScreen`):
+  details → format → participants → final format, mirroring the step
+  pattern `NewSessionScreen` already uses for the personal-session flow,
+  instead of one long unbroken scroll through six decision categories.
+  Each step's "Continua" is gated on that step's own requirement (a name,
+  at least 2 participants); the final step's button generates the bracket
+  exactly as before.
+- **Scroll-fade on overflowing chip rows**: Storico's three filter rows
+  (round shape, session type, bow) get a standing edge mask
+  (`ScrollFadeRow`) so a row with more chips than fit on screen fades at
+  the edge instead of hard-clipping with no indication more options exist
+  off to the side.

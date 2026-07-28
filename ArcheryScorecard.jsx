@@ -6,7 +6,7 @@ import {
 import {
   Target, Clock, ChevronLeft, ChevronRight, Plus, Trash2,
   Download, Upload, RotateCcw, Play, Check, StickyNote, LogOut, BarChart3,
-  Swords, Trophy, Users, UserPlus, Shuffle, Minus, RefreshCw, Unlock,
+  Swords, Trophy, Users, UserPlus, Shuffle, Minus, RefreshCw, Unlock, Pencil,
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
@@ -817,11 +817,12 @@ function LoadingScreen() {
 // on the free tier without custom SMTP) — nothing gets sent, so nothing
 // can fail to send.
 function AuthGate() {
-  const [mode, setMode] = useState('signin'); // 'signin' | 'signup'
+  const [mode, setMode] = useState('signin'); // 'signin' | 'signup' | 'reset'
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [resetSent, setResetSent] = useState(false);
 
   async function submit() {
     setBusy(true); setError('');
@@ -837,6 +838,52 @@ function AuthGate() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function submitReset() {
+    setBusy(true); setError('');
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin + window.location.pathname });
+      if (error) throw error;
+      setResetSent(true);
+      // The recovery link brings the user back with a PASSWORD_RECOVERY
+      // auth event, handled at the root component — it intercepts before
+      // the normal signed-in app to force setting a new password.
+    } catch (err) {
+      setError('Invio non riuscito. Controlla l\'indirizzo email e riprova.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (mode === 'reset') {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center px-6 gap-6" style={{ background: T.bg, color: T.text }}>
+        <div className="flex flex-col items-center gap-2 text-center">
+          <Target size={40} color={T.gold} />
+          <div className="text-xl font-bold">Recupera password</div>
+          <div className="text-sm max-w-xs" style={{ color: T.textDim }}>
+            {resetSent ? 'Controlla la tua email per il link di reimpostazione.' : 'Ti mandiamo un link per reimpostare la password'}
+          </div>
+        </div>
+
+        {!resetSent && (
+          <div className="w-full max-w-xs flex flex-col gap-3">
+            <input type="email" inputMode="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)}
+              placeholder="La tua email" onKeyDown={e => e.key === 'Enter' && email && submitReset()}
+              className="rounded-xl px-4 py-3 text-center" style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.text }} />
+            <button onClick={submitReset} disabled={!email || busy}
+              className="rounded-2xl py-3.5 font-bold disabled:opacity-40" style={{ background: T.gold, color: GOLD_TEXT }}>
+              {busy ? '…' : 'Invia link'}
+            </button>
+          </div>
+        )}
+        <button onClick={() => { setMode('signin'); setError(''); setResetSent(false); }} className="text-sm py-1" style={{ color: T.textDim }}>
+          Torna al login
+        </button>
+        {error && <div className="text-sm text-center" style={{ color: T.behind }}>{error}</div>}
+      </div>
+    );
   }
 
   return (
@@ -859,11 +906,63 @@ function AuthGate() {
           className="rounded-2xl py-3.5 font-bold disabled:opacity-40" style={{ background: T.gold, color: GOLD_TEXT }}>
           {busy ? '…' : mode === 'signup' ? 'Crea account' : 'Accedi'}
         </button>
-        <button onClick={() => { setMode(mode === 'signup' ? 'signin' : 'signup'); setError(''); }} className="text-sm py-1" style={{ color: T.textDim }}>
-          {mode === 'signup' ? 'Hai già un account? Accedi' : 'Primo accesso? Crea un account'}
-        </button>
+        <div className="flex items-center justify-between">
+          <button onClick={() => { setMode(mode === 'signup' ? 'signin' : 'signup'); setError(''); }} className="text-sm py-1" style={{ color: T.textDim }}>
+            {mode === 'signup' ? 'Hai già un account? Accedi' : 'Primo accesso? Crea un account'}
+          </button>
+          {mode === 'signin' && (
+            <button onClick={() => { setMode('reset'); setError(''); }} className="text-sm py-1" style={{ color: T.textDim }}>
+              Password dimenticata?
+            </button>
+          )}
+        </div>
       </div>
 
+      {error && <div className="text-sm text-center" style={{ color: T.behind }}>{error}</div>}
+    </div>
+  );
+}
+
+// Landing screen after a password-recovery email link — supabase.auth
+// fires a PASSWORD_RECOVERY event with a valid (recovery) session, but the
+// user hasn't actually chosen a new password yet. Intercepting here at the
+// root, instead of just letting the recovery session log them straight
+// into the app, is what makes "forgot password" actually resolve losing
+// access instead of just resending the same unusable credential.
+function SetNewPasswordScreen({ onDone }) {
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  async function submit() {
+    setBusy(true); setError('');
+    try {
+      const { error } = await supabase.auth.updateUser({ password });
+      if (error) throw error;
+      onDone();
+    } catch (err) {
+      setError('Impossibile impostare la password. Riprova.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center px-6 gap-6" style={{ background: T.bg, color: T.text }}>
+      <div className="flex flex-col items-center gap-2 text-center">
+        <Target size={40} color={T.gold} />
+        <div className="text-xl font-bold">Imposta una nuova password</div>
+      </div>
+      <div className="w-full max-w-xs flex flex-col gap-3">
+        <input type="password" autoComplete="new-password" value={password} onChange={e => setPassword(e.target.value)}
+          placeholder="Nuova password" onKeyDown={e => e.key === 'Enter' && password.length >= 6 && submit()}
+          className="rounded-xl px-4 py-3 text-center" style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.text }} />
+        <div className="text-xs text-center" style={{ color: T.textDim }}>Almeno 6 caratteri</div>
+        <button onClick={submit} disabled={password.length < 6 || busy}
+          className="rounded-2xl py-3.5 font-bold disabled:opacity-40" style={{ background: T.gold, color: GOLD_TEXT }}>
+          {busy ? '…' : 'Salva password'}
+        </button>
+      </div>
       {error && <div className="text-sm text-center" style={{ color: T.behind }}>{error}</div>}
     </div>
   );
@@ -1536,6 +1635,22 @@ function ImportButton({ onImport }) {
   );
 }
 
+// A horizontally-scrolling chip row has no visual cue that more chips sit
+// off-screen once it overflows — a standing edge fade signals it without
+// tracking scroll position in JS. Harmless when the row already fits: the
+// mask only ever bites into space that's off-screen or already empty.
+function ScrollFadeRow({ children }) {
+  return (
+    <div className="flex gap-2 overflow-x-auto pb-1"
+      style={{
+        WebkitMaskImage: 'linear-gradient(to right, transparent, black 12px, black calc(100% - 20px), transparent)',
+        maskImage: 'linear-gradient(to right, transparent, black 12px, black calc(100% - 20px), transparent)',
+      }}>
+      {children}
+    </div>
+  );
+}
+
 function FilterChip({ active, onClick, label }) {
   return (
     <button onClick={onClick} className="whitespace-nowrap px-3 py-1.5 rounded-full text-sm font-medium"
@@ -1666,18 +1781,18 @@ function StoricoScreen({ sessions, onOpen, onResume, onDelete, onImport, onSignO
       </div>
 
       <div className="flex flex-col gap-2">
-        <div className="flex gap-2 overflow-x-auto pb-1">
+        <ScrollFadeRow>
           <FilterChip active={filterId === 'all'} onClick={() => setFilterId('all')} label="Tutte le prove" />
           {stageShapes.map(s => <FilterChip key={s.key} active={filterId === s.key} onClick={() => setFilterId(s.key)} label={roundShapeLabel(s.round)} />)}
-        </div>
-        <div className="flex gap-2 overflow-x-auto pb-1">
+        </ScrollFadeRow>
+        <ScrollFadeRow>
           <FilterChip active={typeFilter === 'all'} onClick={() => setTypeFilter('all')} label="Tutti i tipi" />
           {SESSION_TYPES.map(t => <FilterChip key={t.id} active={typeFilter === t.id} onClick={() => setTypeFilter(t.id)} label={t.label} />)}
-        </div>
-        <div className="flex gap-2 overflow-x-auto pb-1">
+        </ScrollFadeRow>
+        <ScrollFadeRow>
           <FilterChip active={bowFilter === 'all'} onClick={() => setBowFilter('all')} label="Tutti gli archi" />
           {BOW_TYPES.map(b => <FilterChip key={b.id} active={bowFilter === b.id} onClick={() => setBowFilter(b.id)} label={b.label} />)}
-        </div>
+        </ScrollFadeRow>
       </div>
 
       {filterId === 'all' ? (
@@ -3059,7 +3174,15 @@ function FinalFormatPicker({ value, onChange }) {
   );
 }
 
+const TOURNAMENT_STEPS = ['details', 'format', 'participants', 'final'];
+const TOURNAMENT_STEP_TITLES = { details: 'Nuovo torneo', format: 'Formato match', participants: 'Partecipanti', final: 'Formato finale' };
+
+// Six decision categories used to be a single unbroken scroll — the same
+// step-by-step pattern NewSessionScreen already uses for the (lower-stakes)
+// personal-session flow, applied here so a multi-decision setup task reads
+// as a sequence instead of a wall.
 function TournamentCreateScreen({ onCreate, onCancel }) {
+  const [step, setStep] = useState('details');
   const [name, setName] = useState('');
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [formatId, setFormatId] = useState('individual');
@@ -3068,63 +3191,97 @@ function TournamentCreateScreen({ onCreate, onCancel }) {
   const [participants, setParticipants] = useState([]);
   const [finalFormat, setFinalFormat] = useState('standard');
 
+  const canContinue = step === 'details' ? !!name.trim() : step === 'participants' ? participants.length >= 2 : true;
   const canCreate = name.trim() && participants.length >= 2;
+
+  function goBack() {
+    const idx = TOURNAMENT_STEPS.indexOf(step);
+    if (idx <= 0) onCancel();
+    else setStep(TOURNAMENT_STEPS[idx - 1]);
+  }
+  function goNext() {
+    const idx = TOURNAMENT_STEPS.indexOf(step);
+    if (idx < TOURNAMENT_STEPS.length - 1) setStep(TOURNAMENT_STEPS[idx + 1]);
+  }
 
   return (
     <div className="max-w-md sm:max-w-xl lg:max-w-3xl xl:max-w-5xl 2xl:max-w-6xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
-        <button onClick={onCancel} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
-        <div className="text-xl font-bold">Nuovo torneo</div>
+        <button onClick={goBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
+        <div className="text-xl font-bold">{TOURNAMENT_STEP_TITLES[step]}</div>
       </div>
 
-      <input value={name} onChange={e => setName(e.target.value)} placeholder="Nome del torneo"
-        className="rounded-xl px-3 py-2.5" style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.text }} />
-      <input type="date" value={date} onChange={e => setDate(e.target.value)}
-        className="rounded-xl px-3 py-2.5" style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.text, colorScheme: 'dark' }} />
+      <div className="flex gap-1.5">
+        {TOURNAMENT_STEPS.map(s => (
+          <div key={s} className="h-1 flex-1 rounded-full"
+            style={{ background: TOURNAMENT_STEPS.indexOf(s) <= TOURNAMENT_STEPS.indexOf(step) ? T.gold : T.border }} />
+        ))}
+      </div>
 
-      <div className="flex flex-col gap-2">
-        <div className="text-xs" style={{ color: T.textDim }}>Formato match</div>
-        <div className="flex flex-col gap-2">
-          {MATCH_FORMATS.map(f => (
-            <button key={f.id} onClick={() => setFormatId(f.id)}
-              className="text-left rounded-2xl px-4 py-3 flex items-center justify-between"
-              style={{ background: f.id === formatId ? T.surfaceAlt : T.surface, border: `1px solid ${f.id === formatId ? T.gold : T.border}` }}>
-              <div>
-                <div className="font-semibold">{f.label}</div>
-                <div className="text-xs" style={{ color: T.textDim }}>
-                  {f.archersPerSide > 1 ? `${f.archersPerSide} arcieri/squadra · ` : ''}
-                  {f.units} {f.unitLabel.toLowerCase()}{f.units > 1 ? 'i' : ''} · {f.arrowsPerArcherPerUnit} frecce a testa · primo a {f.setPointsToWin} PS
+      {step === 'details' && (
+        <div className="flex flex-col gap-3">
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="Nome del torneo"
+            className="rounded-xl px-3 py-2.5" style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.text }} />
+          <input type="date" value={date} onChange={e => setDate(e.target.value)}
+            className="rounded-xl px-3 py-2.5" style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.text, colorScheme: 'dark' }} />
+        </div>
+      )}
+
+      {step === 'format' && (
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-2">
+            {MATCH_FORMATS.map(f => (
+              <button key={f.id} onClick={() => setFormatId(f.id)}
+                className="text-left rounded-2xl px-4 py-3 flex items-center justify-between"
+                style={{ background: f.id === formatId ? T.surfaceAlt : T.surface, border: `1px solid ${f.id === formatId ? T.gold : T.border}` }}>
+                <div>
+                  <div className="font-semibold">{f.label}</div>
+                  <div className="text-xs" style={{ color: T.textDim }}>
+                    {f.archersPerSide > 1 ? `${f.archersPerSide} arcieri/squadra · ` : ''}
+                    {f.units} {f.unitLabel.toLowerCase()}{f.units > 1 ? 'i' : ''} · {f.arrowsPerArcherPerUnit} frecce a testa · primo a {f.setPointsToWin} PS
+                  </div>
                 </div>
-              </div>
-              {f.id === formatId && <Check color={T.gold} size={20} />}
-            </button>
-          ))}
+                {f.id === formatId && <Check color={T.gold} size={20} />}
+              </button>
+            ))}
+          </div>
+
+          <div className="rounded-2xl p-4 flex flex-col gap-3" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+            <Stepper label="Distanza (m)" value={distanceM} onChange={setDistanceM} min={10} max={90} step={5} />
+            <div className="flex items-center justify-between">
+              <div className="text-sm" style={{ color: T.textDim }}>Diametro bersaglio (cm)</div>
+              <SegmentedControl options={FACE_SIZE_OPTIONS} value={faceCm} onChange={setFaceCm} small />
+            </div>
+          </div>
         </div>
-      </div>
+      )}
 
-      <div className="rounded-2xl p-4 flex flex-col gap-3" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
-        <Stepper label="Distanza (m)" value={distanceM} onChange={setDistanceM} min={10} max={90} step={5} />
-        <div className="flex items-center justify-between">
-          <div className="text-sm" style={{ color: T.textDim }}>Diametro bersaglio (cm)</div>
-          <SegmentedControl options={FACE_SIZE_OPTIONS} value={faceCm} onChange={setFaceCm} small />
+      {step === 'participants' && (
+        <div className="flex flex-col gap-2">
+          <div className="text-xs" style={{ color: T.textDim }}>Partecipanti (ordinati per punteggio di qualifica)</div>
+          <ParticipantEditor formatId={formatId} participants={participants} setParticipants={setParticipants} />
         </div>
-      </div>
+      )}
 
-      <div className="flex flex-col gap-2">
-        <div className="text-xs" style={{ color: T.textDim }}>Partecipanti (ordinati per punteggio di qualifica)</div>
-        <ParticipantEditor formatId={formatId} participants={participants} setParticipants={setParticipants} />
-      </div>
+      {step === 'final' && (
+        <div className="flex flex-col gap-2">
+          <div className="text-xs" style={{ color: T.textDim }}>Formato finale (con almeno 4 partecipanti)</div>
+          <FinalFormatPicker value={finalFormat} onChange={setFinalFormat} />
+        </div>
+      )}
 
-      <div className="flex flex-col gap-2">
-        <div className="text-xs" style={{ color: T.textDim }}>Formato finale (con almeno 4 partecipanti)</div>
-        <FinalFormatPicker value={finalFormat} onChange={setFinalFormat} />
-      </div>
-
-      <button onClick={() => canCreate && onCreate(createTournament({ name: name.trim(), date, distanceM, faceCm, formatId, participants, finalFormat }))}
-        disabled={!canCreate} className="rounded-2xl py-4 font-bold text-lg flex items-center justify-center gap-2 disabled:opacity-40"
-        style={{ background: T.gold, color: GOLD_TEXT }}>
-        <Shuffle size={20} /> Genera tabellone
-      </button>
+      {step === 'final' ? (
+        <button onClick={() => canCreate && onCreate(createTournament({ name: name.trim(), date, distanceM, faceCm, formatId, participants, finalFormat }))}
+          disabled={!canCreate} className="rounded-2xl py-4 font-bold text-lg flex items-center justify-center gap-2 disabled:opacity-40"
+          style={{ background: T.gold, color: GOLD_TEXT }}>
+          <Shuffle size={20} /> Genera tabellone
+        </button>
+      ) : (
+        <button onClick={goNext} disabled={!canContinue}
+          className="rounded-2xl py-3.5 font-bold disabled:opacity-40" style={{ background: T.gold, color: GOLD_TEXT }}>
+          Continua
+        </button>
+      )}
     </div>
   );
 }
@@ -3554,6 +3711,34 @@ function LancasterWildcardControl({ tournament, finalStage, focusRef, onOpenPlay
   );
 }
 
+// Confirmed set/end history for a match, with tap-to-reopen correction.
+// recordUnit() already recomputes cumulative score from the full units
+// array regardless of which index changes, so "fixing a mistake" is just
+// resubmitting that one unit — no separate undo/audit data model needed.
+// The only recovery before this was wiping the entire bracket via "Reset
+// torneo", which throws away every other result along with the one typo.
+function UnitHistory({ units, formatDef, editingUnitIndex, onEdit }) {
+  const played = units.map((u, i) => ({ u, i })).filter(({ u }) => u && u.totalA != null && u.totalB != null);
+  if (played.length === 0) return null;
+  return (
+    <div className="rounded-2xl overflow-hidden" style={{ border: `1px solid ${T.border}` }}>
+      {played.map(({ u, i }, row) => (
+        <button key={i} onClick={() => onEdit(i)}
+          className="w-full flex items-center justify-between gap-2 px-3 py-2 text-sm"
+          style={{
+            background: i === editingUnitIndex ? T.surfaceAlt : T.surface,
+            borderTop: row === 0 ? 'none' : `1px solid ${T.border}`,
+          }}>
+          <span style={{ color: T.textDim }}>{formatDef.unitLabel} {i + 1}</span>
+          <span className="font-semibold" style={numeralStyle}>{u.totalA} – {u.totalB}</span>
+          <span style={{ color: T.textDim }}>{u.spA} – {u.spB} PS</span>
+          <Pencil size={14} color={T.textFaint} />
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function ArrowsInputColumn({ label, needed, pending, onAdd, onUndo, disabled }) {
   return (
     <div className="flex-1 flex flex-col gap-2">
@@ -3593,6 +3778,26 @@ function MatchScreen({ match, title, formatId, onBack, onDone, onComplete, keybo
   const [activeSide, setActiveSide] = useState('A');
   const [shootA, setShootA] = useState([]);
   const [shootB, setShootB] = useState([]);
+  // Set when correcting an already-confirmed unit via UnitHistory, instead
+  // of scoring the live/next one. Takes priority over match.status ('shootoff'
+  // or 'completed') for which input UI shows — correcting a past unit is
+  // never itself a shoot-off.
+  const [editingUnitIndex, setEditingUnitIndex] = useState(null);
+  const isEditing = editingUnitIndex != null;
+  const activeUnitIdx = isEditing ? editingUnitIndex : unitIdx;
+  const inShootoffInput = match.status === 'shootoff' && !isEditing;
+
+  function startEditUnit(idx) {
+    const u = match.units[idx];
+    setEditingUnitIndex(idx);
+    setPendingA((u.arrowsA || []).map(score => ({ score, isX: false })));
+    setPendingB((u.arrowsB || []).map(score => ({ score, isX: false })));
+    setActiveSide('A');
+  }
+  function cancelEditUnit() {
+    setEditingUnitIndex(null);
+    setPendingA([]); setPendingB([]); setActiveSide('A');
+  }
 
   // Undocumented keyboard mirror of the Keypad/undo/confirm buttons —
   // only live in superuser mode (see keyToScore). Enter only fires the
@@ -3600,7 +3805,7 @@ function MatchScreen({ match, title, formatId, onBack, onDone, onComplete, keybo
   // still requires a manual "Vince X" tap since declaring a winner is a
   // judgment call the keyboard shouldn't shortcut.
   useEffect(() => {
-    if (!keyboardScoring || match.status === 'completed') return;
+    if (!keyboardScoring || (match.status === 'completed' && !isEditing)) return;
     function handleKeyDown(e) {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       const tag = e.target && e.target.tagName;
@@ -3612,12 +3817,12 @@ function MatchScreen({ match, title, formatId, onBack, onDone, onComplete, keybo
       }
       if (e.key === 'Backspace') {
         e.preventDefault();
-        if (match.status === 'shootoff') (activeSide === 'A' ? setShootA : setShootB)(l => l.slice(0, -1));
+        if (inShootoffInput) (activeSide === 'A' ? setShootA : setShootB)(l => l.slice(0, -1));
         else undoArrow(activeSide);
         return;
       }
       if (e.key === 'Enter') {
-        if (match.status !== 'shootoff' && pendingA.length >= needed && pendingB.length >= needed) {
+        if (!inShootoffInput && pendingA.length >= needed && pendingB.length >= needed) {
           e.preventDefault();
           submitUnit();
         }
@@ -3626,12 +3831,12 @@ function MatchScreen({ match, title, formatId, onBack, onDone, onComplete, keybo
       const mapped = keyToScore(e.key);
       if (!mapped) return;
       e.preventDefault();
-      if (match.status === 'shootoff') (activeSide === 'A' ? setShootA : setShootB)(l => [...l, mapped]);
+      if (inShootoffInput) (activeSide === 'A' ? setShootA : setShootB)(l => [...l, mapped]);
       else addArrow(activeSide, mapped.score, mapped.isX);
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [keyboardScoring, match.status, activeSide, pendingA.length, pendingB.length, needed]);
+  }, [keyboardScoring, match.status, isEditing, inShootoffInput, activeSide, pendingA.length, pendingB.length, needed]);
 
   function addArrow(side, score, isX) {
     const setPending = side === 'A' ? setPendingA : setPendingB;
@@ -3650,9 +3855,9 @@ function MatchScreen({ match, title, formatId, onBack, onDone, onComplete, keybo
   }
 
   function submitUnit() {
-    let m = recordUnit(match, formatDef, unitIdx, 'A', pendingA.map(a => a.score));
-    m = recordUnit(m, formatDef, unitIdx, 'B', pendingB.map(a => a.score));
-    setPendingA([]); setPendingB([]); setActiveSide('A');
+    let m = recordUnit(match, formatDef, activeUnitIdx, 'A', pendingA.map(a => a.score));
+    m = recordUnit(m, formatDef, activeUnitIdx, 'B', pendingB.map(a => a.score));
+    setPendingA([]); setPendingB([]); setActiveSide('A'); setEditingUnitIndex(null);
     onComplete(m);
   }
 
@@ -3665,7 +3870,7 @@ function MatchScreen({ match, title, formatId, onBack, onDone, onComplete, keybo
     onComplete(forfeitMatch(match, winnerSlot));
   }
 
-  if (match.status === 'completed') {
+  if (match.status === 'completed' && !isEditing) {
     return (
       <div className="max-w-md sm:max-w-xl lg:max-w-3xl xl:max-w-5xl 2xl:max-w-6xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4 items-center text-center">
         <div className="flex items-center gap-2 self-start">
@@ -3677,6 +3882,12 @@ function MatchScreen({ match, title, formatId, onBack, onDone, onComplete, keybo
         <div className="text-sm" style={{ color: T.textDim }}>
           {match.forfeit ? `vince a tavolino (ritiro di ${match.winnerSlot === 'A' ? sideLabel(match.slotB) : sideLabel(match.slotA)})` : `vince ${match.cumSpA} - ${match.cumSpB}`}
         </div>
+        {!match.forfeit && (
+          <div className="w-full flex flex-col gap-1.5 self-stretch">
+            <UnitHistory units={match.units} formatDef={formatDef} editingUnitIndex={editingUnitIndex} onEdit={startEditUnit} />
+            <div className="text-xs" style={{ color: T.textFaint }}>Tocca una {formatDef.unitLabel.toLowerCase()} per correggerla</div>
+          </div>
+        )}
         <button onClick={finish} className="w-full rounded-2xl py-3.5 font-bold" style={{ background: T.gold, color: GOLD_TEXT }}>Torna al tabellone</button>
       </div>
     );
@@ -3701,9 +3912,18 @@ function MatchScreen({ match, title, formatId, onBack, onDone, onComplete, keybo
         </div>
       </div>
 
-      <WithdrawalControl match={match} onForfeit={submitForfeit} />
+      {!isEditing && <WithdrawalControl match={match} onForfeit={submitForfeit} />}
 
-      {match.status === 'shootoff' ? (
+      <UnitHistory units={match.units} formatDef={formatDef} editingUnitIndex={editingUnitIndex} onEdit={startEditUnit} />
+
+      {isEditing && (
+        <div className="rounded-2xl px-3 py-2 flex items-center justify-between gap-2" style={{ background: T.surfaceAlt, border: `1px dashed ${T.gold}` }}>
+          <span className="text-sm font-semibold" style={{ color: T.gold }}>Correzione — {formatDef.unitLabel} {activeUnitIdx + 1}</span>
+          <button onClick={cancelEditUnit} className="text-xs font-semibold" style={{ color: T.textDim }}>Annulla</button>
+        </div>
+      )}
+
+      {inShootoffInput ? (
         <div className="flex flex-col gap-4">
           <div className="text-center text-sm font-semibold" style={{ color: T.gold }}>Spareggio — chi ha piazzato la freccia più vicina al centro?</div>
           <div className="flex gap-3">
@@ -3725,9 +3945,11 @@ function MatchScreen({ match, title, formatId, onBack, onDone, onComplete, keybo
         </div>
       ) : (
         <>
-          <div className="text-center text-sm" style={{ color: T.textDim }}>
-            {formatDef.unitLabel} {unitIdx + 1} di {formatDef.units}
-          </div>
+          {!isEditing && (
+            <div className="text-center text-sm" style={{ color: T.textDim }}>
+              {formatDef.unitLabel} {activeUnitIdx + 1} di {formatDef.units}
+            </div>
+          )}
           <div className="flex gap-3">
             <ArrowsInputColumn label={sideLabel(match.slotA)} needed={needed} pending={pendingA} onUndo={() => undoArrow('A')} />
             <ArrowsInputColumn label={sideLabel(match.slotB)} needed={needed} pending={pendingB} onUndo={() => undoArrow('B')} />
@@ -3736,7 +3958,7 @@ function MatchScreen({ match, title, formatId, onBack, onDone, onComplete, keybo
           <Keypad onScore={(score, isX) => addArrow(activeSide, score, isX)} />
           <button onClick={submitUnit} disabled={pendingA.length < needed || pendingB.length < needed}
             className="rounded-2xl py-3.5 font-bold disabled:opacity-40" style={{ background: T.gold, color: GOLD_TEXT }}>
-            Conferma {formatDef.unitLabel.toLowerCase()}
+            {isEditing ? 'Salva correzione' : `Conferma ${formatDef.unitLabel.toLowerCase()}`}
           </button>
         </>
       )}
@@ -3968,6 +4190,7 @@ function TorneiScreen({ tournaments, onNew, onOpen, onDelete }) {
 export default function ArcheryScorecard() {
   // undefined = auth still resolving, null = signed out, object = signed in
   const [authSession, setAuthSession] = useState(undefined);
+  const [passwordRecovery, setPasswordRecovery] = useState(false);
   const [sessions, setSessions] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [view, setView] = useState('home');
@@ -4053,7 +4276,10 @@ export default function ArcheryScorecard() {
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setAuthSession(data.session ?? null));
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => setAuthSession(session));
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'PASSWORD_RECOVERY') setPasswordRecovery(true);
+      setAuthSession(session);
+    });
     return () => sub.subscription.unsubscribe();
   }, []);
 
@@ -4134,6 +4360,7 @@ export default function ArcheryScorecard() {
   }, [userId, flagSaveError]);
 
   if (authSession === undefined) return <LoadingScreen />;
+  if (passwordRecovery) return <SetNewPasswordScreen onDone={() => setPasswordRecovery(false)} />;
   if (authSession === null) return <AuthGate />;
   if (!loaded) return <LoadingScreen />;
 
