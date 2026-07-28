@@ -541,38 +541,27 @@ function LoadingScreen() {
   return <div className="min-h-screen flex items-center justify-center" style={{ background: T.bg, color: T.textDim }}>Caricamento…</div>;
 }
 
-// Email + one-time code, no password. Avoids relying on magic-link email
-// redirects (fragile across mail clients and unfamiliar in a sandboxed
-// context) — you just type the code you receive.
+// Email + password. Avoids relying on Supabase's email delivery (unreliable
+// on the free tier without custom SMTP) — nothing gets sent, so nothing
+// can fail to send.
 function AuthGate() {
-  const [stage, setStage] = useState('email');
+  const [mode, setMode] = useState('signin'); // 'signin' | 'signup'
   const [email, setEmail] = useState('');
-  const [code, setCode] = useState('');
+  const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
-  async function sendCode() {
+  async function submit() {
     setBusy(true); setError('');
     try {
-      const { error } = await supabase.auth.signInWithOtp({ email: email.trim(), options: { shouldCreateUser: true } });
+      const { error } = mode === 'signup'
+        ? await supabase.auth.signUp({ email: email.trim(), password })
+        : await supabase.auth.signInWithPassword({ email: email.trim(), password });
       if (error) throw error;
-      setStage('code');
+      // successful sign-in/sign-up fires onAuthStateChange in the root
+      // component, which swaps this screen out — nothing else to do here.
     } catch (err) {
-      setError("Invio non riuscito. Controlla l'indirizzo e riprova.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function verifyCode() {
-    setBusy(true); setError('');
-    try {
-      const { error } = await supabase.auth.verifyOtp({ email: email.trim(), token: code.trim(), type: 'email' });
-      if (error) throw error;
-      // successful verifyOtp fires onAuthStateChange in the root component,
-      // which swaps this screen out — nothing else to do here.
-    } catch (err) {
-      setError('Codice non valido o scaduto.');
+      setError(mode === 'signup' ? 'Registrazione non riuscita. Riprova.' : 'Email o password errati.');
     } finally {
       setBusy(false);
     }
@@ -586,31 +575,22 @@ function AuthGate() {
         <div className="text-sm max-w-xs" style={{ color: T.textDim }}>Accedi per avere i tuoi dati su tutti i dispositivi</div>
       </div>
 
-      {stage === 'email' ? (
-        <div className="w-full max-w-xs flex flex-col gap-3">
-          <input type="email" inputMode="email" value={email} onChange={e => setEmail(e.target.value)}
-            placeholder="La tua email" onKeyDown={e => e.key === 'Enter' && email && sendCode()}
-            className="rounded-xl px-4 py-3 text-center" style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.text }} />
-          <button onClick={sendCode} disabled={!email || busy}
-            className="rounded-2xl py-3.5 font-bold disabled:opacity-40" style={{ background: T.gold, color: GOLD_TEXT }}>
-            {busy ? 'Invio…' : 'Invia codice'}
-          </button>
-        </div>
-      ) : (
-        <div className="w-full max-w-xs flex flex-col gap-3">
-          <div className="text-xs text-center" style={{ color: T.textDim }}>Codice inviato a {email}</div>
-          <input inputMode="numeric" value={code} onChange={e => setCode(e.target.value)}
-            placeholder="Codice a 6 cifre" onKeyDown={e => e.key === 'Enter' && code && verifyCode()}
-            className="rounded-xl px-4 py-3 text-center text-2xl tracking-widest" style={{ ...numeralStyle, background: T.surface, border: `1px solid ${T.border}`, color: T.text }} />
-          <button onClick={verifyCode} disabled={!code || busy}
-            className="rounded-2xl py-3.5 font-bold disabled:opacity-40" style={{ background: T.gold, color: GOLD_TEXT }}>
-            {busy ? 'Verifica…' : 'Accedi'}
-          </button>
-          <button onClick={() => { setStage('email'); setCode(''); setError(''); }} className="text-sm py-1" style={{ color: T.textDim }}>
-            Usa un'altra email
-          </button>
-        </div>
-      )}
+      <div className="w-full max-w-xs flex flex-col gap-3">
+        <input type="email" inputMode="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)}
+          placeholder="La tua email"
+          className="rounded-xl px-4 py-3 text-center" style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.text }} />
+        <input type="password" autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} value={password} onChange={e => setPassword(e.target.value)}
+          placeholder="Password" onKeyDown={e => e.key === 'Enter' && email && password && submit()}
+          className="rounded-xl px-4 py-3 text-center" style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.text }} />
+        {mode === 'signup' && <div className="text-xs text-center" style={{ color: T.textDim }}>Almeno 6 caratteri</div>}
+        <button onClick={submit} disabled={!email || !password || busy}
+          className="rounded-2xl py-3.5 font-bold disabled:opacity-40" style={{ background: T.gold, color: GOLD_TEXT }}>
+          {busy ? '…' : mode === 'signup' ? 'Crea account' : 'Accedi'}
+        </button>
+        <button onClick={() => { setMode(mode === 'signup' ? 'signin' : 'signup'); setError(''); }} className="text-sm py-1" style={{ color: T.textDim }}>
+          {mode === 'signup' ? 'Hai già un account? Accedi' : 'Primo accesso? Crea un account'}
+        </button>
+      </div>
 
       {error && <div className="text-sm text-center" style={{ color: T.behind }}>{error}</div>}
     </div>

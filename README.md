@@ -11,7 +11,7 @@ that matters for the app's behavior; everything under `site/` is just
 plumbing to publish it as a static page.
 
 Data lives in Supabase (Postgres + row-level security), not in browser
-storage — sign in with an email one-time code and your sessions follow
+storage — sign in with an email + password and your sessions follow
 you to any device. Schema in `supabase/schema.sql`; the project URL and
 publishable ("anon") key are inlined near the top of
 `ArcheryScorecard.jsx` — that key is meant to be public, security comes
@@ -108,8 +108,11 @@ as JSON, meant to seed the future offline app.
 - **New Session is now a 4-step flow** (tipo → prova → arco → dettagli)
   instead of one long scrolling form.
 - **Real cross-device sync**: moved persistence from browser storage to
-  Supabase, with an email one-time-code login gate (`AuthGate`). See
-  "Data model" above.
+  Supabase, with an email + password login gate (`AuthGate`). See
+  "Data model" above. (Started as an email one-time-code flow, but
+  Supabase's free email service turned out too unreliable without custom
+  SMTP — switched to password auth so login doesn't depend on email
+  delivery at all.)
 - **Importa**: the counterpart to Export, on the Storico screen — loads a
   JSON file in the same shape `exportJson` produces (or a bare array of
   sessions) and upserts it, so re-importing an updated file is safe.
