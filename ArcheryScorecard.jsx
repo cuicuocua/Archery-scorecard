@@ -2344,6 +2344,16 @@ function recordShootOff(match, winnerSlot, arrowsA, arrowsB) {
   };
 }
 
+// A competitor withdraws or never shows up for a match that's already been
+// fed (both slots assigned). The other side is awarded the win without
+// playing — same completion path as a normal result, so it advances through
+// propagateWinner exactly like any other win. Any arrows already recorded
+// on this match (e.g. a mid-match withdrawal) are left in place for the
+// record but no longer affect the outcome.
+function forfeitMatch(match, winnerSlot) {
+  return { ...match, status: 'completed', winnerSlot, forfeit: true };
+}
+
 function currentUnitIndex(match) {
   const idx = match.units.findIndex(u => !u || u.totalA == null || u.totalB == null);
   return idx === -1 ? match.units.length : idx;
@@ -2389,6 +2399,26 @@ function applyMatchResult(tournament, roundIdx, matchIdx, updatedMatch) {
 function tournamentIsComplete(tournament) {
   const last = tournament.rounds[tournament.rounds.length - 1];
   return last.length === 1 && last[0].status === 'completed';
+}
+
+// True once any match has a real result on it (played or forfeited).
+// Byes don't count — they're just structural, not something anyone played.
+// Used to gate the "edit participants & redraw bracket" flow: safe only
+// while nothing in the draw has actually happened yet.
+function tournamentHasStarted(tournament) {
+  return tournament.rounds.some(round => round.some(m =>
+    m.status === 'completed' || m.status === 'in_progress' || m.status === 'shootoff'));
+}
+
+// Re-seeds and rebuilds the whole bracket from scratch against a new
+// participant list, discarding the old draw entirely. Only meant to be
+// used before the tournament has started (see tournamentHasStarted) —
+// calling it after real results exist would silently wipe them.
+function rebuildTournamentBracket(tournament, participants) {
+  const sorted = participants.slice().sort((a, b) => b.seedScore - a.seedScore);
+  const seeded = sorted.map((p, i) => ({ ...p, seed: i + 1 }));
+  const { size, rounds } = buildBracket(seeded);
+  return { ...tournament, participants: seeded, bracketSize: size, rounds };
 }
 
 // ---------- tournament: create / setup ----------
@@ -2575,6 +2605,38 @@ function TournamentCreateScreen({ onCreate, onCancel }) {
   );
 }
 
+// Edits the participant list of a not-yet-started tournament and redraws
+// the whole bracket from scratch on save (see rebuildTournamentBracket).
+// Format/distance/face/date stay fixed here — this is only for fixing the
+// entry list (no-shows, late arrivals, withdrawals before play begins).
+function TournamentEditParticipantsScreen({ tournament, onSave, onCancel }) {
+  const [participants, setParticipants] = useState(tournament.participants);
+  const canSave = participants.length >= 2;
+
+  return (
+    <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+      <div className="flex items-center gap-2">
+        <button onClick={onCancel} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
+        <div className="text-xl font-bold">Modifica partecipanti</div>
+      </div>
+      <div className="text-sm" style={{ color: T.textDim }}>
+        Il tabellone verrà rigenerato da zero con il nuovo elenco. Puoi farlo solo prima che sia stato giocato o dichiarato ritirato il primo match.
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <div className="text-xs" style={{ color: T.textDim }}>Partecipanti (ordinati per punteggio di qualifica)</div>
+        <ParticipantEditor formatId={tournament.formatId} participants={participants} setParticipants={setParticipants} />
+      </div>
+
+      <button onClick={() => canSave && onSave(participants)}
+        disabled={!canSave} className="rounded-2xl py-4 font-bold text-lg flex items-center justify-center gap-2 disabled:opacity-40"
+        style={{ background: T.gold, color: GOLD_TEXT }}>
+        <Shuffle size={20} /> Rigenera tabellone
+      </button>
+    </div>
+  );
+}
+
 // ---------- tournament: bracket + match ----------
 
 function MatchCard({ match, onOpen }) {
@@ -2586,7 +2648,7 @@ function MatchCard({ match, onOpen }) {
       className="w-full text-left rounded-2xl px-4 py-3 flex flex-col gap-2"
       style={{ background: T.surface, border: `1px solid ${playable ? T.gold : T.border}`, opacity: match.status === 'waiting' ? 0.6 : 1 }}>
       <div className="flex items-center justify-between text-xs" style={{ color: T.textDim }}>
-        <span>{statusLabel}</span>
+        <span>{statusLabel}{match.forfeit ? ' · W.O.' : ''}</span>
         {(match.status === 'completed' || match.status === 'in_progress' || match.status === 'shootoff') && (
           <span style={numeralStyle}>{match.cumSpA} - {match.cumSpB}</span>
         )}
@@ -2650,7 +2712,7 @@ function CompactMatchCard({ match, x, y, onOpen }) {
       <div className={`text-xs truncate ${match.winnerSlot === 'B' ? 'font-bold' : ''}`} style={{ color: match.winnerSlot === 'A' ? T.textDim : T.text }}>
         {match.slotB ? `${match.slotB.seed}. ${match.slotB.name}` : '—'}
       </div>
-      {scored && <div className="text-[10px]" style={{ color: T.textFaint, ...numeralStyle }}>{match.cumSpA} - {match.cumSpB}</div>}
+      {scored && <div className="text-[10px]" style={{ color: T.textFaint, ...numeralStyle }}>{match.cumSpA} - {match.cumSpB}{match.forfeit ? ' · W.O.' : ''}</div>}
     </button>
   );
 }
@@ -2699,9 +2761,10 @@ function BracketTree({ tournament, onOpenMatch }) {
   );
 }
 
-function BracketScreen({ tournament, onBack, onOpenMatch, onDelete }) {
+function BracketScreen({ tournament, onBack, onOpenMatch, onDelete, onEditParticipants }) {
   const [viewMode, setViewMode] = useState('list');
   const complete = tournamentIsComplete(tournament);
+  const started = tournamentHasStarted(tournament);
   const champion = complete ? (tournament.rounds[tournament.rounds.length - 1][0].winnerSlot === 'A'
     ? tournament.rounds[tournament.rounds.length - 1][0].slotA
     : tournament.rounds[tournament.rounds.length - 1][0].slotB) : null;
@@ -2711,6 +2774,11 @@ function BracketScreen({ tournament, onBack, onOpenMatch, onDelete }) {
       <div className="flex items-center gap-2">
         <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
         <div className="text-xl font-bold flex-1 truncate">{tournament.name}</div>
+        {!started && (
+          <button onClick={onEditParticipants} className="p-2 rounded-full" style={{ background: T.surface, border: `1px solid ${T.border}` }} title="Modifica partecipanti">
+            <Users size={18} color={T.textDim} />
+          </button>
+        )}
       </div>
       <div className="text-sm" style={{ color: T.textDim }}>
         {formatDateShort(tournament.date)} · {matchFormatDef(tournament.formatId).label} · {tournament.distanceM}m/{tournament.faceCm}cm
@@ -2742,6 +2810,42 @@ function BracketScreen({ tournament, onBack, onOpenMatch, onDelete }) {
       )}
 
       <DeleteSessionButton onDelete={onDelete} label="Elimina torneo" />
+    </div>
+  );
+}
+
+// Lets the scorer declare a walkover when one side withdraws or never
+// shows up, for a match that's already been fed (both sides assigned).
+// Collapsed by default and gated behind a per-side confirm tap so it can't
+// be triggered by accident during normal scoring.
+function WithdrawalControl({ match, onForfeit }) {
+  const [open, setOpen] = useState(false);
+  const [confirmSlot, setConfirmSlot] = useState(null);
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} className="text-xs self-center py-1" style={{ color: T.textFaint }}>
+        Un arciere si ritira o non si presenta →
+      </button>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl p-3 flex flex-col gap-2" style={{ background: T.surfaceAlt, border: `1px dashed ${T.border}` }}>
+      <div className="text-xs" style={{ color: T.textDim }}>Chi si ritira? L'avversario vince a tavolino.</div>
+      <div className="flex gap-2">
+        <button onClick={() => (confirmSlot === 'A' ? onForfeit('B') : setConfirmSlot('A'))}
+          className="flex-1 rounded-xl py-2 text-sm font-semibold"
+          style={{ background: confirmSlot === 'A' ? T.red : T.surface, color: confirmSlot === 'A' ? '#fff' : T.text, border: `1px solid ${confirmSlot === 'A' ? T.red : T.border}` }}>
+          {confirmSlot === 'A' ? 'Conferma ritiro' : sideLabel(match.slotA)}
+        </button>
+        <button onClick={() => (confirmSlot === 'B' ? onForfeit('A') : setConfirmSlot('B'))}
+          className="flex-1 rounded-xl py-2 text-sm font-semibold"
+          style={{ background: confirmSlot === 'B' ? T.red : T.surface, color: confirmSlot === 'B' ? '#fff' : T.text, border: `1px solid ${confirmSlot === 'B' ? T.red : T.border}` }}>
+          {confirmSlot === 'B' ? 'Conferma ritiro' : sideLabel(match.slotB)}
+        </button>
+      </div>
+      <button onClick={() => { setOpen(false); setConfirmSlot(null); }} className="text-xs self-center" style={{ color: T.textFaint }}>Annulla</button>
     </div>
   );
 }
@@ -2804,6 +2908,10 @@ function MatchScreen({ tournament, roundIdx, matchIdx, onBack, onComplete }) {
     onComplete(roundIdx, matchIdx, m);
   }
 
+  function submitForfeit(winnerSlot) {
+    onComplete(roundIdx, matchIdx, forfeitMatch(match, winnerSlot));
+  }
+
   if (match.status === 'completed') {
     return (
       <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4 items-center text-center">
@@ -2813,7 +2921,9 @@ function MatchScreen({ tournament, roundIdx, matchIdx, onBack, onComplete }) {
         </div>
         <Trophy color={T.gold} size={32} />
         <div className="text-2xl font-bold">{match.winnerSlot === 'A' ? sideLabel(match.slotA) : sideLabel(match.slotB)}</div>
-        <div className="text-sm" style={{ color: T.textDim }}>vince {match.cumSpA} - {match.cumSpB}</div>
+        <div className="text-sm" style={{ color: T.textDim }}>
+          {match.forfeit ? `vince a tavolino (ritiro di ${match.winnerSlot === 'A' ? sideLabel(match.slotB) : sideLabel(match.slotA)})` : `vince ${match.cumSpA} - ${match.cumSpB}`}
+        </div>
         <button onClick={onBack} className="w-full rounded-2xl py-3.5 font-bold" style={{ background: T.gold, color: GOLD_TEXT }}>Torna al tabellone</button>
       </div>
     );
@@ -2837,6 +2947,8 @@ function MatchScreen({ tournament, roundIdx, matchIdx, onBack, onComplete }) {
           <div className="text-3xl font-bold" style={numeralStyle}>{match.cumSpB}</div>
         </div>
       </div>
+
+      <WithdrawalControl match={match} onForfeit={submitForfeit} />
 
       {match.status === 'shootoff' ? (
         <div className="flex flex-col gap-4">
@@ -3105,7 +3217,14 @@ export default function ArcheryScorecard() {
           <BracketScreen tournament={activeTournament}
             onBack={() => { setActiveTournamentId(null); setView('tornei'); }}
             onOpenMatch={(roundIdx, matchIdx) => { setActiveMatchRef({ roundIdx, matchIdx }); setView('match'); }}
-            onDelete={() => { deleteTournament(activeTournament.id); setActiveTournamentId(null); setView('tornei'); }} />
+            onDelete={() => { deleteTournament(activeTournament.id); setActiveTournamentId(null); setView('tornei'); }}
+            onEditParticipants={() => setView('tornei-edit')} />
+        )}
+
+        {view === 'tornei-edit' && activeTournament && (
+          <TournamentEditParticipantsScreen tournament={activeTournament}
+            onSave={(participants) => { updateTournament(activeTournament.id, t => rebuildTournamentBracket(t, participants)); setView('bracket'); }}
+            onCancel={() => setView('bracket')} />
         )}
 
         {view === 'match' && activeTournament && activeMatchRef && (

@@ -265,3 +265,20 @@ a single-elimination tournament with live match scoring.
   see exactly what you're naming — a session's actual shape drives every
   bit of grouping/PB logic, the label never does, so this is what actually
   matters when deciding what to call something.
+- **Save errors are surfaced, never silent**: session/tournament writes to
+  Supabase used to fail with only a `console.error`, so a tournament that
+  couldn't save (e.g. the `tournaments` table not existing yet) looked fine
+  until the next reload wiped it. A dismissible red banner now shows
+  whenever a save/delete fails, on every screen.
+- **Forfeit / walkover**: any playable match (`WithdrawalControl` in
+  `MatchScreen`) can be declared a walkover — pick who withdrew, the other
+  side is awarded the win and advances exactly like a normal result
+  (`forfeitMatch()`), tagged "W.O." in the bracket. Works at any point in
+  the tournament, not just round 1.
+- **Edit participants & redraw bracket**: while nothing in the draw has
+  been played or forfeited yet (`tournamentHasStarted()`), a "Modifica
+  partecipanti" button on the bracket screen reopens the participant list
+  (add/remove/bulk-paste) and regenerates the whole seeding from scratch
+  (`rebuildTournamentBracket()`) — for a no-show discovered before the
+  first match, or a late arrival. The button disappears once any match has
+  a real result, since redrawing after that would silently discard it.
