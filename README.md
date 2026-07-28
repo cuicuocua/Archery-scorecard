@@ -465,3 +465,18 @@ a single-elimination tournament with live match scoring.
   arrow-mark outline in `TargetFace` became `T.markStroke`. Every color
   in the file now lives in the `T`/`SCORE_COLORS` token objects — no
   loose hex values elsewhere.
+
+## v1.9 additions
+
+- **Standardized, non-editable session names**: the free-text "Nome prova"
+  field is gone — every session's display name is now always computed
+  (`sessionDisplayName()`) from its round shape instead of typed by hand.
+  Single-stage sessions reuse `roundShapeLabel()`'s existing preset match
+  (a recognized shape like "Targa 70m" or "Indoor 18m" still wins over a
+  raw "70m · 122cm"; an unrecognized shape — most "Personalizzata"
+  rounds — falls back to that raw "Xm · Ycm" form). A 4-stage session
+  gets named "WA 1440 (d1/d2/d3/d4m)", since that's this club's own
+  FITARCO/WA aggregate convention; any other stage count just lists its
+  distances (e.g. a 2-stage indoor+18m combo becomes "25/18m"). `roundLabel`
+  is no longer written to new sessions at all — nothing reads it anymore,
+  so there's nothing for a future bulk import to fill in either.

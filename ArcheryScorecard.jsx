@@ -363,7 +363,6 @@ function createSession(roundDef, meta) {
   return {
     id: uid(),
     roundId: roundDef.id,
-    roundLabel: roundDef.label,
     stages,
     sessionType: meta.sessionType || 'allenamento',
     bowType: meta.bowType || null,
@@ -420,16 +419,19 @@ function sessionProgressLabel(session) {
   return session.stages.length > 1 ? `Tappa ${idx + 1} di ${session.stages.length} · ${endLabel}` : endLabel;
 }
 
-// "70m · 122cm" for a single-stage session, "70m/122cm + 60m/122cm + ..."
-// for a multi-stage one — shown alongside the editable round name so you
-// can see exactly what shape you're naming, since the label itself is free
-// text and can't be inferred from a typo-prone name alone.
-function sessionShapeSummary(session) {
-  if (session.stages.length === 1) {
-    const r = session.stages[0].round;
-    return `${r.distanceM}m · ${r.faceCm}cm`;
-  }
-  return session.stages.map(st => `${st.round.distanceM}m/${st.round.faceCm}cm`).join(' + ');
+// Standardized display name for a session — always computed from its round
+// shape, never freely typed (the old free-text "Nome prova" field let two
+// identical 30m/40cm rounds end up named completely differently, or not
+// named at all beyond the generic "Personalizzata"). Single-stage reuses
+// roundShapeLabel()'s preset match, so a recognized shape like "Targa 70m"
+// still wins over a raw "70m · 122cm". A 4-stage round is almost always
+// this club's FITARCO/WA 1440 aggregate, so it gets that name with the
+// actual distances shown; any other stage count just lists its distances.
+function sessionDisplayName(session) {
+  const { stages } = session;
+  if (stages.length === 1) return roundShapeLabel(stages[0].round);
+  const distances = stages.map(st => st.round.distanceM).join('/');
+  return stages.length === 4 ? `WA 1440 (${distances}m)` : `${distances}m`;
 }
 
 // Flattens every session's stages into virtual per-stage records for
@@ -1126,25 +1128,10 @@ function withSessionDate(session, dateStr) {
 function SessionMetaEditor({ session, onUpdate }) {
   const [location, setLocation] = useState(session.location);
   const [note, setNote] = useState(session.note);
-  const [roundLabel, setRoundLabel] = useState(session.roundLabel);
 
   return (
     <div className="flex flex-col gap-3 w-full rounded-2xl p-4" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
       <div className="text-sm font-semibold" style={{ color: T.textDim }}>Dettagli</div>
-
-      <div className="flex flex-col gap-1.5">
-        <div className="text-xs flex items-center gap-1.5" style={{ color: T.textDim }}>
-          <span>Nome prova</span>
-          <span style={{ color: T.textFaint }}>· {sessionShapeSummary(session)}</span>
-        </div>
-        <input value={roundLabel} onChange={e => setRoundLabel(e.target.value)}
-          onBlur={() => { const t = roundLabel.trim(); t ? onUpdate(s => ({ ...s, roundLabel: t })) : setRoundLabel(session.roundLabel); }}
-          list="round-label-suggestions" placeholder="es. Targa 70m"
-          className="rounded-lg px-3 py-2 text-sm w-full" style={{ background: T.surfaceAlt, border: `1px solid ${T.border}`, color: T.text }} />
-        <datalist id="round-label-suggestions">
-          {ROUND_TYPES.map(r => <option key={r.id} value={r.label} />)}
-        </datalist>
-      </div>
 
       <input type="date" value={session.startedAt.slice(0, 10)} onChange={e => e.target.value && onUpdate(s => withSessionDate(s, e.target.value))}
         className="rounded-lg px-3 py-2 text-sm w-full" style={{ background: T.surfaceAlt, border: `1px solid ${T.border}`, color: T.text, colorScheme: 'dark' }} />
@@ -1260,7 +1247,7 @@ function SessionSummary({ session, sessions, onExit, onUpdate }) {
         </div>
         <div className="text-5xl font-bold" style={numeralStyle}>{total}</div>
         <div className="text-sm mt-1" style={{ color: T.textDim }}>
-          {session.roundLabel} · media {avg.toFixed(2)} · {sessionXCount(session)} X
+          {sessionDisplayName(session)} · media {avg.toFixed(2)} · {sessionXCount(session)} X
           {bowLabel(session.bowType) ? ` · ${bowLabel(session.bowType)}` : ''}
         </div>
         {session.stages.length > 1 && (
@@ -1343,7 +1330,7 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
         <button onClick={onExit} className="p-2 -ml-2 rounded-full active:scale-95 transition-transform min-w-11 min-h-11 flex items-center justify-center" aria-label="Indietro"><ChevronLeft /></button>
         <div className="text-center">
           <div className="font-semibold leading-tight flex items-center gap-2 justify-center">
-            {session.roundLabel}
+            {sessionDisplayName(session)}
             <SessionTypeBadge sessionType={session.sessionType} />
           </div>
           <div className="text-xs" style={{ color: T.textDim }}>
@@ -1707,7 +1694,7 @@ function SessionRow({ session, onOpen, onDelete }) {
       <button onClick={onOpen} className="flex-1 text-left flex items-center justify-between gap-2 min-w-0 min-h-11">
         <div className="min-w-0">
           <div className="font-semibold truncate flex items-center gap-2">
-            <span className="truncate">{session.roundLabel}</span>
+            <span className="truncate">{sessionDisplayName(session)}</span>
             <SessionTypeBadge sessionType={session.sessionType} />
             {!isDone && <span className="text-xs font-normal shrink-0" style={{ color: T.gold }}>in corso</span>}
           </div>
@@ -2187,7 +2174,7 @@ function DetailScreen({ session, sessions, onBack, onUpdate, onDelete }) {
       <div className="flex items-center gap-2">
         <button onClick={onBack} className="p-2 -ml-2 rounded-full min-w-11 min-h-11 flex items-center justify-center" aria-label="Indietro"><ChevronLeft /></button>
         <h1 className="text-xl font-bold flex items-center gap-2">
-          {session.roundLabel}
+          {sessionDisplayName(session)}
           <SessionTypeBadge sessionType={session.sessionType} />
         </h1>
       </div>
@@ -2285,7 +2272,7 @@ function HomeScreen({ sessions, onNew, onResume, legacyData, onImportLegacy, onD
           <div>
             <div className="text-sm" style={{ color: T.textDim }}>Sessione in corso</div>
             <div className="text-lg font-semibold flex items-center gap-2">
-              {s.roundLabel}
+              {sessionDisplayName(s)}
               <SessionTypeBadge sessionType={s.sessionType} />
             </div>
             <div className="text-sm" style={{ color: T.textDim }}>
