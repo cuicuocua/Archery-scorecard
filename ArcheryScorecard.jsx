@@ -396,6 +396,18 @@ function sessionProgressLabel(session) {
   return session.stages.length > 1 ? `Tappa ${idx + 1} di ${session.stages.length} · ${endLabel}` : endLabel;
 }
 
+// "70m · 122cm" for a single-stage session, "70m/122cm + 60m/122cm + ..."
+// for a multi-stage one — shown alongside the editable round name so you
+// can see exactly what shape you're naming, since the label itself is free
+// text and can't be inferred from a typo-prone name alone.
+function sessionShapeSummary(session) {
+  if (session.stages.length === 1) {
+    const r = session.stages[0].round;
+    return `${r.distanceM}m · ${r.faceCm}cm`;
+  }
+  return session.stages.map(st => `${st.round.distanceM}m/${st.round.faceCm}cm`).join(' + ');
+}
+
 // Flattens every session's stages into virtual per-stage records for
 // personal-best matching and analysis — the one place a multi-distance
 // round gets "unbundled" so each distance is judged on its own history.
@@ -981,7 +993,10 @@ function SessionMetaEditor({ session, onUpdate }) {
       <div className="text-sm font-semibold" style={{ color: T.textDim }}>Dettagli</div>
 
       <div className="flex flex-col gap-1.5">
-        <div className="text-xs" style={{ color: T.textDim }}>Nome prova</div>
+        <div className="text-xs flex items-center gap-1.5" style={{ color: T.textDim }}>
+          <span>Nome prova</span>
+          <span style={{ color: T.textFaint }}>· {sessionShapeSummary(session)}</span>
+        </div>
         <input value={roundLabel} onChange={e => setRoundLabel(e.target.value)}
           onBlur={() => { const t = roundLabel.trim(); t ? onUpdate(s => ({ ...s, roundLabel: t })) : setRoundLabel(session.roundLabel); }}
           list="round-label-suggestions" placeholder="es. Targa 70m"
@@ -1088,7 +1103,7 @@ function SessionSummary({ session, sessions, onExit, onUpdate }) {
   const avg = shot ? total / shot : 0;
   const insight = useMemo(() => sessionInsight(session, sessions), [session, sessions]);
   return (
-    <div className="px-4 py-6 flex flex-col gap-5 items-center text-center max-w-md mx-auto">
+    <div className="px-4 py-6 flex flex-col gap-5 items-center text-center max-w-md sm:max-w-xl lg:max-w-3xl mx-auto">
       <div>
         <div className="text-sm uppercase tracking-wide flex items-center gap-2 justify-center" style={{ color: T.textDim }}>
           Sessione completata
@@ -1174,7 +1189,7 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
   }
 
   return (
-    <div className="flex flex-col max-w-md mx-auto min-h-screen">
+    <div className="flex flex-col max-w-md sm:max-w-xl lg:max-w-3xl mx-auto min-h-screen">
       <header className="sticky top-0 z-10 flex items-center justify-between px-3 py-3" style={{ background: T.bg, borderBottom: `1px solid ${T.border}` }}>
         <button onClick={onExit} className="p-2 -ml-2 rounded-full active:scale-95 transition-transform"><ChevronLeft /></button>
         <div className="text-center">
@@ -1326,7 +1341,7 @@ function NewSessionScreen({ onCreate, onCancel }) {
   }
 
   return (
-    <div className="max-w-md mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+    <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
         <button onClick={goBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
         <div className="text-xl font-bold">{NEW_SESSION_TITLES[step]}</div>
@@ -1606,7 +1621,7 @@ function StoricoScreen({ sessions, onOpen, onResume, onDelete, onImport, onSignO
   const deepAnalysisReady = filterId !== 'all' && completed.length >= MIN_SESSIONS_FOR_DEEP_ANALYSIS;
 
   return (
-    <div className="max-w-md mx-auto px-4 pt-4 pb-8 flex flex-col gap-5">
+    <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-5">
       <div className="flex items-center justify-between">
         <div className="text-xl font-bold">Storico</div>
         <div className="flex items-center gap-2">
@@ -1894,7 +1909,7 @@ function StatisticheScreen({ sessions }) {
 
   if (!completedSessions.length) {
     return (
-      <div className="max-w-md mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+      <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
         <div className="text-xl font-bold">Statistiche</div>
         <div className="rounded-2xl p-4 text-sm" style={{ background: T.surface, border: `1px dashed ${T.border}`, color: T.textDim }}>
           Completa qualche sessione per iniziare a vedere le tue statistiche cumulative.
@@ -1904,7 +1919,7 @@ function StatisticheScreen({ sessions }) {
   }
 
   return (
-    <div className="max-w-md mx-auto px-4 pt-4 pb-8 flex flex-col gap-5">
+    <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-5">
       <div className="text-xl font-bold">Statistiche</div>
 
       <div className="grid grid-cols-4 gap-2">
@@ -2002,7 +2017,7 @@ function DetailScreen({ session, sessions, onBack, onUpdate, onDelete }) {
   const multiStage = session.stages.length > 1;
   const insight = useMemo(() => sessionInsight(session, sessions), [session, sessions]);
   return (
-    <div className="max-w-md mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+    <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
         <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
         <div className="text-xl font-bold flex items-center gap-2">
@@ -2065,7 +2080,7 @@ function HomeScreen({ sessions, onNew, onResume, legacyData, onImportLegacy, onD
   const completedCount = sessions.filter(s => s.status === 'completed').length;
 
   return (
-    <div className="px-4 pt-6 pb-4 flex flex-col gap-6 max-w-md mx-auto">
+    <div className="px-4 pt-6 pb-4 flex flex-col gap-6 max-w-md sm:max-w-xl lg:max-w-3xl mx-auto">
       <header className="flex items-center gap-3">
         <div className="rounded-2xl p-3" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
           <Target size={28} color={T.gold} />
@@ -2141,11 +2156,16 @@ function NavButton({ icon: Icon, label, active, onClick }) {
 
 function BottomNav({ view, setView }) {
   return (
-    <div className="sticky bottom-0 z-10 flex" style={{ background: T.bgElevated, borderTop: `1px solid ${T.border}` }}>
-      <NavButton icon={Target} label="Home" active={view === 'home'} onClick={() => setView('home')} />
-      <NavButton icon={Clock} label="Storico" active={view === 'storico'} onClick={() => setView('storico')} />
-      <NavButton icon={BarChart3} label="Statistiche" active={view === 'statistiche'} onClick={() => setView('statistiche')} />
-      <NavButton icon={Swords} label="Tornei" active={view === 'tornei'} onClick={() => setView('tornei')} />
+    <div className="sticky bottom-0 z-10" style={{ background: T.bgElevated, borderTop: `1px solid ${T.border}` }}>
+      {/* Bar background stays full-bleed; the tappable row aligns to the
+          same centered column as the screen content above it, so icons
+          don't spread across the full width on a wide viewport. */}
+      <div className="flex max-w-md sm:max-w-xl lg:max-w-3xl mx-auto">
+        <NavButton icon={Target} label="Home" active={view === 'home'} onClick={() => setView('home')} />
+        <NavButton icon={Clock} label="Storico" active={view === 'storico'} onClick={() => setView('storico')} />
+        <NavButton icon={BarChart3} label="Statistiche" active={view === 'statistiche'} onClick={() => setView('statistiche')} />
+        <NavButton icon={Swords} label="Tornei" active={view === 'tornei'} onClick={() => setView('tornei')} />
+      </div>
     </div>
   );
 }
@@ -2494,7 +2514,7 @@ function TournamentCreateScreen({ onCreate, onCancel }) {
   const canCreate = name.trim() && participants.length >= 2;
 
   return (
-    <div className="max-w-md mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+    <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
         <button onClick={onCancel} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
         <div className="text-xl font-bold">Nuovo torneo</div>
@@ -2679,7 +2699,7 @@ function BracketScreen({ tournament, onBack, onOpenMatch, onDelete }) {
     : tournament.rounds[tournament.rounds.length - 1][0].slotB) : null;
 
   return (
-    <div className="max-w-md mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+    <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
         <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
         <div className="text-xl font-bold flex-1 truncate">{tournament.name}</div>
@@ -2778,7 +2798,7 @@ function MatchScreen({ tournament, roundIdx, matchIdx, onBack, onComplete }) {
 
   if (match.status === 'completed') {
     return (
-      <div className="max-w-md mx-auto px-4 pt-4 pb-8 flex flex-col gap-4 items-center text-center">
+      <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4 items-center text-center">
         <div className="flex items-center gap-2 self-start">
           <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
           <div className="text-xl font-bold">{roundName(tournament.rounds.length, roundIdx)}</div>
@@ -2792,7 +2812,7 @@ function MatchScreen({ tournament, roundIdx, matchIdx, onBack, onComplete }) {
   }
 
   return (
-    <div className="max-w-md mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+    <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
         <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
         <div className="text-xl font-bold">{roundName(tournament.rounds.length, roundIdx)}</div>
@@ -2881,7 +2901,7 @@ function TournamentRow({ tournament, onOpen, onDelete }) {
 
 function TorneiScreen({ tournaments, onNew, onOpen, onDelete }) {
   return (
-    <div className="max-w-md mx-auto px-4 pt-6 pb-8 flex flex-col gap-4">
+    <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-6 pb-8 flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <div className="text-2xl font-bold">Tornei</div>
         <button onClick={onNew} className="p-2.5 rounded-full" style={{ background: T.gold, color: GOLD_TEXT }}><Plus size={20} /></button>

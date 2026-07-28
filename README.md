@@ -255,3 +255,13 @@ a single-elimination tournament with live match scoring.
   ("Targa 70m").
 - **Manual reload button** on the Home header — a static page cached by the
   browser doesn't always pick up a new deploy on its own.
+- **Responsive layout**: every screen's container scales from phone width
+  up through `sm`/`lg` breakpoints instead of staying pinned at a fixed
+  mobile width with empty margins on a tablet or desktop; the bottom nav's
+  background stays full-bleed but its icon row aligns to the same centered
+  column as the content above it.
+- **Round shape shown next to "Nome prova"** ("70m · 122cm", or each
+  stage's shape joined with `+` for a multi-distance session) so you can
+  see exactly what you're naming — a session's actual shape drives every
+  bit of grouping/PB logic, the label never does, so this is what actually
+  matters when deciding what to call something.
