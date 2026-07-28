@@ -5,7 +5,7 @@ import {
 } from 'recharts';
 import {
   Target, Clock, ChevronLeft, ChevronRight, Plus, Trash2,
-  Download, Upload, RotateCcw, Play, Check, StickyNote, LogOut,
+  Download, Upload, RotateCcw, Play, Check, StickyNote, LogOut, BarChart3,
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
@@ -434,6 +434,90 @@ function describeBias(cxCm, cyCm) {
   if (ax >= 0.3) parts.push(`${ax.toFixed(1)} cm a ${cxCm > 0 ? 'destra' : 'sinistra'}`);
   if (ay >= 0.3) parts.push(`${ay.toFixed(1)} cm in ${cyCm > 0 ? 'basso' : 'alto'}`);
   return parts.join(', ');
+}
+
+// A short, deterministic 1-2 sentence takeaway for a completed session —
+// no external AI call, just arithmetic over the archer's own history, so it
+// works fully offline and never invents anything not in the data.
+//
+// Sentence 1 ("headline"): this session's points-per-arrow against the
+// historical points-per-arrow for the SAME round shape + tipo + arco,
+// combined per stage (arrow-weighted) so a multi-stage session is compared
+// fairly even when its stages have very different baselines.
+//
+// Sentence 2 ("detail"): whichever signal is most notable, in priority
+// order — group bias, in-session fatigue (first half vs second half),
+// misses, then gold rate. Omitted if nothing stands out.
+function sessionInsight(session, allSessions) {
+  const entries = stageEntries(allSessions);
+  let baselineSum = 0, baselineArrows = 0, histCount = 0;
+  session.stages.forEach(stage => {
+    const hist = entries.filter(e =>
+      e.status === 'completed' && e.sessionId !== session.id &&
+      sameRound(e.round, stage.round) &&
+      (e.bowType || null) === (session.bowType || null) &&
+      (e.sessionType || 'allenamento') === (session.sessionType || 'allenamento'));
+    if (!hist.length) return;
+    histCount += hist.length;
+    const arrows = arrowsShotCount(stage);
+    const histArrows = hist.reduce((s, e) => s + arrowsShotCount(e), 0);
+    if (!histArrows) return;
+    const histAvg = hist.reduce((s, e) => s + totalScore(e), 0) / histArrows;
+    baselineSum += histAvg * arrows;
+    baselineArrows += arrows;
+  });
+
+  const thisArrows = sessionArrowsShot(session);
+  const thisAvg = thisArrows ? sessionTotalScore(session) / thisArrows : 0;
+  const sentences = [];
+
+  if (!baselineArrows) {
+    sentences.push('Prima sessione registrata per questa combinazione di prova, tipo e arco: da qui inizia la tua media.');
+  } else {
+    const baselineAvg = baselineSum / baselineArrows;
+    const diffPct = baselineAvg ? ((thisAvg - baselineAvg) / baselineAvg) * 100 : 0;
+    if (Math.abs(diffPct) < 2) {
+      sentences.push(`Media in linea con il tuo standard: ${thisAvg.toFixed(2)} punti a freccia (confronto su ${histCount} sessioni precedenti).`);
+    } else if (diffPct > 0) {
+      sentences.push(`${diffPct.toFixed(0)}% sopra la tua media abituale: ${thisAvg.toFixed(2)} contro ${baselineAvg.toFixed(2)} punti a freccia.`);
+    } else {
+      sentences.push(`${Math.abs(diffPct).toFixed(0)}% sotto la tua media abituale: ${thisAvg.toFixed(2)} contro ${baselineAvg.toFixed(2)} punti a freccia.`);
+    }
+  }
+
+  // Secondary signal — computed from the stage with the most shot arrows,
+  // which for the common single-stage session just is the session.
+  const mainStage = session.stages.reduce((a, b) => (arrowsShotCount(b) > arrowsShotCount(a) ? b : a));
+  const posArrows = flattenArrows(mainStage).filter(a => a.x != null && a.y != null);
+  const group = posArrows.length ? computeGroupStats(posArrows, mainStage.round.faceCm) : null;
+
+  const half = Math.ceil(mainStage.ends.length / 2);
+  const firstHalfArrows = mainStage.ends.slice(0, half).flatMap(e => e.arrows);
+  const secondHalfArrows = mainStage.ends.slice(half).flatMap(e => e.arrows);
+  const firstAvg = firstHalfArrows.length ? firstHalfArrows.reduce((s, a) => s + a.score, 0) / firstHalfArrows.length : null;
+  const secondAvg = secondHalfArrows.length ? secondHalfArrows.reduce((s, a) => s + a.score, 0) / secondHalfArrows.length : null;
+  const fatigueDelta = firstAvg != null && secondAvg != null ? secondAvg - firstAvg : null;
+
+  const arrows = sessionFlattenArrows(session);
+  const misses = arrows.filter(a => a.score === 0).length;
+  const golds = arrows.filter(a => a.score === 10).length;
+  const goldRate = arrows.length ? golds / arrows.length : 0;
+
+  if (group && Math.sqrt(group.cxCm ** 2 + group.cyCm ** 2) >= 1.5) {
+    sentences.push(`Gruppo spostato ${describeBias(group.cxCm, group.cyCm)} — attenzione al rilascio.`);
+  } else if (fatigueDelta != null && fatigueDelta <= -0.4) {
+    sentences.push('Punteggio in calo nella seconda parte: possibile affaticamento.');
+  } else if (fatigueDelta != null && fatigueDelta >= 0.4) {
+    sentences.push('Partenza più lenta ma buona ripresa nella seconda parte.');
+  } else if (misses > 0) {
+    sentences.push(`${misses} frecc${misses === 1 ? 'ia' : 'e'} a vuoto da recuperare.`);
+  } else if (goldRate >= 0.4) {
+    sentences.push(`Ottima concentrazione nell'oro: ${Math.round(goldRate * 100)}% delle frecce.`);
+  } else if (group) {
+    sentences.push('Gruppo ben centrato.');
+  }
+
+  return sentences;
 }
 
 // completedList: stage entries (from stageEntries()) already filtered to
@@ -939,10 +1023,23 @@ function StatsBar({ total, avg, projected, pace, hasPb }) {
   );
 }
 
-function SessionSummary({ session, onExit, onUpdate }) {
+// Small card rendering sessionInsight()'s 1-2 sentences. Returns null (no
+// empty card) if there's nothing to say yet.
+function InsightCard({ sentences }) {
+  if (!sentences.length) return null;
+  return (
+    <div className="w-full rounded-2xl p-4 flex flex-col gap-1 text-left" style={{ background: T.surfaceAlt, border: `1px solid ${T.border}` }}>
+      <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: T.gold }}>Analisi rapida</div>
+      {sentences.map((s, i) => <div key={i} className="text-sm" style={{ color: T.text }}>{s}</div>)}
+    </div>
+  );
+}
+
+function SessionSummary({ session, sessions, onExit, onUpdate }) {
   const total = sessionTotalScore(session);
   const shot = sessionArrowsShot(session);
   const avg = shot ? total / shot : 0;
+  const insight = useMemo(() => sessionInsight(session, sessions), [session, sessions]);
   return (
     <div className="px-4 py-6 flex flex-col gap-5 items-center text-center max-w-md mx-auto">
       <div>
@@ -965,6 +1062,7 @@ function SessionSummary({ session, onExit, onUpdate }) {
           </div>
         )}
       </div>
+      <InsightCard sentences={insight} />
       <SessionMetaEditor session={session} onUpdate={onUpdate} />
       <ConditionsEditor session={session} onUpdate={onUpdate} />
       <button onClick={onExit} className="w-full rounded-2xl py-4 font-bold text-lg" style={{ background: T.gold, color: GOLD_TEXT }}>
@@ -1102,7 +1200,7 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
         </>
       )}
 
-      {isComplete && <SessionSummary session={session} onExit={onExit} onUpdate={onUpdate} />}
+      {isComplete && <SessionSummary session={session} sessions={sessions} onExit={onExit} onUpdate={onUpdate} />}
     </div>
   );
 }
@@ -1675,6 +1773,155 @@ function StageEntryRow({ entry, onOpen }) {
   );
 }
 
+// ---------- statistiche ----------
+
+const RING_GROUP_LABELS = { gold: 'Oro', red: 'Rosso', blue: 'Blu', black: 'Nero', white: 'Bianco', miss: 'Errore' };
+const RING_GROUP_ORDER = ['gold', 'red', 'blue', 'black', 'white', 'miss'];
+
+// Percentage of every arrow ever shot landing in each ring-colour group —
+// derived straight from score via ringGroupForScore, so it works for
+// keypad-entered arrows too (no x/y position needed).
+function hitRateByColor(entries) {
+  const counts = {};
+  RING_GROUP_ORDER.forEach(k => (counts[k] = 0));
+  let total = 0;
+  entries.forEach(e => flattenArrows(e).forEach(a => {
+    counts[ringGroupForScore(a.score)] += 1;
+    total += 1;
+  }));
+  return RING_GROUP_ORDER.map(key => ({
+    key: RING_GROUP_LABELS[key],
+    count: counts[key],
+    pct: total ? (counts[key] / total) * 100 : 0,
+    color: SCORE_COLORS[key].fill,
+  }));
+}
+
+// One row per distinct round shape ever shot: personal best, average, and
+// how many times — the cumulative counterpart to Storico's per-round PB tile.
+function bestByShape(entries) {
+  const map = new Map();
+  entries.forEach(e => {
+    const key = roundShapeKey(e.round);
+    if (!map.has(key)) map.set(key, { round: e.round, entries: [] });
+    map.get(key).entries.push(e);
+  });
+  return Array.from(map.values())
+    .map(({ round, entries: es }) => ({
+      round,
+      count: es.length,
+      best: Math.max(...es.map(totalScore)),
+      avg: es.reduce((s, e) => s + totalScore(e), 0) / es.length,
+    }))
+    .sort((a, b) => b.round.distanceM - a.round.distanceM || b.round.faceCm - a.round.faceCm);
+}
+
+function StatisticheScreen({ sessions }) {
+  const completedSessions = useMemo(() => sessions.filter(s => s.status === 'completed'), [sessions]);
+  const entries = useMemo(() => stageEntries(completedSessions), [completedSessions]);
+
+  const totalArrows = entries.reduce((s, e) => s + arrowsShotCount(e), 0);
+  const totalScoreSum = entries.reduce((s, e) => s + totalScore(e), 0);
+  const avgPerArrow = totalArrows ? totalScoreSum / totalArrows : 0;
+  const totalX = entries.reduce((s, e) => s + xCount(e), 0);
+
+  const colorData = useMemo(() => hitRateByColor(entries), [entries]);
+  const shapeRows = useMemo(() => bestByShape(entries), [entries]);
+
+  const trend = useMemo(() =>
+    completedSessions.slice()
+      .sort((a, b) => new Date(a.completedAt) - new Date(b.completedAt))
+      .map(s => {
+        const arrows = sessionArrowsShot(s);
+        return arrows ? { label: formatDateShort(s.completedAt), avg: sessionTotalScore(s) / arrows } : null;
+      })
+      .filter(Boolean),
+    [completedSessions]);
+
+  const typeCounts = useMemo(() => {
+    const counts = {};
+    SESSION_TYPES.forEach(t => (counts[t.id] = 0));
+    completedSessions.forEach(s => { counts[s.sessionType || 'allenamento'] += 1; });
+    return counts;
+  }, [completedSessions]);
+
+  if (!completedSessions.length) {
+    return (
+      <div className="max-w-md mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+        <div className="text-xl font-bold">Statistiche</div>
+        <div className="rounded-2xl p-4 text-sm" style={{ background: T.surface, border: `1px dashed ${T.border}`, color: T.textDim }}>
+          Completa qualche sessione per iniziare a vedere le tue statistiche cumulative.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-md mx-auto px-4 pt-4 pb-8 flex flex-col gap-5">
+      <div className="text-xl font-bold">Statistiche</div>
+
+      <div className="grid grid-cols-4 gap-2">
+        <StatTile label="Sessioni" value={completedSessions.length} />
+        <StatTile label="Frecce" value={totalArrows} />
+        <StatTile label="Media/freccia" value={avgPerArrow.toFixed(2)} />
+        <StatTile label="X totali" value={totalX} />
+      </div>
+
+      <ChartCard title="Frecce per colore">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={colorData}>
+            <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
+            <XAxis dataKey="key" stroke={T.textDim} tick={{ fontSize: 11 }} />
+            <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={32} unit="%" />
+            <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+              formatter={(v, name, item) => [`${item.payload.count} frecce (${Number(v).toFixed(1)}%)`, 'frecce']} />
+            <Bar dataKey="pct" radius={[3, 3, 0, 0]}>
+              {colorData.map((d, i) => <Cell key={i} fill={d.color} />)}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </ChartCard>
+
+      <ChartCard title="Andamento generale (media a freccia)">
+        {trend.length >= 2 ? (
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={trend}>
+              <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
+              <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
+              <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 10]} />
+              <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                formatter={(v) => [Number(v).toFixed(2), 'media a freccia']} />
+              <Line type="monotone" dataKey="avg" stroke={T.gold} strokeWidth={2} dot={{ r: 3, fill: T.gold }} />
+            </LineChart>
+          </ResponsiveContainer>
+        ) : <EmptyChart text="Servono almeno 2 sessioni completate" />}
+      </ChartCard>
+
+      <div className="flex flex-col gap-2">
+        <div className="text-sm font-semibold" style={{ color: T.textDim }}>Primati per distanza</div>
+        <div className="flex flex-col gap-2">
+          {shapeRows.map(row => (
+            <div key={roundShapeKey(row.round)} className="rounded-2xl px-4 py-3 flex items-center justify-between gap-2" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+              <div className="min-w-0">
+                <div className="font-semibold truncate">{roundShapeLabel(row.round)}</div>
+                <div className="text-xs" style={{ color: T.textDim }}>media {row.avg.toFixed(1)} · {row.count} sessioni</div>
+              </div>
+              <div className="text-lg font-bold shrink-0" style={numeralStyle}>{row.best}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <div className="text-sm font-semibold" style={{ color: T.textDim }}>Sessioni per tipo</div>
+        <div className="grid grid-cols-3 gap-2">
+          {SESSION_TYPES.map(t => <StatTile key={t.id} label={t.label} value={typeCounts[t.id]} />)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---------- session detail ----------
 
 function DeleteSessionButton({ onDelete }) {
@@ -1704,8 +1951,9 @@ function StageEnds({ stage }) {
   );
 }
 
-function DetailScreen({ session, onBack, onUpdate, onDelete }) {
+function DetailScreen({ session, sessions, onBack, onUpdate, onDelete }) {
   const multiStage = session.stages.length > 1;
+  const insight = useMemo(() => sessionInsight(session, sessions), [session, sessions]);
   return (
     <div className="max-w-md mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
@@ -1728,6 +1976,8 @@ function DetailScreen({ session, onBack, onUpdate, onDelete }) {
           media {(sessionTotalScore(session) / sessionArrowsShot(session)).toFixed(2)} · {sessionXCount(session)} X
         </div>
       </div>
+
+      <InsightCard sentences={insight} />
 
       {!multiStage ? (
         <>
@@ -1843,6 +2093,7 @@ function BottomNav({ view, setView }) {
     <div className="sticky bottom-0 z-10 flex" style={{ background: T.bgElevated, borderTop: `1px solid ${T.border}` }}>
       <NavButton icon={Target} label="Home" active={view === 'home'} onClick={() => setView('home')} />
       <NavButton icon={Clock} label="Storico" active={view === 'storico'} onClick={() => setView('storico')} />
+      <NavButton icon={BarChart3} label="Statistiche" active={view === 'statistiche'} onClick={() => setView('statistiche')} />
     </div>
   );
 }
@@ -1959,11 +2210,13 @@ export default function ArcheryScorecard() {
         )}
 
         {view === 'detail' && detailSession && (
-          <DetailScreen key={detailSession.id} session={detailSession}
+          <DetailScreen key={detailSession.id} session={detailSession} sessions={sessions}
             onBack={() => { setDetailSessionId(null); setView('storico'); }}
             onUpdate={(updater) => updateSession(detailSession.id, updater)}
             onDelete={() => { deleteSession(detailSession.id); setDetailSessionId(null); setView('storico'); }} />
         )}
+
+        {view === 'statistiche' && <StatisticheScreen sessions={sessions} />}
       </div>
 
       {view !== 'shoot' && <BottomNav view={view} setView={setView} />}

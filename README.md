@@ -171,3 +171,22 @@ as JSON, meant to seed the future offline app.
   (`stageEntries()`) before any of that analysis runs.
 - Sessions saved before this version (single `round`+`ends`, no `stages`)
   keep working unchanged — see "Data model" above.
+
+## v1.5 additions
+
+- **Statistiche tab**: a third bottom-nav screen with cumulative stats
+  across every completed session — total sessions/arrows/points-per-arrow/X,
+  a "frecce per colore" chart (percentage of every arrow ever shot landing
+  in each ring colour, derived from score via `ringGroupForScore` so it
+  works for keypad-entered arrows too), an overall points-per-arrow trend,
+  a personal-best-per-distance table (built on the same `stageEntries()`
+  flattening Storico uses), and a sessions-by-tipo breakdown.
+- **Analisi rapida**: every completed session now gets a short, deterministic
+  1-2 sentence takeaway (`sessionInsight()`) — no external AI call, just
+  arithmetic over your own history, so it works fully offline. First
+  sentence compares this session's points-per-arrow against your historical
+  average for the same round shape + tipo + arco (combined per stage for
+  multi-distance rounds). Second sentence surfaces whichever signal is most
+  notable — group bias, in-session fatigue (first half vs second half),
+  misses, or gold rate — omitted if nothing stands out. Shown right after
+  finishing a session and again anytime you revisit it in Storico.
