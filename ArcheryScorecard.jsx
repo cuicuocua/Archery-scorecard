@@ -2563,7 +2563,100 @@ function MatchCard({ match, onOpen }) {
   );
 }
 
+// ---------- bracket tree view ----------
+//
+// A classic horizontal bracket (columns of matches, connector lines routing
+// each pair of winners into their next-round match) rather than the
+// vertical round-by-round list — useful when you want the shape of the
+// draw at a glance instead of scrolling through rounds. Positions are
+// computed with the standard doubling-spacing algorithm: each round's
+// matches are centered on the midpoint of the two matches feeding into
+// them, so the whole tree stays visually balanced regardless of bracket
+// size. Horizontally scrollable since a bracket wider than 2 rounds won't
+// fit a phone screen.
+
+const BRACKET_CARD_W = 176;
+const BRACKET_CARD_H = 64;
+const BRACKET_ROW_GAP = 16;
+const BRACKET_COL_GAP = 40;
+const BRACKET_UNIT = BRACKET_CARD_H + BRACKET_ROW_GAP;
+const BRACKET_Y_OFFSET = 28; // room for the round-name label above round 0
+
+function computeBracketLayout(rounds) {
+  const n0 = rounds[0].length;
+  const centers = [];
+  centers[0] = Array.from({ length: n0 }, (_, i) => i * BRACKET_UNIT + BRACKET_UNIT / 2);
+  for (let r = 1; r < rounds.length; r++) {
+    centers[r] = rounds[r].map((_, i) => (centers[r - 1][2 * i] + centers[r - 1][2 * i + 1]) / 2);
+  }
+  return { centers, totalHeight: n0 * BRACKET_UNIT };
+}
+
+function CompactMatchCard({ match, x, y, onOpen }) {
+  const playable = match.status === 'pending' || match.status === 'in_progress' || match.status === 'shootoff';
+  const scored = match.status === 'completed' || match.status === 'in_progress' || match.status === 'shootoff';
+  return (
+    <button onClick={() => playable && onOpen()} disabled={!playable}
+      className="absolute rounded-xl px-2.5 py-1.5 flex flex-col justify-center gap-0.5 text-left"
+      style={{ left: x, top: y, width: BRACKET_CARD_W, height: BRACKET_CARD_H,
+        background: T.surface, border: `1px solid ${playable ? T.gold : T.border}`, opacity: match.status === 'waiting' ? 0.55 : 1 }}>
+      <div className={`text-xs truncate ${match.winnerSlot === 'A' ? 'font-bold' : ''}`} style={{ color: match.winnerSlot === 'B' ? T.textDim : T.text }}>
+        {match.slotA ? `${match.slotA.seed}. ${match.slotA.name}` : '—'}
+      </div>
+      <div className={`text-xs truncate ${match.winnerSlot === 'B' ? 'font-bold' : ''}`} style={{ color: match.winnerSlot === 'A' ? T.textDim : T.text }}>
+        {match.slotB ? `${match.slotB.seed}. ${match.slotB.name}` : '—'}
+      </div>
+      {scored && <div className="text-[10px]" style={{ color: T.textFaint, ...numeralStyle }}>{match.cumSpA} - {match.cumSpB}</div>}
+    </button>
+  );
+}
+
+function BracketTree({ tournament, onOpenMatch }) {
+  const { rounds } = tournament;
+  const { centers, totalHeight } = useMemo(() => computeBracketLayout(rounds), [rounds]);
+  const colWidth = BRACKET_CARD_W + BRACKET_COL_GAP;
+  const totalWidth = rounds.length * colWidth - BRACKET_COL_GAP;
+
+  return (
+    <div className="overflow-auto -mx-4 px-4 pb-2" style={{ maxHeight: '70vh' }}>
+      <div className="relative" style={{ width: totalWidth, height: totalHeight + BRACKET_Y_OFFSET }}>
+        <svg className="absolute inset-0" width={totalWidth} height={totalHeight + BRACKET_Y_OFFSET} style={{ pointerEvents: 'none' }}>
+          {rounds.slice(0, -1).map((_, r) => {
+            const x1 = r * colWidth + BRACKET_CARD_W;
+            const xMid = x1 + BRACKET_COL_GAP / 2;
+            const x2 = (r + 1) * colWidth;
+            return rounds[r + 1].map((_, i) => {
+              const yTop = centers[r][2 * i] + BRACKET_Y_OFFSET;
+              const yBottom = centers[r][2 * i + 1] + BRACKET_Y_OFFSET;
+              const yParent = centers[r + 1][i] + BRACKET_Y_OFFSET;
+              return (
+                <g key={`${r}-${i}`} stroke={T.borderStrong} strokeWidth={1.5}>
+                  <line x1={x1} y1={yTop} x2={xMid} y2={yTop} />
+                  <line x1={x1} y1={yBottom} x2={xMid} y2={yBottom} />
+                  <line x1={xMid} y1={yTop} x2={xMid} y2={yBottom} />
+                  <line x1={xMid} y1={yParent} x2={x2} y2={yParent} />
+                </g>
+              );
+            });
+          })}
+        </svg>
+        {rounds.map((round, r) => (
+          <React.Fragment key={r}>
+            <div className="absolute text-xs font-semibold truncate" style={{ left: r * colWidth, top: 0, width: BRACKET_CARD_W, color: T.textDim }}>
+              {roundName(rounds.length, r)}
+            </div>
+            {round.map((m, i) => (
+              <CompactMatchCard key={i} match={m} x={r * colWidth} y={centers[r][i] - BRACKET_CARD_H / 2 + BRACKET_Y_OFFSET} onOpen={() => onOpenMatch(r, i)} />
+            ))}
+          </React.Fragment>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function BracketScreen({ tournament, onBack, onOpenMatch, onDelete }) {
+  const [viewMode, setViewMode] = useState('list');
   const complete = tournamentIsComplete(tournament);
   const champion = complete ? (tournament.rounds[tournament.rounds.length - 1][0].winnerSlot === 'A'
     ? tournament.rounds[tournament.rounds.length - 1][0].slotA
@@ -2589,14 +2682,20 @@ function BracketScreen({ tournament, onBack, onOpenMatch, onDelete }) {
         </div>
       )}
 
-      {tournament.rounds.map((round, ri) => (
-        <div key={ri} className="flex flex-col gap-2">
-          <div className="text-sm font-semibold" style={{ color: T.textDim }}>{roundName(tournament.rounds.length, ri)}</div>
-          <div className="flex flex-col gap-2">
-            {round.map((m, mi) => <MatchCard key={mi} match={m} onOpen={() => onOpenMatch(ri, mi)} />)}
+      <SegmentedControl options={[{ id: 'list', label: 'Elenco' }, { id: 'bracket', label: 'Tabellone' }]} value={viewMode} onChange={setViewMode} />
+
+      {viewMode === 'bracket' ? (
+        <BracketTree tournament={tournament} onOpenMatch={onOpenMatch} />
+      ) : (
+        tournament.rounds.map((round, ri) => (
+          <div key={ri} className="flex flex-col gap-2">
+            <div className="text-sm font-semibold" style={{ color: T.textDim }}>{roundName(tournament.rounds.length, ri)}</div>
+            <div className="flex flex-col gap-2">
+              {round.map((m, mi) => <MatchCard key={mi} match={m} onOpen={() => onOpenMatch(ri, mi)} />)}
+            </div>
           </div>
-        </div>
-      ))}
+        ))
+      )}
 
       <DeleteSessionButton onDelete={onDelete} label="Elimina torneo" />
     </div>

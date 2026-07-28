@@ -227,6 +227,21 @@ a single-elimination tournament with live match scoring.
   match calls `applyMatchResult()`, which records the result and — unless
   it was the final — propagates the winner into next round's slot via
   `propagateWinner()`.
-- **Bracket view** is a vertical round-by-round list of match cards (not a
-  wide horizontal tree), deliberately — a horizontal bracket doesn't work
-  on a phone-width screen, and the vertical list scrolls naturally.
+- **Bracket view** defaults to a vertical round-by-round list of match
+  cards, with a toggle to switch to a classic horizontal bracket tree
+  (`BracketTree` — connector lines computed with the standard
+  doubling-spacing algorithm, so the draw stays visually balanced at any
+  size). The tree is horizontally scrollable rather than squeezed to fit,
+  since a multi-round bracket won't fit a phone screen at once either way.
+  Both views open the same live `MatchScreen` when you tap a playable
+  match, so you can score directly from the tree.
+- **Bulk participant entry**: "Incolla un elenco" in the tournament setup
+  screen accepts a pasted list, one participant per line, name and score in
+  either order ("Anna Rossi 600" or "600 Anna Rossi" — real scoreboards get
+  pasted both ways) and in any reasonable separator (space, comma, colon,
+  tab, dash). Lines it can't parse are reported rather than silently
+  dropped or guessed at.
+- **Target face size** is a picker over the four real WA sizes
+  (40/60/80/122cm) instead of a stepper whose increments didn't land on
+  any actual target size; the distance stepper is bounded to WA's real
+  competition range (10-90m).
