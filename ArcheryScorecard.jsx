@@ -2345,6 +2345,67 @@ function tournamentIsComplete(tournament) {
 
 // ---------- tournament: create / setup ----------
 
+// Parses one participant per line — "Name Score", "Name, Score",
+// "Name - Score", "Name: Score", tabs, whatever — by taking the trailing
+// number on the line as the seed score and everything before it as the
+// name. Lines that don't end in a recognizable number are skipped (and
+// reported) rather than guessed at.
+function parseParticipantList(text) {
+  const ok = [];
+  const bad = [];
+  text.split('\n').map(l => l.trim()).filter(Boolean).forEach(line => {
+    const m = line.match(/^(.*?)[\s,;:|\t-]+(\d+(?:[.,]\d+)?)\s*$/);
+    const name = m ? m[1].trim().replace(/^[-,;:|]+|[-,;:|]+$/g, '') : '';
+    const score = m ? Number(m[2].replace(',', '.')) : NaN;
+    if (m && name && !Number.isNaN(score)) ok.push({ id: uidT(), name, seedScore: score });
+    else bad.push(line);
+  });
+  return { ok, bad };
+}
+
+function BulkParticipantInput({ isTeam, setParticipants }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState('');
+  const [status, setStatus] = useState('');
+
+  function importList() {
+    const { ok, bad } = parseParticipantList(text);
+    if (ok.length) setParticipants(list => [...list, ...ok]);
+    setStatus(bad.length
+      ? `Aggiunti ${ok.length} · non riconosciute ${bad.length}: ${bad.slice(0, 3).join(' / ')}${bad.length > 3 ? '…' : ''}`
+      : `Aggiunti ${ok.length}.`);
+    setText('');
+  }
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} className="text-sm py-1 self-start" style={{ color: T.gold }}>
+        Incolla un elenco invece di aggiungere uno a uno →
+      </button>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-2 rounded-xl p-3" style={{ background: T.surfaceAlt, border: `1px dashed ${T.border}` }}>
+      <div className="text-xs" style={{ color: T.textDim }}>
+        Una riga per {isTeam ? 'squadra' : 'arciere'}: nome e punteggio, in qualsiasi ordine di separazione
+        ("Anna Rossi 600", "Bruno, 590"...).
+      </div>
+      <textarea value={text} onChange={e => setText(e.target.value)} rows={5} placeholder={'Anna Rossi 600\nBruno Bianchi 590\nCarla Neri 580'}
+        className="rounded-lg px-3 py-2 text-sm resize-none" style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.text }} />
+      <div className="flex gap-2">
+        <button onClick={importList} disabled={!text.trim()} className="flex-1 rounded-lg py-2 text-sm font-bold disabled:opacity-40" style={{ background: T.gold, color: GOLD_TEXT }}>
+          Importa elenco
+        </button>
+        <button onClick={() => { setOpen(false); setStatus(''); }} className="rounded-lg px-3 py-2 text-sm" style={{ color: T.textDim }}>
+          Chiudi
+        </button>
+      </div>
+      {status && <div className="text-xs" style={{ color: T.textDim }}>{status}</div>}
+    </div>
+  );
+}
+
 function ParticipantEditor({ formatId, participants, setParticipants }) {
   const [name, setName] = useState('');
   const [score, setScore] = useState('');
@@ -2374,6 +2435,7 @@ function ParticipantEditor({ formatId, participants, setParticipants }) {
           <UserPlus size={18} />
         </button>
       </div>
+      <BulkParticipantInput isTeam={isTeam} setParticipants={setParticipants} />
       {sorted.length > 0 && (
         <div className="flex flex-col gap-1.5">
           {sorted.map((p, i) => (
