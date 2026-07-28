@@ -480,3 +480,61 @@ a single-elimination tournament with live match scoring.
   distances (e.g. a 2-stage indoor+18m combo becomes "25/18m"). `roundLabel`
   is no longer written to new sessions at all — nothing reads it anymore,
   so there's nothing for a future bulk import to fill in either.
+
+## v1.10 additions — Statistiche redesign
+
+`Statistiche` becomes the app's real analysis home; `Storico` goes back to
+being a pure browse/filter/list screen (see below). Also fixes a real
+rendering bug: every Recharts `<Bar>`/`<Line>`/`<Area>` in the app now sets
+`isAnimationActive={false}` — Recharts' entrance animation was getting stuck
+at its first frame in some environments, leaving charts visually blank
+despite correct data reaching them.
+
+- **Round-shape matching loosened to distance+face only** (`roundShapeKey()`,
+  `sameRound()`) — previously also compared arrows-per-end and ends, which
+  incorrectly split a standalone "Targa 70m" session from a WA1440's 70m
+  stage into two separate groups despite being the same round. This also
+  means groups can now mix sessions with different arrow counts (e.g. 60
+  vs 72 arrows), so every score comparison that used to total the raw
+  score now uses **average score per arrow** instead throughout
+  (`bestByShape()`, Statistiche's trend line, personal-best comparisons) —
+  the only fair unit once "same round" no longer implies "same arrow count."
+- **Session naming recognizes more archetypes**: a 2-stage session whose
+  distances include both 25m and 18m is now named "WA Combined," the
+  standard FITARCO indoor aggregate, alongside the existing 4-stage "WA
+  1440" recognition. `sessionDisplayName()` now returns `{name,
+  isArchetype}`; the new `SessionName` component dims non-archetype names
+  (`T.textFaint`) so a "Personalizzata" round that doesn't match a known
+  shape is visually distinguishable from a real archetype at a glance,
+  everywhere a session name is shown.
+- **`Statistiche` restructured around a per-round-shape selector** instead
+  of one lifetime view blending every round type together (distance and
+  face size vary too much between round types for a blended average to
+  mean anything). Top to bottom: a lifetime header (session/arrow/X counts
+  only, no blended average), a tappable "Le tue prove" list
+  (`bestByShape()` — per-arrow average and personal best, one row per
+  round shape), secondary type/bow filter chips, then a scoped analysis
+  section for the selected round shape + filters.
+- **Two new charts in the scoped section**:
+  - **"Andamento per volée"** — a candlestick-style chart
+    (`endRangeStats()`) showing, per end position (1 through the round's
+    max ends) across every session of that round shape, the min/average/max
+    arrow score at that end. Built as a Recharts `<ComposedChart>`: a
+    floating `<Bar dataKey="range">` fed a `[min, max]` 2-element array per
+    point renders the range, with a `<Line dataKey="avg">` overlaid.
+  - **"Andamento colori nel tempo"** — a 100%-stacked `<AreaChart>`
+    (`colorTrendByShape()`, five `<Area>`s sharing one `stackId`) showing
+    the percentage of arrows landing in each ring-color band over time
+    across sessions of that round shape.
+- **Stats with no usable data show a placeholder, not an empty/misleading
+  chart**: applies generally now, not just to position-based (grouping)
+  stats — "Gruppo cumulativo" shows a dashed-border "record more sessions
+  to unlock this analysis"-style message when no arrow in the current
+  filter has a recorded position (i.e. every arrow was keypad-entered),
+  instead of an empty target face.
+- **`Storico` simplified back to browse/filter/list**: the stat tiles,
+  trend chart, fatigue chart, cumulative group, and "Analisi avanzata"
+  block that used to appear when filtering to a round shape are gone from
+  this screen entirely — that whole section moved into `Statistiche`
+  above. `Storico` now only ever renders its three filter chip rows plus
+  the session list.
