@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
-  ResponsiveContainer, LineChart, Line, BarChart, Bar, Cell,
+  ResponsiveContainer, LineChart, Line, BarChart, Bar, Cell, ComposedChart, AreaChart, Area,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from 'recharts';
 import {
@@ -314,14 +314,15 @@ function groupStats(stage, arrows) {
   return computeGroupStats(arrows, stage.round.faceCm);
 }
 
-// Compares the actual round snapshot (distance/face/arrows/ends), not any
-// id — two "Personalizzata" stages with different made-up rules (common for
-// gara sociale) are not the same round and must not be compared as if
-// chasing the same personal best; conversely a WA1440's 70m stage and a
-// standalone Targa 70m session DO count as the same round when the shape
-// matches, on purpose.
+// Compares distance + face size only, not arrows-per-end/ends — how a round
+// gets chunked into ends is a scoring convention, not a real difficulty
+// difference, so two rounds at the same distance/face are the same round
+// for comparison purposes even if one was shot 12x6 and the other 6x12. A
+// WA1440's 70m stage and a standalone Targa 70m session DO count as the
+// same round on purpose; two "Personalizzata" stages at different
+// distances or face sizes never do.
 function sameRound(a, b) {
-  return a.distanceM === b.distanceM && a.faceCm === b.faceCm && a.arrowsPerEnd === b.arrowsPerEnd && a.ends === b.ends;
+  return a.distanceM === b.distanceM && a.faceCm === b.faceCm;
 }
 
 // entries: a flat list from stageEntries() — see below. scope: { round, bowType, sessionType }.
@@ -422,16 +423,36 @@ function sessionProgressLabel(session) {
 // Standardized display name for a session — always computed from its round
 // shape, never freely typed (the old free-text "Nome prova" field let two
 // identical 30m/40cm rounds end up named completely differently, or not
-// named at all beyond the generic "Personalizzata"). Single-stage reuses
-// roundShapeLabel()'s preset match, so a recognized shape like "Targa 70m"
-// still wins over a raw "70m · 122cm". A 4-stage round is almost always
-// this club's FITARCO/WA 1440 aggregate, so it gets that name with the
-// actual distances shown; any other stage count just lists its distances.
+// named at all beyond the generic "Personalizzata"). Returns the archetype
+// name alone ("Targa 70m", "WA 1440") with nothing appended when the shape
+// is recognized; a session that doesn't match any known archetype gets
+// named after its actual distance(s) and face size(s) instead, and
+// `isArchetype: false` so callers can flag it visually rather than let it
+// pass as a "real" round name. Two multi-stage archetypes are recognized
+// this way: a 4-stage round (this club's WA 1440 aggregate convention) and
+// a 2-stage 25m+18m round (the standard FITARCO/WA Combined round). Any
+// other multi-stage shape isn't a known archetype.
 function sessionDisplayName(session) {
   const { stages } = session;
-  if (stages.length === 1) return roundShapeLabel(stages[0].round);
-  const distances = stages.map(st => st.round.distanceM).join('/');
-  return stages.length === 4 ? `WA 1440 (${distances}m)` : `${distances}m`;
+  if (stages.length === 1) {
+    const preset = matchedPreset(stages[0].round);
+    return { name: roundShapeLabel(stages[0].round), isArchetype: !!preset };
+  }
+  if (stages.length === 4) return { name: 'WA 1440', isArchetype: true };
+  const distances = stages.map(st => st.round.distanceM);
+  if (stages.length === 2 && distances.includes(25) && distances.includes(18)) {
+    return { name: 'WA Combined', isArchetype: true };
+  }
+  return { name: stages.map(st => `${st.round.distanceM}m · ${st.round.faceCm}cm`).join(' + '), isArchetype: false };
+}
+
+// Renders a session's standardized name — full-strength text for a
+// recognized archetype ("Targa 70m", "WA 1440"), dimmed for a shape that
+// doesn't match one, so a raw "30m · 80cm" distance/face label reads as
+// descriptive rather than passing as an official round name.
+function SessionName({ session }) {
+  const { name, isArchetype } = sessionDisplayName(session);
+  return <span style={isArchetype ? undefined : { color: T.textFaint }}>{name}</span>;
 }
 
 // Flattens every session's stages into virtual per-stage records for
@@ -564,19 +585,28 @@ function sessionInsight(session, allSessions) {
 // cares about. A stage entry has the same {round, ends, ...} shape a stage
 // does, so every function below works whether it's called with entries
 // (Storico) or, in the shooting screen, directly with the active stage.
-function fatigueCurve(completedList) {
+// Per end position (1st volée, 2nd, ...), across every session in the
+// list: the range (min-max) and average of that end's own per-arrow
+// average — a "how do I tend to perform at volée N" view, not just a
+// single flat average, so a real peak (or a dip) at a particular end is
+// visible instead of averaged away. Per-arrow rather than per-end-total so
+// ends with different arrow counts stay comparable.
+function endRangeStats(completedList) {
   const maxEnds = completedList.reduce((m, s) => Math.max(m, s.round.ends), 0);
   const rows = [];
   for (let i = 0; i < maxEnds; i++) {
-    let sum = 0, count = 0;
+    const endAvgs = [];
     completedList.forEach(s => {
       const end = s.ends[i];
       if (end && end.arrows.length) {
-        sum += end.arrows.reduce((a, b) => a + b.score, 0);
-        count += end.arrows.length;
+        endAvgs.push(end.arrows.reduce((a, b) => a + b.score, 0) / end.arrows.length);
       }
     });
-    rows.push({ end: i + 1, avg: count ? sum / count : null });
+    if (!endAvgs.length) { rows.push({ end: i + 1, range: null, avg: null }); continue; }
+    const min = Math.min(...endAvgs);
+    const max = Math.max(...endAvgs);
+    const avg = endAvgs.reduce((a, b) => a + b, 0) / endAvgs.length;
+    rows.push({ end: i + 1, range: [min, max], avg });
   }
   return rows;
 }
@@ -1247,7 +1277,7 @@ function SessionSummary({ session, sessions, onExit, onUpdate }) {
         </div>
         <div className="text-5xl font-bold" style={numeralStyle}>{total}</div>
         <div className="text-sm mt-1" style={{ color: T.textDim }}>
-          {sessionDisplayName(session)} · media {avg.toFixed(2)} · {sessionXCount(session)} X
+          <SessionName session={session} /> · media {avg.toFixed(2)} · {sessionXCount(session)} X
           {bowLabel(session.bowType) ? ` · ${bowLabel(session.bowType)}` : ''}
         </div>
         {session.stages.length > 1 && (
@@ -1330,7 +1360,7 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
         <button onClick={onExit} className="p-2 -ml-2 rounded-full active:scale-95 transition-transform min-w-11 min-h-11 flex items-center justify-center" aria-label="Indietro"><ChevronLeft /></button>
         <div className="text-center">
           <div className="font-semibold leading-tight flex items-center gap-2 justify-center">
-            {sessionDisplayName(session)}
+            <SessionName session={session} />
             <SessionTypeBadge sessionType={session.sessionType} />
           </div>
           <div className="text-xs" style={{ color: T.textDim }}>
@@ -1694,7 +1724,7 @@ function SessionRow({ session, onOpen, onDelete }) {
       <button onClick={onOpen} className="flex-1 text-left flex items-center justify-between gap-2 min-w-0 min-h-11">
         <div className="min-w-0">
           <div className="font-semibold truncate flex items-center gap-2">
-            <span className="truncate">{sessionDisplayName(session)}</span>
+            <span className="truncate"><SessionName session={session} /></span>
             <SessionTypeBadge sessionType={session.sessionType} />
             {!isDone && <span className="text-xs font-normal shrink-0" style={{ color: T.gold }}>in corso</span>}
           </div>
@@ -1730,7 +1760,6 @@ function StoricoScreen({ sessions, onOpen, onResume, onDelete, onImport, onSignO
   const [filterId, setFilterId] = useState('all'); // 'all' or a round-shape key from roundShapeKey()
   const [typeFilter, setTypeFilter] = useState('all');
   const [bowFilter, setBowFilter] = useState('all');
-  const [conditionDim, setConditionDim] = useState('wind');
 
   // Type/bow are session-level filters; round is a STAGE-shape filter — a
   // multi-stage session can have some stages match and others not, so it
@@ -1751,27 +1780,7 @@ function StoricoScreen({ sessions, onOpen, onResume, onDelete, onImport, onSignO
   }, [sessions]);
 
   const allEntries = useMemo(() => stageEntries(typeAndBowFiltered), [typeAndBowFiltered]);
-  const activeShape = filterId === 'all' ? null : stageShapes.find(s => s.key === filterId)?.round;
   const matchingEntries = filterId === 'all' ? [] : allEntries.filter(e => roundShapeKey(e.round) === filterId);
-  const completed = matchingEntries.filter(e => e.status === 'completed');
-
-  const trend = useMemo(() =>
-    completed.slice().sort((a, b) => new Date(a.completedAt) - new Date(b.completedAt))
-      .map(e => ({ label: formatDateShort(e.completedAt), score: totalScore(e) })),
-    [completed]);
-
-  const pb = completed.length ? completed.reduce((b, e) => (totalScore(e) > totalScore(b) ? e : b)) : null;
-  const avgScore = completed.length ? completed.reduce((s, e) => s + totalScore(e), 0) / completed.length : null;
-
-  const fatigue = useMemo(() => (filterId === 'all' ? [] : fatigueCurve(completed)), [completed, filterId]);
-
-  const allArrows = useMemo(() => completed.flatMap(e => flattenArrows(e)), [completed]);
-  const cumGroup = useMemo(() => (activeShape ? computeGroupStats(allArrows, activeShape.faceCm) : null), [allArrows, activeShape]);
-
-  const dispersion = useMemo(() => (filterId === 'all' ? [] : dispersionTrend(completed)), [completed, filterId]);
-  const distribution = useMemo(() => (filterId === 'all' ? [] : scoreDistribution(completed)), [completed, filterId]);
-  const byCondition = useMemo(() => (filterId === 'all' ? [] : scoreByCondition(completed, conditionDim)), [completed, filterId, conditionDim]);
-  const deepAnalysisReady = filterId !== 'all' && completed.length >= MIN_SESSIONS_FOR_DEEP_ANALYSIS;
 
   return (
     <div className="w-full mx-auto px-4 pt-4 pb-8 flex flex-col gap-5">
@@ -1803,131 +1812,8 @@ function StoricoScreen({ sessions, onOpen, onResume, onDelete, onImport, onSignO
         </ScrollFadeRow>
       </div>
 
-      {filterId === 'all' ? (
-        <div className="text-sm" style={{ color: T.textDim }}>{typeAndBowFiltered.length} sessioni. Seleziona una prova per le statistiche dettagliate.</div>
-      ) : (
-        <>
-          <div className="grid grid-cols-3 gap-2">
-            <StatTile label="Sessioni" value={completed.length} />
-            <StatTile label="Media" value={avgScore != null ? avgScore.toFixed(1) : '—'} />
-            <StatTile label="Primato" value={pb ? totalScore(pb) : '—'} />
-          </div>
-
-          <ChartCard title="Andamento punteggio">
-            {trend.length >= 2 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={trend}>
-                  <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
-                  <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
-                  <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={32} domain={['auto', 'auto']} />
-                  <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }} />
-                  <Line type="monotone" dataKey="score" stroke={T.gold} strokeWidth={2} dot={{ r: 3, fill: T.gold }} />
-                </LineChart>
-              </ResponsiveContainer>
-            ) : <EmptyChart text="Servono almeno 2 sessioni completate" />}
-          </ChartCard>
-
-          <ChartCard title="Media per volée (curva di fatica)">
-            {fatigue.filter(f => f.avg != null).length >= 2 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={fatigue}>
-                  <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
-                  <XAxis dataKey="end" stroke={T.textDim} tick={{ fontSize: 11 }} />
-                  <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 10]} />
-                  <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
-                    formatter={(v) => [Number(v).toFixed(2), 'media']} labelFormatter={(l) => `Volée ${l}`} />
-                  <Bar dataKey="avg" fill={T.blue} radius={[3, 3, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            ) : <EmptyChart text="Dati insufficienti" />}
-          </ChartCard>
-
-          <div className="flex flex-col gap-2">
-            <div className="text-sm font-semibold" style={{ color: T.textDim }}>Gruppo cumulativo</div>
-            <TargetFace faceCm={activeShape.faceCm} points={allArrows.filter(a => a.x != null)} centroid={cumGroup} dense />
-            {cumGroup ? (
-              <div className="text-sm" style={{ color: T.textDim }}>
-                Deviazione orizzontale: {Math.abs(cumGroup.cxCm).toFixed(1)} cm {cumGroup.cxCm >= 0 ? 'a destra' : 'a sinistra'} ·
-                {' '}Deviazione verticale: {Math.abs(cumGroup.cyCm).toFixed(1)} cm {cumGroup.cyCm >= 0 ? 'in basso' : 'in alto'} · {cumGroup.count} frecce
-              </div>
-            ) : <div className="text-sm" style={{ color: T.textDim }}>Nessuna freccia con posizione registrata (modalità tastierino).</div>}
-          </div>
-
-          <div className="flex flex-col gap-2">
-            <div className="text-sm font-semibold" style={{ color: T.textDim }}>Analisi avanzata</div>
-            {!deepAnalysisReady ? (
-              <div className="rounded-2xl p-4 text-sm" style={{ background: T.surface, border: `1px dashed ${T.border}`, color: T.textDim }}>
-                Servono almeno {MIN_SESSIONS_FOR_DEEP_ANALYSIS} sessioni completate per questa combinazione di prova, tipo e arco
-                {' '}(ne hai {completed.length}). Continua a registrare i tuoi allenamenti e le tue gare.
-              </div>
-            ) : (
-              <>
-                <ChartCard title="Dispersione media nel tempo (cm)">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={dispersion}>
-                      <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
-                      <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
-                      <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 'auto']} />
-                      <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
-                        formatter={(v) => [`${Number(v).toFixed(1)} cm`, 'dispersione']} />
-                      <Line type="monotone" dataKey="dispersion" stroke={T.blue} strokeWidth={2} dot={{ r: 3, fill: T.blue }} />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </ChartCard>
-
-                <ChartCard title="Deriva orizzontale e verticale (cm)" tall>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={dispersion}>
-                      <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
-                      <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
-                      <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={['auto', 'auto']} />
-                      <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
-                        formatter={(v, name) => [`${Number(v).toFixed(1)} cm`, name === 'biasX' ? 'orizzontale' : 'verticale']} />
-                      <Legend formatter={(value) => (value === 'biasX' ? 'Orizzontale' : 'Verticale')} wrapperStyle={{ fontSize: 11, color: T.textDim }} />
-                      <Line type="monotone" dataKey="biasX" stroke={T.gold} strokeWidth={2} dot={{ r: 2, fill: T.gold }} />
-                      <Line type="monotone" dataKey="biasY" stroke={T.red} strokeWidth={2} dot={{ r: 2, fill: T.red }} />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </ChartCard>
-
-                <ChartCard title="Distribuzione dei punteggi">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={distribution}>
-                      <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
-                      <XAxis dataKey="key" stroke={T.textDim} tick={{ fontSize: 11 }} />
-                      <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} allowDecimals={false} />
-                      <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }} />
-                      <Bar dataKey="count" radius={[3, 3, 0, 0]}>
-                        {distribution.map((d, i) => <Cell key={i} fill={d.color} />)}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </ChartCard>
-
-                <div className="rounded-2xl p-3 flex flex-col gap-2" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
-                  <div className="text-sm font-semibold" style={{ color: T.textDim }}>Media per condizioni</div>
-                  <div className="overflow-x-auto pb-1">
-                    <SegmentedControl options={CONDITION_DIMENSIONS} value={conditionDim} onChange={setConditionDim} small />
-                  </div>
-                  <div className="h-40">
-                    {byCondition.length ? (
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={byCondition}>
-                          <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
-                          <XAxis dataKey="key" stroke={T.textDim} tick={{ fontSize: 10 }} interval={0} angle={-20} textAnchor="end" height={40} />
-                          <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 10]} />
-                          <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
-                            formatter={(v, name, item) => [`${Number(v).toFixed(2)} (${item.payload.count} sessioni)`, 'media']} />
-                          <Bar dataKey="avg" fill={T.blue} radius={[3, 3, 0, 0]} />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    ) : <EmptyChart text="Nessuna condizione registrata per queste sessioni ancora" />}
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
-        </>
+      {filterId === 'all' && (
+        <div className="text-sm" style={{ color: T.textDim }}>{typeAndBowFiltered.length} sessioni. Seleziona una prova per filtrare l'elenco.</div>
       )}
 
       <div className="flex flex-col gap-2">
@@ -1954,11 +1840,19 @@ function StoricoScreen({ sessions, onOpen, onResume, onDelete, onImport, onSignO
 
 // Groups distinct stage shapes into a stable key for the round filter — a
 // custom/multi-stage round's shape isn't a fixed preset id, so the filter
-// list is built from what's actually been shot.
-function roundShapeKey(round) { return `${round.distanceM}|${round.faceCm}|${round.arrowsPerEnd}|${round.ends}`; }
+// list is built from what's actually been shot. Distance + face only (see
+// sameRound()) — how a round was chunked into ends doesn't change what
+// round it is.
+function roundShapeKey(round) { return `${round.distanceM}|${round.faceCm}`; }
+
+// The single-stage preset this shape matches, or null if it doesn't match
+// any recognized archetype exactly.
+function matchedPreset(round) {
+  return ROUND_TYPES.find(r => r.stages.length === 1 && sameRound(r.stages[0], round)) || null;
+}
 
 function roundShapeLabel(round) {
-  const preset = ROUND_TYPES.find(r => r.stages.length === 1 && sameRound(r.stages[0], round));
+  const preset = matchedPreset(round);
   if (preset) return preset.label;
   return `${round.distanceM}m · ${round.faceCm}cm`;
 }
@@ -2012,8 +1906,32 @@ function hitRateByColor(entries) {
   }));
 }
 
+// Same ring-color breakdown as hitRateByColor(), but one row per session
+// (chronological) instead of one aggregate snapshot — the trend
+// counterpart, for a 100%-stacked area chart showing how the color mix
+// shifts over time rather than just where it stands today.
+function colorTrendByShape(completedList) {
+  return completedList
+    .slice()
+    .sort((a, b) => new Date(a.completedAt) - new Date(b.completedAt))
+    .map(e => {
+      const arrows = flattenArrows(e);
+      const total = arrows.length;
+      const counts = {};
+      RING_GROUP_ORDER.forEach(k => (counts[k] = 0));
+      arrows.forEach(a => { counts[ringGroupForScore(a.score)] += 1; });
+      const row = { label: formatDateShort(e.completedAt) };
+      RING_GROUP_ORDER.forEach(k => { row[k] = total ? (counts[k] / total) * 100 : 0; });
+      return row;
+    });
+}
+
 // One row per distinct round shape ever shot: personal best, average, and
 // how many times — the cumulative counterpart to Storico's per-round PB tile.
+// Both best and avg are per-arrow (not raw totals): roundShapeKey() groups
+// by distance+face only now, so a group can mix sessions with different
+// arrow counts (e.g. a 72-arrow Targa 70m and a 36-arrow WA1440 stage) —
+// comparing raw totals would unfairly favor whichever had more arrows.
 function bestByShape(entries) {
   const map = new Map();
   entries.forEach(e => {
@@ -2022,12 +1940,16 @@ function bestByShape(entries) {
     map.get(key).entries.push(e);
   });
   return Array.from(map.values())
-    .map(({ round, entries: es }) => ({
-      round,
-      count: es.length,
-      best: Math.max(...es.map(totalScore)),
-      avg: es.reduce((s, e) => s + totalScore(e), 0) / es.length,
-    }))
+    .map(({ round, entries: es }) => {
+      const totalArrows = es.reduce((s, e) => s + arrowsShotCount(e), 0);
+      const totalPoints = es.reduce((s, e) => s + totalScore(e), 0);
+      return {
+        round,
+        count: es.length,
+        best: Math.max(...es.map(e => totalScore(e) / arrowsShotCount(e))),
+        avg: totalArrows ? totalPoints / totalArrows : 0,
+      };
+    })
     .sort((a, b) => b.round.distanceM - a.round.distanceM || b.round.faceCm - a.round.faceCm);
 }
 
@@ -2057,6 +1979,40 @@ function StatisticheScreen({ sessions }) {
     const latest = entries.reduce((a, b) => (new Date(b.completedAt) > new Date(a.completedAt) ? b : a));
     return roundShapeKey(latest.round);
   });
+  const [typeFilter, setTypeFilter] = useState('all');
+  const [bowFilter, setBowFilter] = useState('all');
+  const [conditionDim, setConditionDim] = useState('wind');
+
+  const typeAndBowFiltered = sessions.filter(s =>
+    (typeFilter === 'all' || (s.sessionType || 'allenamento') === typeFilter) &&
+    (bowFilter === 'all' || s.bowType === bowFilter));
+  const allEntries = useMemo(() => stageEntries(typeAndBowFiltered), [typeAndBowFiltered]);
+  const activeShape = filterId ? shapeRows.find(r => roundShapeKey(r.round) === filterId)?.round : null;
+  const matchingEntries = filterId ? allEntries.filter(e => roundShapeKey(e.round) === filterId) : [];
+  const completed = matchingEntries.filter(e => e.status === 'completed');
+
+  // Per-arrow average throughout, not raw totals — roundShapeKey() groups
+  // by distance+face only, so a group can mix sessions with different
+  // arrow counts (e.g. 72-arrow Targa 70m alongside a 36-arrow WA1440
+  // stage); comparing raw totals would unfairly favor whichever had more
+  // arrows.
+  const entryAvg = e => totalScore(e) / arrowsShotCount(e);
+  const trend = useMemo(() =>
+    completed.slice().sort((a, b) => new Date(a.completedAt) - new Date(b.completedAt))
+      .map(e => ({ label: formatDateShort(e.completedAt), avg: entryAvg(e) })),
+    [completed]);
+  const pb = completed.length ? completed.reduce((b, e) => (entryAvg(e) > entryAvg(b) ? e : b)) : null;
+  const totalArrowsFiltered = completed.reduce((s, e) => s + arrowsShotCount(e), 0);
+  const avgScore = totalArrowsFiltered ? completed.reduce((s, e) => s + totalScore(e), 0) / totalArrowsFiltered : null;
+  const colorData = useMemo(() => hitRateByColor(completed), [completed]);
+  const colorTrend = useMemo(() => (filterId ? colorTrendByShape(completed) : []), [completed, filterId]);
+  const endRange = useMemo(() => (filterId ? endRangeStats(completed) : []), [completed, filterId]);
+  const allArrows = useMemo(() => completed.flatMap(e => flattenArrows(e)), [completed]);
+  const cumGroup = useMemo(() => (activeShape ? computeGroupStats(allArrows, activeShape.faceCm) : null), [allArrows, activeShape]);
+  const dispersion = useMemo(() => (filterId ? dispersionTrend(completed) : []), [completed, filterId]);
+  const distribution = useMemo(() => (filterId ? scoreDistribution(completed) : []), [completed, filterId]);
+  const byCondition = useMemo(() => (filterId ? scoreByCondition(completed, conditionDim) : []), [completed, filterId, conditionDim]);
+  const deepAnalysisReady = filterId != null && completed.length >= MIN_SESSIONS_FOR_DEEP_ANALYSIS;
 
   if (!completedSessions.length) {
     return (
@@ -2098,14 +2054,200 @@ function StatisticheScreen({ sessions }) {
                 style={{ background: active ? T.surfaceAlt : T.surface, border: `1px solid ${active ? T.gold : T.border}` }}>
                 <div className="min-w-0">
                   <div className="font-semibold truncate">{roundShapeLabel(row.round)}</div>
-                  <div className="text-xs" style={{ color: T.textDim }}>media {row.avg.toFixed(1)} · {row.count} sessioni</div>
+                  <div className="text-xs" style={{ color: T.textDim }}>media {row.avg.toFixed(2)}/freccia · {row.count} sessioni</div>
                 </div>
-                <div className="text-lg font-bold shrink-0" style={numeralStyle}>{row.best}</div>
+                <div className="text-right shrink-0">
+                  <div className="text-lg font-bold" style={numeralStyle}>{row.best.toFixed(2)}</div>
+                  <div className="text-xs" style={{ color: T.textFaint }}>primato/freccia</div>
+                </div>
               </button>
             );
           })}
         </div>
       </div>
+
+      {filterId && (
+        <>
+          <div className="flex flex-col gap-2">
+            <ScrollFadeRow>
+              <FilterChip active={typeFilter === 'all'} onClick={() => setTypeFilter('all')} label="Tutti i tipi" />
+              {SESSION_TYPES.map(t => <FilterChip key={t.id} active={typeFilter === t.id} onClick={() => setTypeFilter(t.id)} label={t.label} />)}
+            </ScrollFadeRow>
+            <ScrollFadeRow>
+              <FilterChip active={bowFilter === 'all'} onClick={() => setBowFilter('all')} label="Tutti gli archi" />
+              {BOW_TYPES.map(b => <FilterChip key={b.id} active={bowFilter === b.id} onClick={() => setBowFilter(b.id)} label={b.label} />)}
+            </ScrollFadeRow>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2">
+            <StatTile label="Sessioni" value={completed.length} />
+            <StatTile label="Media/freccia" value={avgScore != null ? avgScore.toFixed(2) : '—'} />
+            <StatTile label="Primato/freccia" value={pb ? entryAvg(pb).toFixed(2) : '—'} />
+          </div>
+
+          <ChartCard title="Andamento media a freccia">
+            {trend.length >= 2 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={trend}>
+                  <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
+                  <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 10]} />
+                  <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                    formatter={(v) => [Number(v).toFixed(2), 'media a freccia']} />
+                  <Line type="monotone" dataKey="avg" stroke={T.gold} strokeWidth={2} dot={{ r: 3, fill: T.gold }} isAnimationActive={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            ) : <EmptyChart text="Servono almeno 2 sessioni completate" />}
+          </ChartCard>
+
+          <ChartCard title="Andamento colori nel tempo">
+            {colorTrend.length >= 2 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={colorTrend}>
+                  <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
+                  <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={32} unit="%" domain={[0, 100]} />
+                  <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                    formatter={(v, name) => [`${Number(v).toFixed(1)}%`, RING_GROUP_LABELS[name]]} />
+                  {RING_GROUP_ORDER.map(k => (
+                    <Area key={k} type="monotone" dataKey={k} stackId="colors" stroke={SCORE_COLORS[k].fill} fill={SCORE_COLORS[k].fill} isAnimationActive={false} />
+                  ))}
+                </AreaChart>
+              </ResponsiveContainer>
+            ) : <EmptyChart text="Servono almeno 2 sessioni completate" />}
+          </ChartCard>
+
+          <ChartCard title="Frecce per colore">
+            {completed.length ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={colorData}>
+                  <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="key" stroke={T.textDim} tick={{ fontSize: 11 }} />
+                  <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={32} unit="%" />
+                  <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                    formatter={(v, name, item) => [`${item.payload.count} frecce (${Number(v).toFixed(1)}%)`, 'frecce']} />
+                  <Bar dataKey="pct" radius={[3, 3, 0, 0]} isAnimationActive={false}>
+                    {colorData.map((d, i) => <Cell key={i} fill={d.color} />)}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            ) : <EmptyChart text="Nessuna sessione per questa combinazione" />}
+          </ChartCard>
+
+          <ChartCard title="Andamento per volée (min · media · max)">
+            {endRange.filter(f => f.range != null).length >= 2 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <ComposedChart data={endRange}>
+                  <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="end" stroke={T.textDim} tick={{ fontSize: 11 }} />
+                  <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 10]} />
+                  <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                    formatter={(v, name) => (name === 'range' ? [`${v[0].toFixed(2)} – ${v[1].toFixed(2)}`, 'min – max'] : [Number(v).toFixed(2), 'media'])}
+                    labelFormatter={(l) => `Volée ${l}`} />
+                  <Bar dataKey="range" fill={T.blue} fillOpacity={0.35} radius={[3, 3, 3, 3]} isAnimationActive={false} />
+                  <Line type="monotone" dataKey="avg" stroke={T.gold} strokeWidth={2} dot={{ r: 3, fill: T.gold }} isAnimationActive={false} />
+                </ComposedChart>
+              </ResponsiveContainer>
+            ) : <EmptyChart text="Dati insufficienti" />}
+          </ChartCard>
+
+          <div className="flex flex-col gap-2">
+            <div className="text-sm font-semibold" style={{ color: T.textDim }}>Gruppo cumulativo</div>
+            {cumGroup ? (
+              <>
+                <TargetFace faceCm={activeShape.faceCm} points={allArrows.filter(a => a.x != null)} centroid={cumGroup} dense />
+                <div className="text-sm" style={{ color: T.textDim }}>
+                  Deviazione orizzontale: {Math.abs(cumGroup.cxCm).toFixed(1)} cm {cumGroup.cxCm >= 0 ? 'a destra' : 'a sinistra'} ·
+                  {' '}Deviazione verticale: {Math.abs(cumGroup.cyCm).toFixed(1)} cm {cumGroup.cyCm >= 0 ? 'in basso' : 'in alto'} · {cumGroup.count} frecce
+                </div>
+              </>
+            ) : (
+              <div className="rounded-2xl p-4 text-sm" style={{ background: T.surface, border: `1px dashed ${T.border}`, color: T.textDim }}>
+                Nessuna freccia con posizione registrata per questa combinazione. Registra le posizioni sul bersaglio per sbloccare questa analisi.
+              </div>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <div className="text-sm font-semibold" style={{ color: T.textDim }}>Analisi avanzata</div>
+            {!deepAnalysisReady ? (
+              <div className="rounded-2xl p-4 text-sm" style={{ background: T.surface, border: `1px dashed ${T.border}`, color: T.textDim }}>
+                Servono almeno {MIN_SESSIONS_FOR_DEEP_ANALYSIS} sessioni completate per questa combinazione di prova, tipo e arco
+                {' '}(ne hai {completed.length}). Continua a registrare i tuoi allenamenti e le tue gare.
+              </div>
+            ) : (
+              <>
+                <ChartCard title="Dispersione media nel tempo (cm)">
+                  {dispersion.length >= 2 ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={dispersion}>
+                        <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
+                        <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
+                        <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 'auto']} />
+                        <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                          formatter={(v) => [`${Number(v).toFixed(1)} cm`, 'dispersione']} />
+                        <Line type="monotone" dataKey="dispersion" stroke={T.blue} strokeWidth={2} dot={{ r: 3, fill: T.blue }} isAnimationActive={false} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  ) : <EmptyChart text="Nessuna freccia con posizione registrata" />}
+                </ChartCard>
+
+                <ChartCard title="Deriva orizzontale e verticale (cm)" tall>
+                  {dispersion.length >= 2 ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={dispersion}>
+                        <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
+                        <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
+                        <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={['auto', 'auto']} />
+                        <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                          formatter={(v, name) => [`${Number(v).toFixed(1)} cm`, name === 'biasX' ? 'orizzontale' : 'verticale']} />
+                        <Legend formatter={(value) => (value === 'biasX' ? 'Orizzontale' : 'Verticale')} wrapperStyle={{ fontSize: 11, color: T.textDim }} />
+                        <Line type="monotone" dataKey="biasX" stroke={T.gold} strokeWidth={2} dot={{ r: 2, fill: T.gold }} isAnimationActive={false} />
+                        <Line type="monotone" dataKey="biasY" stroke={T.red} strokeWidth={2} dot={{ r: 2, fill: T.red }} isAnimationActive={false} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  ) : <EmptyChart text="Nessuna freccia con posizione registrata" />}
+                </ChartCard>
+
+                <ChartCard title="Distribuzione dei punteggi">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={distribution}>
+                      <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
+                      <XAxis dataKey="key" stroke={T.textDim} tick={{ fontSize: 11 }} />
+                      <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} allowDecimals={false} />
+                      <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }} />
+                      <Bar dataKey="count" radius={[3, 3, 0, 0]} isAnimationActive={false}>
+                        {distribution.map((d, i) => <Cell key={i} fill={d.color} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </ChartCard>
+
+                <div className="rounded-2xl p-3 flex flex-col gap-2" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+                  <div className="text-sm font-semibold" style={{ color: T.textDim }}>Media per condizioni</div>
+                  <div className="overflow-x-auto pb-1">
+                    <SegmentedControl options={CONDITION_DIMENSIONS} value={conditionDim} onChange={setConditionDim} small />
+                  </div>
+                  <div className="h-40">
+                    {byCondition.length ? (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={byCondition}>
+                          <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
+                          <XAxis dataKey="key" stroke={T.textDim} tick={{ fontSize: 10 }} interval={0} angle={-20} textAnchor="end" height={40} />
+                          <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 10]} />
+                          <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                            formatter={(v, name, item) => [`${Number(v).toFixed(2)} (${item.payload.count} sessioni)`, 'media']} />
+                          <Bar dataKey="avg" fill={T.blue} radius={[3, 3, 0, 0]} isAnimationActive={false} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    ) : <EmptyChart text="Nessuna condizione registrata per queste sessioni ancora" />}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -2147,7 +2289,7 @@ function DetailScreen({ session, sessions, onBack, onUpdate, onDelete }) {
       <div className="flex items-center gap-2">
         <button onClick={onBack} className="p-2 -ml-2 rounded-full min-w-11 min-h-11 flex items-center justify-center" aria-label="Indietro"><ChevronLeft /></button>
         <h1 className="text-xl font-bold flex items-center gap-2">
-          {sessionDisplayName(session)}
+          <SessionName session={session} />
           <SessionTypeBadge sessionType={session.sessionType} />
         </h1>
       </div>
@@ -2245,7 +2387,7 @@ function HomeScreen({ sessions, onNew, onResume, legacyData, onImportLegacy, onD
           <div>
             <div className="text-sm" style={{ color: T.textDim }}>Sessione in corso</div>
             <div className="text-lg font-semibold flex items-center gap-2">
-              {sessionDisplayName(s)}
+              <SessionName session={s} />
               <SessionTypeBadge sessionType={s.sessionType} />
             </div>
             <div className="text-sm" style={{ color: T.textDim }}>
