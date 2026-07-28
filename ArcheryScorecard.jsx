@@ -6,7 +6,7 @@ import {
 import {
   Target, Clock, ChevronLeft, ChevronRight, Plus, Trash2,
   Download, Upload, RotateCcw, Play, Check, StickyNote, LogOut, BarChart3,
-  Swords, Trophy, Users, UserPlus, Shuffle, Minus,
+  Swords, Trophy, Users, UserPlus, Shuffle, Minus, RefreshCw,
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
@@ -2062,6 +2062,10 @@ function HomeScreen({ sessions, onNew, onResume, legacyData, onImportLegacy, onD
           <div className="text-xs uppercase tracking-wide" style={{ color: T.textDim }}>Arcieri Senesi</div>
           <div className="text-2xl font-bold">Scorecard</div>
         </div>
+        <button onClick={() => window.location.reload()} className="ml-auto p-2 rounded-full active:scale-95 transition-transform"
+          style={{ background: T.surface, border: `1px solid ${T.border}` }} title="Ricarica l'app per aggiornamenti">
+          <RefreshCw size={18} color={T.textDim} />
+        </button>
       </header>
 
       {legacyData && (
