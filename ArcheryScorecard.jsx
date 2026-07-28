@@ -668,8 +668,10 @@ async function upsertSessionRemote(userId, session) {
       id: session.id, user_id: userId, data: session, updated_at: new Date().toISOString(),
     });
     if (error) throw error;
+    return true;
   } catch (err) {
     console.error('Errore nel salvataggio dei dati', err);
+    return false;
   }
 }
 
@@ -677,8 +679,10 @@ async function deleteSessionRemote(sessionId) {
   try {
     const { error } = await supabase.from('sessions').delete().eq('id', sessionId);
     if (error) throw error;
+    return true;
   } catch (err) {
     console.error('Errore nella eliminazione', err);
+    return false;
   }
 }
 
@@ -702,8 +706,10 @@ async function upsertTournamentRemote(userId, tournament) {
       id: tournament.id, user_id: userId, data: tournament, updated_at: new Date().toISOString(),
     });
     if (error) throw error;
+    return true;
   } catch (err) {
     console.error('Errore nel salvataggio del torneo', err);
+    return false;
   }
 }
 
@@ -711,8 +717,10 @@ async function deleteTournamentRemote(tournamentId) {
   try {
     const { error } = await supabase.from('tournaments').delete().eq('id', tournamentId);
     if (error) throw error;
+    return true;
   } catch (err) {
     console.error('Errore nella eliminazione del torneo', err);
+    return false;
   }
 }
 
@@ -2935,6 +2943,11 @@ export default function ArcheryScorecard() {
   const [tournaments, setTournaments] = useState([]);
   const [activeTournamentId, setActiveTournamentId] = useState(null);
   const [activeMatchRef, setActiveMatchRef] = useState(null); // { roundIdx, matchIdx }
+  const [saveError, setSaveError] = useState(null);
+
+  const flagSaveError = useCallback((ok, message) => {
+    if (!ok) setSaveError(message);
+  }, []);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setAuthSession(data.session ?? null));
@@ -2961,20 +2974,20 @@ export default function ArcheryScorecard() {
     setSessions(prev => {
       const next = prev.map(s => (s.id === id ? updater(s) : s));
       const changed = next.find(s => s.id === id);
-      if (changed && userId) upsertSessionRemote(userId, changed);
+      if (changed && userId) upsertSessionRemote(userId, changed).then(ok => flagSaveError(ok, 'Impossibile salvare la sessione online: le modifiche resteranno solo su questo dispositivo finché non si risolve.'));
       return next;
     });
-  }, [userId]);
+  }, [userId, flagSaveError]);
 
   const addSession = useCallback((session) => {
     setSessions(prev => [...prev, session]);
-    if (userId) upsertSessionRemote(userId, session);
-  }, [userId]);
+    if (userId) upsertSessionRemote(userId, session).then(ok => flagSaveError(ok, 'Impossibile salvare la sessione online: resterà solo su questo dispositivo finché non si risolve.'));
+  }, [userId, flagSaveError]);
 
   const deleteSession = useCallback((id) => {
     setSessions(prev => prev.filter(s => s.id !== id));
-    if (userId) deleteSessionRemote(id);
-  }, [userId]);
+    if (userId) deleteSessionRemote(id).then(ok => flagSaveError(ok, 'Impossibile eliminare la sessione online.'));
+  }, [userId, flagSaveError]);
 
   const importSessions = useCallback((imported) => {
     const normalized = imported.map(normalizeSession);
@@ -2982,10 +2995,11 @@ export default function ArcheryScorecard() {
       const byId = new Map(prev.map(s => [s.id, s]));
       normalized.forEach(s => byId.set(s.id, s));
       const next = Array.from(byId.values());
-      if (userId) normalized.forEach(s => upsertSessionRemote(userId, s));
+      if (userId) Promise.all(normalized.map(s => upsertSessionRemote(userId, s)))
+        .then(results => flagSaveError(results.every(Boolean), 'Alcune sessioni importate non sono state salvate online: resteranno solo su questo dispositivo finché non si risolve.'));
       return next;
     });
-  }, [userId]);
+  }, [userId, flagSaveError]);
 
   const importLegacyData = useCallback(() => {
     if (legacyData) importSessions(legacyData);
@@ -3000,22 +3014,22 @@ export default function ArcheryScorecard() {
 
   const addTournament = useCallback((tournament) => {
     setTournaments(prev => [...prev, tournament]);
-    if (userId) upsertTournamentRemote(userId, tournament);
-  }, [userId]);
+    if (userId) upsertTournamentRemote(userId, tournament).then(ok => flagSaveError(ok, 'Impossibile salvare il torneo online: resterà solo su questo dispositivo e andrà perso al ricaricamento. Controlla che la tabella "tournaments" esista su Supabase.'));
+  }, [userId, flagSaveError]);
 
   const updateTournament = useCallback((id, updater) => {
     setTournaments(prev => {
       const next = prev.map(t => (t.id === id ? updater(t) : t));
       const changed = next.find(t => t.id === id);
-      if (changed && userId) upsertTournamentRemote(userId, changed);
+      if (changed && userId) upsertTournamentRemote(userId, changed).then(ok => flagSaveError(ok, 'Impossibile salvare gli aggiornamenti del torneo online: andranno persi al ricaricamento. Controlla che la tabella "tournaments" esista su Supabase.'));
       return next;
     });
-  }, [userId]);
+  }, [userId, flagSaveError]);
 
   const deleteTournament = useCallback((id) => {
     setTournaments(prev => prev.filter(t => t.id !== id));
-    if (userId) deleteTournamentRemote(id);
-  }, [userId]);
+    if (userId) deleteTournamentRemote(id).then(ok => flagSaveError(ok, 'Impossibile eliminare il torneo online.'));
+  }, [userId, flagSaveError]);
 
   if (authSession === undefined) return <LoadingScreen />;
   if (authSession === null) return <AuthGate />;
@@ -3027,6 +3041,15 @@ export default function ArcheryScorecard() {
 
   return (
     <div className="flex flex-col font-sans antialiased" style={{ background: T.bg, color: T.text, minHeight: '100vh' }}>
+      {saveError && (
+        <div className="fixed top-0 left-0 right-0 z-50 px-4 pt-3 flex justify-center pointer-events-none">
+          <div className="w-full max-w-md sm:max-w-xl lg:max-w-3xl rounded-xl px-4 py-3 text-sm font-medium flex items-start gap-3 shadow-lg pointer-events-auto"
+            style={{ background: T.red, color: '#fff' }}>
+            <span className="flex-1">{saveError}</span>
+            <button onClick={() => setSaveError(null)} className="font-bold shrink-0" aria-label="Chiudi avviso">✕</button>
+          </div>
+        </div>
+      )}
       <div className="flex-1">
         {view === 'home' && (
           <HomeScreen sessions={sessions}
