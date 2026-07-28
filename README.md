@@ -227,14 +227,17 @@ a single-elimination tournament with live match scoring.
   match calls `applyMatchResult()`, which records the result and — unless
   it was the final — propagates the winner into next round's slot via
   `propagateWinner()`.
-- **Bracket view** defaults to a vertical round-by-round list of match
-  cards, with a toggle to switch to a classic horizontal bracket tree
+- **Bracket view** defaults to a classic horizontal bracket tree
   (`BracketTree` — connector lines computed with the standard
   doubling-spacing algorithm, so the draw stays visually balanced at any
-  size). The tree is horizontally scrollable rather than squeezed to fit,
-  since a multi-round bracket won't fit a phone screen at once either way.
-  Both views open the same live `MatchScreen` when you tap a playable
-  match, so you can score directly from the tree.
+  size), with a toggle to switch to a vertical round-by-round list of match
+  cards instead. The tree is horizontally scrollable rather than squeezed to
+  fit, since a multi-round bracket won't fit a phone screen at once either
+  way. Both views open the same live `MatchScreen` when you tap a playable
+  match, so you can score directly from the tree. The list view skips bye
+  matches entirely — nothing to score, nothing to decide — while the tree
+  keeps every node, since its connector-line layout depends on each bracket
+  position being present.
 - **Bulk participant entry**: "Incolla un elenco" in the tournament setup
   screen accepts a pasted list, one participant per line, name and score in
   either order ("Anna Rossi 600" or "600 Anna Rossi" — real scoreboards get
@@ -280,8 +283,13 @@ a single-elimination tournament with live match scoring.
   partecipanti" button on the bracket screen reopens the participant list
   (add/remove/bulk-paste) and regenerates the whole seeding from scratch
   (`rebuildTournamentBracket()`) — for a no-show discovered before the
-  first match, or a late arrival. The button disappears once any match has
-  a real result, since redrawing after that would silently discard it.
+  first match, or a late arrival. The same screen also lets the final
+  format itself be changed at this point, not just at creation — saving
+  passes both the edited participant list and the chosen format through to
+  the same rebuild. The button disappears once any match has a real result
+  (a completed Lancaster wildcard play-in counts, even if match1 itself
+  hasn't been played yet), since redrawing after that would silently
+  discard it.
 - **Three ways to decide the podium**, chosen per tournament at creation
   (`FINAL_FORMATS`, stored as `tournament.finalFormat`):
   - **Finale classica** (default): normal semifinal + final, plus an
@@ -305,22 +313,36 @@ a single-elimination tournament with live match scoring.
     happened to pair them, since upsets can put a lower seed through — into
     a sequential ladder: 4th-seed vs 3rd-seed, winner vs 2nd-seed, winner
     vs 1st-seed for gold (`seedLancasterLadder()`), three ordinary matches
-    chained together.
+    chained together. Before that first match is played, a collapsed
+    "Ripescaggio" control lets the organizer bring one already-eliminated
+    competitor back as a wildcard, challenging the 4th seed for their ladder
+    spot in an extra play-in match (`setLancasterWildcard()`) — anyone not
+    currently one of the 4 semifinalists qualifies, since Lancaster's final
+    stage is only ever reached via a strict single-elimination bracket, so
+    everyone else has necessarily already lost. The play-in's winner feeds
+    match1 exactly the way match1's winner feeds match2 — one extra optional
+    link at the front of the same chain. Reversible ("Annulla ripescaggio")
+    right up until the play-in itself is scored.
   - All three reduce to the existing 2-way match engine except the 3-way
     final's own pre-gold phase, which is the one genuinely new piece
     (`ThreeWayFinalScreen`). Tournaments saved before this feature default
     to "Finale classica" with no bronze match (`normalizeTournament()`),
     exactly how they behaved before.
 - **Reset tournament**: once a tournament has started (`tournamentHasStarted()`),
-  a two-tap "Reset torneo" button on the bracket screen wipes every match
-  result and redraws the bracket from scratch against the exact same seeded
-  participant list (`resetTournamentBracket()` — same rebuild the
+  a "Reset torneo" button on the bracket screen expands into a small panel
+  (tap to open, same collapsed-by-default pattern as the withdrawal
+  control) offering the final-format picker — defaulted to the tournament's
+  current format — plus an explicit confirm, before wiping every match
+  result and redrawing the bracket from scratch against the exact same
+  seeded participant list (`resetTournamentBracket()` — same rebuild the
   edit-participants flow uses, just fed the tournament's own current
   `participants` instead of an edited list). A do-over, not a redraw: who's
   entered and how they're seeded doesn't change, only the results played so
-  far are discarded. Available at any point, including after the
+  far are discarded (confirming without touching the pre-selected format
+  reproduces a plain reset). Available at any point, including after the
   tournament's finished, unlike editing participants which locks once play
-  begins.
+  begins — this is the only place the final format can be changed once a
+  result already exists, since a reset already wipes them anyway.
 - **Superuser mode** (desktop only): pressing `q` toggles a mode where
   opening a match docks its scoring card in a side panel next to the
   bracket instead of navigating full-screen over it. No extra plumbing was
@@ -348,4 +370,11 @@ a single-elimination tournament with live match scoring.
   across the top of the page while the mode is on — in normal document flow
   rather than a fixed overlay, so it never sits on top of the bracket cards
   it's describing. Declaring a shoot-off winner still requires a manual tap, keyboard
-  or not, since that's a judgment call.
+  or not, since that's a judgment call. Finishing a match goes one step
+  further than closing it: "Torna al tabellone" skips the bracket entirely
+  and docks whatever's next to score (`nextPlayableRef()`, same ordering the
+  arrow-key cursor uses, wrapping around the bracket if needed) — one click
+  from "match just finished" to "scoring the next one." This only applies to
+  that specific button; the ordinary back-chevron shown mid-match still just
+  un-docks without advancing, since leaving a match half-scored shouldn't
+  skip ahead.

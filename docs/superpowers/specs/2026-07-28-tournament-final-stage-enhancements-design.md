@@ -100,11 +100,11 @@ onReset: (finalFormat) =>
 
 ### Current behavior
 
-In superuser mode's split-view, completing a match/final shows a "Torna al tabellone" button (`MatchScreen`'s and `ThreeWayFinalScreen`'s completed-state views). Its `onBack` handler is wired at the root to `() => setActiveMatchRef(null)`, which un-docks the match and leaves the bracket showing on its own. Non-superuser mode's `onBack` (`() => { setActiveMatchRef(null); setView('bracket'); }`) is untouched by this change.
+In superuser mode's split-view, completing a match/final shows a "Torna al tabellone" button (`MatchScreen`'s and `ThreeWayFinalScreen`'s completed-state views). That button shares its `onBack` prop with the ordinary back-chevron shown throughout the *in-progress* view too (mid-match, before it's done) — so `onBack` can't simply be repointed at "advance," or leaving a match half-scored via the chevron would also skip ahead.
 
 ### New behavior
 
-In superuser split-view only, `onBack` instead jumps directly to the next playable match — no intermediate step, no confirmation screen, one click from "match just finished" to "scoring the next one."
+Both components gain a second, optional prop, `onDone`, defaulting to `onBack` when not passed (`const finish = onDone || onBack`). Only the completed-view's two buttons (chevron and "Torna al tabellone" — equivalent once the match is actually over) use `finish`; the in-progress chevron keeps using `onBack` unconditionally. Non-superuser call sites don't pass `onDone` at all, so they're unaffected. In superuser split-view only, `onDone` is wired to jump directly to the next playable match — no intermediate step, no confirmation screen, one click from "match just finished" to "scoring the next one."
 
 Reuses the exact ordering and playability helpers already built for the keyboard bracket-cursor navigation (`flatMatchRefs`, `isRefPlayable`, `refEquals`):
 
@@ -124,11 +124,12 @@ function nextPlayableRef(tournament, justCompletedRef) {
 Called at the point `onBack` fires (tournament state is already updated by then, since `onComplete` ran first when the match was submitted):
 
 ```js
-onBack: () => {
+onDone: () => {
   const next = nextPlayableRef(activeTournament, activeMatchRef);
   setActiveMatchRef(next);
   setBracketCursor(next); // keep the arrow-key cursor in sync with what's now docked
 }
+// onBack stays () => setActiveMatchRef(null) — the chevron still just un-docks mid-match.
 ```
 
 If `nextPlayableRef` returns `null` (nothing else playable — tournament finished, or everything remaining is waiting on other results), this is exactly today's behavior: the docked match clears and the bracket is shown on its own.
@@ -136,7 +137,7 @@ If `nextPlayableRef` returns `null` (nothing else playable — tournament finish
 ### Edge cases
 
 - Works uniformly across every final-stage match kind (`lancaster1`/`2`/`3`, the new `lancasterPlayIn`, `prelim`, `threeFinal`, `thirdPlace`, ordinary bracket rounds) since it's driven by the same `flatMatchRefs` ordering used everywhere else — no per-kind special-casing.
-- A completed 3-way final's runoff sub-match (nested `MatchScreen` inside `ThreeWayFinalScreen`) passes `onBack` straight through unchanged, so it's covered automatically.
+- A completed 3-way final's runoff sub-match (nested `MatchScreen` inside `ThreeWayFinalScreen`) needs both `onBack` and `onDone` forwarded straight through from the parent's own props, so it's covered the same way.
 - Wrapping around to the start of the list means if you finish the last currently-playable match in bracket order but an earlier round still has an unplayed bye-adjacent match waiting on a slower match elsewhere, you'll land back near the start rather than getting stuck — matches the existing arrow-key cursor's wraparound behavior, so the two stay mentally consistent.
 
 ---
