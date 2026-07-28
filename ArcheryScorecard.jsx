@@ -203,6 +203,19 @@ const KEYPAD_LAYOUT = [
   { score: 0, isX: false, label: 'M' },
 ];
 
+// Undocumented keyboard mirror of the Keypad, for superuser mode — digits
+// 1-9 as-is, 0 for a plain 10, x for an X, m for a miss. Deliberately not
+// surfaced anywhere in the UI (see keyboardScoring prop on MatchScreen /
+// ThreeWayFinalScreen): it's a shortcut for whoever already knows it's
+// there, not a feature to advertise.
+const KEY_SCORE_MAP = {
+  '1': { score: 1, isX: false }, '2': { score: 2, isX: false }, '3': { score: 3, isX: false },
+  '4': { score: 4, isX: false }, '5': { score: 5, isX: false }, '6': { score: 6, isX: false },
+  '7': { score: 7, isX: false }, '8': { score: 8, isX: false }, '9': { score: 9, isX: false },
+  '0': { score: 10, isX: false }, 'x': { score: 10, isX: true }, 'm': { score: 0, isX: false },
+};
+function keyToScore(key) { return KEY_SCORE_MAP[key.toLowerCase()] || null; }
+
 // ---------- scoring / data helpers ----------
 
 function ringGroupForScore(score) {
@@ -3386,7 +3399,7 @@ function ArrowsInputColumn({ label, needed, pending, onAdd, onUndo, disabled }) 
 // ladder matches. The caller resolves `match`+`title` from whatever
 // reference it's tracking and gets back just the updated match object via
 // onComplete — it decides how that propagates (see applyMatchResult).
-function MatchScreen({ match, title, formatId, onBack, onComplete }) {
+function MatchScreen({ match, title, formatId, onBack, onComplete, keyboardScoring }) {
   const formatDef = matchFormatDef(formatId);
   const needed = arrowsPerUnit(formatDef);
   const unitIdx = currentUnitIndex(match);
@@ -3396,6 +3409,40 @@ function MatchScreen({ match, title, formatId, onBack, onComplete }) {
   const [activeSide, setActiveSide] = useState('A');
   const [shootA, setShootA] = useState([]);
   const [shootB, setShootB] = useState([]);
+
+  // Undocumented keyboard mirror of the Keypad/undo/confirm buttons —
+  // only live in superuser mode (see keyToScore). Enter only fires the
+  // shortcut when the confirm button would itself be enabled; shoot-off
+  // still requires a manual "Vince X" tap since declaring a winner is a
+  // judgment call the keyboard shouldn't shortcut.
+  useEffect(() => {
+    if (!keyboardScoring || match.status === 'completed') return;
+    function handleKeyDown(e) {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const tag = e.target && e.target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (e.key === 'Backspace') {
+        e.preventDefault();
+        if (match.status === 'shootoff') (activeSide === 'A' ? setShootA : setShootB)(l => l.slice(0, -1));
+        else undoArrow(activeSide);
+        return;
+      }
+      if (e.key === 'Enter') {
+        if (match.status !== 'shootoff' && pendingA.length >= needed && pendingB.length >= needed) {
+          e.preventDefault();
+          submitUnit();
+        }
+        return;
+      }
+      const mapped = keyToScore(e.key);
+      if (!mapped) return;
+      e.preventDefault();
+      if (match.status === 'shootoff') (activeSide === 'A' ? setShootA : setShootB)(l => [...l, mapped]);
+      else addArrow(activeSide, mapped.score, mapped.isX);
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [keyboardScoring, match.status, activeSide, pendingA.length, pendingB.length, needed]);
 
   function addArrow(side, score, isX) {
     const setPending = side === 'A' ? setPendingA : setPendingB;
@@ -3513,7 +3560,7 @@ function MatchScreen({ match, title, formatId, onBack, onComplete }) {
 // ordinary MatchScreen for the silver/bronze runoff between whoever's left
 // — that phase needs nothing special, it's just a normal match that starts
 // at a carried-over score.
-function ThreeWayFinalScreen({ tournament, onBack, onComplete }) {
+function ThreeWayFinalScreen({ tournament, onBack, onComplete, keyboardScoring }) {
   const formatDef = matchFormatDef(tournament.formatId);
   const needed = arrowsPerUnit(formatDef);
   const final = tournament.finalStage.final;
@@ -3524,9 +3571,41 @@ function ThreeWayFinalScreen({ tournament, onBack, onComplete }) {
   const [activeSide, setActiveSide] = useState(0);
   const [shootPending, setShootPending] = useState([[], [], []]);
 
+  // Same undocumented keyboard mirror as MatchScreen (see keyToScore).
+  // Skips entirely once we're in the runoff phase — that delegates to a
+  // real MatchScreen below, which gets its own keyboardScoring listener.
+  useEffect(() => {
+    if (!keyboardScoring || final.status === 'runoff' || final.status === 'completed') return;
+    function handleKeyDown(e) {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const tag = e.target && e.target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      const inShootoff = final.status === 'shootoff3';
+      const contenders = final.shootoffContenders || [0, 1, 2];
+      if (inShootoff && !contenders.includes(activeSide)) return;
+      if (e.key === 'Backspace') {
+        e.preventDefault();
+        if (inShootoff) setShootPending(p => p.map((arr, j) => (j === activeSide ? arr.slice(0, -1) : arr)));
+        else undoArrow(activeSide);
+        return;
+      }
+      if (e.key === 'Enter') {
+        if (!inShootoff && [0, 1, 2].every(i => pending[i].length >= needed)) { e.preventDefault(); submitUnit(); }
+        return;
+      }
+      const mapped = keyToScore(e.key);
+      if (!mapped) return;
+      e.preventDefault();
+      if (inShootoff) setShootPending(p => p.map((arr, j) => (j === activeSide ? [...arr, mapped] : arr)));
+      else addArrow(activeSide, mapped.score, mapped.isX);
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [keyboardScoring, final.status, activeSide, pending, shootPending, needed]);
+
   if (final.status === 'runoff') {
     return (
-      <MatchScreen match={final.runoff} title="Spareggio 2°/3° posto" formatId={tournament.formatId}
+      <MatchScreen match={final.runoff} title="Spareggio 2°/3° posto" formatId={tournament.formatId} keyboardScoring={keyboardScoring}
         onBack={onBack} onComplete={(updatedRunoff) => onComplete(applyThreeWayRunoffUpdate(final, updatedRunoff))} />
     );
   }
@@ -3911,20 +3990,24 @@ export default function ArcheryScorecard() {
           if (!superuser || !activeMatchRef) return bracket;
 
           const splitMatch = activeMatchRef.kind === 'threeFinal' ? (
-            <ThreeWayFinalScreen tournament={activeTournament}
+            <ThreeWayFinalScreen tournament={activeTournament} keyboardScoring={superuser}
               onBack={() => setActiveMatchRef(null)}
               onComplete={(updatedFinal) => updateTournament(activeTournament.id, t => applyMatchResult(t, { kind: 'threeFinal' }, updatedFinal))} />
           ) : (resolvedMatch && (
-            <MatchScreen match={resolvedMatch.match} title={resolvedMatch.title} formatId={activeTournament.formatId}
+            <MatchScreen match={resolvedMatch.match} title={resolvedMatch.title} formatId={activeTournament.formatId} keyboardScoring={superuser}
               onBack={() => setActiveMatchRef(null)}
               onComplete={(updatedMatch) => updateTournament(activeTournament.id, t => applyMatchResult(t, activeMatchRef, updatedMatch))} />
           ));
           if (!splitMatch) return bracket;
 
+          // Both panes scroll together as one page — the docked match card
+          // just sticks near the top of the viewport as you scroll, rather
+          // than carrying its own independent scroll region nested inside
+          // the page's, which is disorienting with two scrollbars active.
           return (
             <div className="flex flex-col lg:flex-row lg:items-start">
               <div className="flex-1 min-w-0">{bracket}</div>
-              <div className="w-full lg:w-[26rem] shrink-0 lg:sticky lg:top-4 lg:max-h-screen lg:overflow-y-auto border-t lg:border-t-0 lg:border-l"
+              <div className="w-full lg:w-[26rem] shrink-0 lg:sticky lg:top-4 border-t lg:border-t-0 lg:border-l"
                 style={{ borderColor: T.border }}>
                 {splitMatch}
               </div>
@@ -3939,13 +4022,13 @@ export default function ArcheryScorecard() {
         )}
 
         {view === 'match' && activeTournament && activeMatchRef && resolvedMatch && (
-          <MatchScreen match={resolvedMatch.match} title={resolvedMatch.title} formatId={activeTournament.formatId}
+          <MatchScreen match={resolvedMatch.match} title={resolvedMatch.title} formatId={activeTournament.formatId} keyboardScoring={superuser}
             onBack={() => { setActiveMatchRef(null); setView('bracket'); }}
             onComplete={(updatedMatch) => updateTournament(activeTournament.id, t => applyMatchResult(t, activeMatchRef, updatedMatch))} />
         )}
 
         {view === 'threefinal' && activeTournament && (
-          <ThreeWayFinalScreen tournament={activeTournament}
+          <ThreeWayFinalScreen tournament={activeTournament} keyboardScoring={superuser}
             onBack={() => { setActiveMatchRef(null); setView('bracket'); }}
             onComplete={(updatedFinal) => updateTournament(activeTournament.id, t => applyMatchResult(t, { kind: 'threeFinal' }, updatedFinal))} />
         )}

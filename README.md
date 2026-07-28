@@ -334,4 +334,11 @@ a single-elimination tournament with live match scoring.
   split view without losing your place — turning it on while a match is
   open full-screen brings the bracket back on screen with that match now
   docked beside it; turning it off pops the docked match back to
-  full-screen.
+  full-screen. While it's on, the keyboard also mirrors the Keypad
+  (`keyToScore()`): digits `1`-`9`, `0` for a plain 10, `x` for an X, `m`
+  for a miss, `Enter` to confirm a set/end (only once both sides have
+  enough arrows, same as the button), `Backspace` to undo the active
+  side's last arrow. Deliberately not shown anywhere in the UI — it's a
+  shortcut for whoever already knows it's there. Declaring a shoot-off
+  winner still requires a manual tap, keyboard or not, since that's a
+  judgment call.
