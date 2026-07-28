@@ -689,11 +689,20 @@ async function deleteSessionRemote(sessionId) {
 // Tournaments live in their own table (same pattern as sessions) so a
 // tournament can be created, scored live, and revisited across devices
 // without touching the personal-scorecard data at all.
+// Tournaments created before the final-format feature don't have
+// finalFormat/finalStage/thirdPlaceMatch at all — treat them as the
+// 'standard' format with no bronze match, i.e. exactly how they behaved
+// before this feature existed.
+function normalizeTournament(t) {
+  if (t.finalFormat) return t;
+  return { ...t, finalFormat: 'standard', finalStage: t.finalStage || null, thirdPlaceMatch: t.thirdPlaceMatch || null };
+}
+
 async function loadTournamentsRemote(userId) {
   try {
     const { data, error } = await supabase.from('tournaments').select('data').eq('user_id', userId);
     if (error) throw error;
-    return (data || []).map(row => row.data);
+    return (data || []).map(row => normalizeTournament(row.data));
   } catch (err) {
     console.error('Errore nel caricamento dei tornei', err);
     return [];
@@ -2229,11 +2238,46 @@ function standardSeedOrder(size) {
   return out;
 }
 
+// A standalone 2-way match not living in the bracket's `rounds` array (the
+// standard format's bronze match, the 3-way format's preliminary, or any of
+// Lancaster's three sequential matches) — same shape as makeMatch() produces,
+// just without a bracket position since nothing propagates into it via the
+// normal round-index math.
+function emptyMatch() {
+  return { slotA: null, slotB: null, status: 'waiting', winnerSlot: null, units: [], cumSpA: 0, cumSpB: 0, shootOff: null, forfeit: false };
+}
+
+// Three ways to decide the podium once the field is down to its last 4:
+// - standard: normal bracket semifinal + final, plus an independent bronze
+//   match between the two semifinal losers (today's app had no bronze match
+//   at all — the losers were just eliminated).
+// - threeway: semifinal round is still played normally; its two losers play
+//   a preliminary decider whose winner joins the two semifinal winners for a
+//   genuine 3-way final (see the "3-way match engine" section below) —
+//   gold/silver/bronze all decided among those 3; the preliminary's loser is
+//   locked into 4th.
+// - lancaster: the semifinal + final rounds are skipped entirely. Once the
+//   bracket produces 4 semifinalists, they're re-ranked by their original
+//   seeding score (not by how the bracket happened to pair them) into a
+//   sequential ladder: 4th-seed vs 3rd-seed, winner vs 2nd-seed, winner vs
+//   1st-seed for gold — three ordinary 2-way matches, chained.
+const FINAL_FORMATS = [
+  { id: 'standard', label: 'Finale classica', desc: 'Semifinali + finale per l’oro, più una finale indipendente per il bronzo tra le due sconfitte in semifinale.' },
+  { id: 'threeway', label: 'Finale a 3', desc: 'Le due sconfitte in semifinale si giocano un turno preliminare: la vincitrice raggiunge le due finaliste per una finale a 3 che assegna oro, argento e bronzo.' },
+  { id: 'lancaster', label: 'Finale Lancaster', desc: 'Le 4 semifinaliste vengono riordinate per punteggio di qualifica: 4ª contro 3ª, la vincente contro la 2ª, la vincente contro la 1ª per l’oro.' },
+];
+function finalFormatDef(id) { return FINAL_FORMATS.find(f => f.id === id) || FINAL_FORMATS[0]; }
+
 // participants: array of { id, name, seedScore, ... } already sorted best
-// seed first (highest seedScore first). Returns { size, rounds } where
-// rounds[0] is the first round (byes already resolved into empty slotB) and
-// later rounds start with null slots, filled in as earlier rounds complete.
-function buildBracket(participants) {
+// seed first (highest seedScore first). Returns { size, rounds, finalFormat,
+// finalStage, thirdPlaceMatch }. rounds[0] is the first round (byes already
+// resolved into empty slotB); later rounds start with null slots, filled in
+// as earlier rounds complete. For 'threeway'/'lancaster' with at least 4
+// competitors, `rounds` stops short of a normal bracket (see dropCount
+// below) and whatever it would have produced next is handled instead by
+// `finalStage`. Below 4 competitors there's no "last 4" to speak of, so it
+// silently behaves like a plain single match regardless of finalFormat.
+function buildBracket(participants, finalFormat = 'standard') {
   const n = participants.length;
   const size = n <= 1 ? 1 : Math.pow(2, Math.ceil(Math.log2(n)));
   const order = standardSeedOrder(size);
@@ -2257,7 +2301,42 @@ function buildBracket(participants) {
   // Byes resolve immediately and propagate into round 1.
   rounds[0].forEach((m, i) => { if (m.status === 'bye') propagateWinner(rounds, 0, i, m.winnerSlot); });
 
-  return { size, rounds };
+  const totalRounds = rounds.length; // = log2(size)
+  const usesFinalStage = (finalFormat === 'threeway' || finalFormat === 'lancaster') && totalRounds >= 2;
+
+  if (!usesFinalStage) {
+    const thirdPlaceMatch = (finalFormat === 'standard' && totalRounds >= 2) ? emptyMatch() : null;
+    return { size, rounds, finalFormat, finalStage: null, thirdPlaceMatch };
+  }
+
+  if (finalFormat === 'threeway') {
+    // Only the final round is dropped — the semifinal round is still real
+    // bracket matches, since we need actual winners vs losers out of it.
+    const keptRounds = rounds.slice(0, rounds.length - 1);
+    const finalStage = {
+      format: 'threeway',
+      prelim: emptyMatch(),
+      final: { sides: [null, null, null], status: 'waiting', units: [], cumSp: [0, 0, 0], goldSlot: null, runoff: null },
+      standings: {},
+    };
+    return { size, rounds: keptRounds, finalFormat, finalStage, thirdPlaceMatch: null };
+  }
+
+  // lancaster: both semifinal and final rounds are dropped. The last kept
+  // round's 4 winners (or, if there is no kept round at all — exactly 4
+  // competitors — the 4 competitors themselves) become the semifinalists.
+  const keptRounds = rounds.slice(0, rounds.length - 2);
+  const finalStage = {
+    format: 'lancaster',
+    sides: [null, null, null, null],
+    match1: emptyMatch(), match2: emptyMatch(), match3: emptyMatch(),
+    standings: {},
+  };
+  if (keptRounds.length === 0) {
+    finalStage.sides = seedLancasterSides(bySeedPos);
+    seedLancasterLadder(finalStage);
+  }
+  return { size, rounds: keptRounds, finalFormat, finalStage, thirdPlaceMatch: null };
 }
 
 function makeMatch(roundIdx, matchIdx, slotA, slotB) {
@@ -2270,6 +2349,7 @@ function makeMatch(roundIdx, matchIdx, slotA, slotB) {
     units: [],
     cumSpA: 0, cumSpB: 0,
     shootOff: null,
+    forfeit: false,
   };
 }
 
@@ -2291,6 +2371,54 @@ function propagateWinner(rounds, roundIdx, matchIdx, winnerSlot) {
     // 'waiting' until it's filled too (byes only ever happen in round 0,
     // since a real bracket never produces a lone empty slot past that).
   }
+}
+
+// Fills one slot of a standalone match (bronze match / threeway prelim /
+// a Lancaster ladder match) fed from outside the normal round-to-round
+// propagation. Marks it 'pending' once both slots are present — does NOT
+// auto-resolve a lone slot as a bye, since a slot can legitimately still be
+// waiting on a future feed (e.g. a Lancaster match's slot fed by an earlier
+// match in the ladder). Use resolveByeIfLonely() for a slot that's truly
+// never getting a second competitor.
+function fillMatchSlot(match, key, participant) {
+  const next = { ...match, [key]: participant || null };
+  if (next.slotA && next.slotB) next.status = 'pending';
+  return next;
+}
+
+// Only for a slot where the other side is genuinely never coming — mirrors
+// makeMatch()'s bye handling. Only reachable when a small, non-power-of-2
+// field leaves an unfillable slot all the way into the final stage.
+function resolveByeIfLonely(match) {
+  const bye = !!(match.slotA && !match.slotB) || !!(!match.slotA && match.slotB);
+  if (!bye) return match;
+  return { ...match, status: 'bye', winnerSlot: match.slotA ? 'A' : 'B' };
+}
+
+// Re-ranks a set of (up to 4) semifinalists by their original qualification
+// seeding score — not by how the bracket happened to pair them up — since
+// Lancaster's running order is score-based, not bracket-position-based.
+// Nulls (an unfilled slot from a small field) sort last.
+function seedLancasterSides(people) {
+  return people.slice().sort((a, b) => {
+    if (!a && !b) return 0;
+    if (!a) return 1;
+    if (!b) return -1;
+    return b.seedScore - a.seedScore;
+  });
+}
+
+// Wires the 3-match Lancaster ladder once the 4 semifinalists are known:
+// match1 = 4th-seed vs 3rd-seed; match2 and match3 already have their
+// "bye" side (2nd-seed, 1st-seed) pre-filled — only the side fed by the
+// previous match in the chain is still to come. Mutates finalStage in
+// place since it's only ever called on a freshly-built object nothing else
+// references yet.
+function seedLancasterLadder(finalStage) {
+  const [s1, s2, s3, s4] = finalStage.sides;
+  finalStage.match1 = resolveByeIfLonely(fillMatchSlot(fillMatchSlot(emptyMatch(), 'slotA', s4), 'slotB', s3));
+  finalStage.match2 = fillMatchSlot(emptyMatch(), 'slotA', s2);
+  finalStage.match3 = fillMatchSlot(emptyMatch(), 'slotA', s1);
 }
 
 // ---------- match engine ----------
@@ -2354,6 +2482,107 @@ function forfeitMatch(match, winnerSlot) {
   return { ...match, status: 'completed', winnerSlot, forfeit: true };
 }
 
+// ---------- 3-way final engine (threeway final format only) ----------
+//
+// 3 archers shoot every end simultaneously. Each end awards 2 set-points
+// total to whoever's strictly highest that end; if 2 or 3 archers tie for
+// the top score, they split it 1 point each (so a 3-way tie is 1-1-1, not
+// the usual 2-0). Once every end's been shot (or someone reaches the
+// winning total early), gold goes outright to whoever's strictly ahead —
+// only a genuine tie for the lead needs a shoot-off. Whichever way gold is
+// decided, the other two then play on for silver/bronze, carrying over
+// whatever set-points they already had against each other, via the
+// ordinary 2-way engine (recordUnit/recordShootOff/forfeitMatch) — a
+// silver/bronze runoff is really just a normal match that happens to start
+// at a non-zero score.
+
+function sumThreeWayPoints(units) {
+  const cumSp = [0, 0, 0];
+  units.forEach(u => { if (u && u.sps) u.sps.forEach((sp, i) => { cumSp[i] += sp || 0; }); });
+  return cumSp;
+}
+
+function record3WayUnit(final, formatDef, unitIndex, sideIdx, arrows) {
+  const units = final.units.slice();
+  let unit = units[unitIndex] || { index: unitIndex, arrows: [null, null, null], totals: [null, null, null], sps: [null, null, null] };
+  const totals = unit.totals.slice();
+  const arrowsArr = unit.arrows.slice();
+  totals[sideIdx] = sumArrows(arrows);
+  arrowsArr[sideIdx] = arrows;
+  unit = { ...unit, totals, arrows: arrowsArr };
+  if (unit.totals.every(t => t != null)) {
+    const endMax = Math.max(...unit.totals);
+    const endLeaders = unit.totals.filter(v => v === endMax).length;
+    unit.sps = unit.totals.map(t => (t === endMax ? (endLeaders === 1 ? 2 : 1) : 0));
+  }
+  units[unitIndex] = unit;
+
+  const cumSp = sumThreeWayPoints(units);
+  const unitsPlayed = units.filter(u => u && u.totals.every(t => t != null)).length;
+  const decided = cumSp.some(sp => sp >= formatDef.setPointsToWin);
+  const exhausted = unitsPlayed >= formatDef.units;
+
+  let status = 'in_progress';
+  let goldSlot = final.goldSlot;
+  let shootoffContenders = final.shootoffContenders || null;
+  if (decided || exhausted) {
+    const max = Math.max(...cumSp);
+    const leaders = [0, 1, 2].filter(i => cumSp[i] === max);
+    if (leaders.length === 1) {
+      goldSlot = leaders[0];
+      status = 'runoff';
+    } else {
+      status = 'shootoff3';
+      shootoffContenders = leaders;
+    }
+  }
+
+  let next = { ...final, units, cumSp, status, goldSlot, shootoffContenders };
+  if (status === 'runoff') next = startThreeWayRunoff(next, formatDef);
+  return next;
+}
+
+// Manual gold declaration among whoever was tied for the lead — same
+// judgment-call pattern as a normal 2-way shoot-off, just with 2 or 3
+// contenders instead of always 2.
+function record3WayShootOff(final, formatDef, goldSlot, arrows) {
+  const next = { ...final, status: 'runoff', goldSlot, shootOff3: arrows || null };
+  return startThreeWayRunoff(next, formatDef);
+}
+
+// Starts the silver/bronze runoff as an ordinary 2-way match object —
+// slotA/slotB set to the real participants — seeded with each side's own
+// set-points exactly as they stood in the 3-way phase (their literal
+// cumSp, not a head-to-head score recomputed from arrows: those two could
+// easily have tied every single end without ever contesting the lead, in
+// which case recomputing would give a different number than what they
+// actually earned). Their arrow history stays on the 3-way final for the
+// record; the runoff's own ends start counting fresh from here.
+function startThreeWayRunoff(final, formatDef) {
+  const remaining = [0, 1, 2].filter(i => i !== final.goldSlot);
+  const runoff = {
+    slotA: final.sides[remaining[0]], slotB: final.sides[remaining[1]],
+    units: [], cumSpA: final.cumSp[remaining[0]], cumSpB: final.cumSp[remaining[1]],
+    status: 'in_progress', winnerSlot: null, shootOff: null, forfeit: false,
+  };
+  return { ...final, runoff: { ...runoff, sideA: remaining[0], sideB: remaining[1] } };
+}
+
+// MatchScreen plays the runoff exactly like a normal match (including
+// forfeit) and hands back the updated match object — this folds it back
+// into the 3-way final and, once it's decided, records silver/bronze.
+function applyThreeWayRunoffUpdate(final, updatedRunoff) {
+  const runoff = { ...updatedRunoff, sideA: final.runoff.sideA, sideB: final.runoff.sideB };
+  if (runoff.status !== 'completed') return { ...final, runoff };
+  const silverSlot = runoff.winnerSlot === 'A' ? runoff.sideA : runoff.sideB;
+  const bronzeSlot = runoff.winnerSlot === 'A' ? runoff.sideB : runoff.sideA;
+  return { ...final, runoff, status: 'completed', silverSlot, bronzeSlot };
+}
+
+function matchHasResult(m) {
+  return !!m && (m.status === 'completed' || m.status === 'in_progress' || m.status === 'shootoff');
+}
+
 function currentUnitIndex(match) {
   const idx = match.units.findIndex(u => !u || u.totalA == null || u.totalB == null);
   return idx === -1 ? match.units.length : idx;
@@ -2372,33 +2601,187 @@ function roundName(totalRounds, idx) {
 
 function uidT() { return 't_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8); }
 
-function createTournament({ name, date, distanceM, faceCm, formatId, participants }) {
+function createTournament({ name, date, distanceM, faceCm, formatId, participants, finalFormat = 'standard' }) {
   const sorted = participants.slice().sort((a, b) => b.seedScore - a.seedScore);
   const seeded = sorted.map((p, i) => ({ ...p, seed: i + 1 }));
-  const { size, rounds } = buildBracket(seeded);
+  const { size, rounds, finalStage, thirdPlaceMatch } = buildBracket(seeded, finalFormat);
   return {
     id: uidT(),
-    name, date, distanceM, faceCm, formatId,
+    name, date, distanceM, faceCm, formatId, finalFormat,
     participants: seeded,
     bracketSize: size,
-    rounds,
+    rounds, finalStage, thirdPlaceMatch,
     createdAt: new Date().toISOString(),
   };
 }
 
-// Applies a completed match's result back into the tournament's bracket —
-// records the score/shoot-off on the match itself and, if it wasn't the
-// final, advances the winner into next round's slot.
-function applyMatchResult(tournament, roundIdx, matchIdx, updatedMatch) {
-  const rounds = tournament.rounds.map(r => r.slice());
-  rounds[roundIdx][matchIdx] = updatedMatch;
-  if (updatedMatch.status === 'completed') propagateWinner(rounds, roundIdx, matchIdx, updatedMatch.winnerSlot);
-  return { ...tournament, rounds };
+// Looks up the plain 2-way match (and a display title) a ref points to, for
+// any ref kind MatchScreen itself can play — everything except 'threeFinal',
+// which needs the dedicated ThreeWayFinalScreen instead.
+function resolveMatchRef(tournament, ref) {
+  if (ref.kind === 'round') return { match: tournament.rounds[ref.roundIdx][ref.matchIdx], title: roundName(tournament.rounds.length, ref.roundIdx) };
+  if (ref.kind === 'thirdPlace') return { match: tournament.thirdPlaceMatch, title: 'Finale 3°/4° posto' };
+  if (ref.kind === 'prelim') return { match: tournament.finalStage.prelim, title: 'Preliminare 3°/4° posto' };
+  if (ref.kind === 'lancaster1') return { match: tournament.finalStage.match1, title: '4ª vs 3ª (per punteggio)' };
+  if (ref.kind === 'lancaster2') return { match: tournament.finalStage.match2, title: 'Vincente vs 2ª (per punteggio)' };
+  if (ref.kind === 'lancaster3') return { match: tournament.finalStage.match3, title: 'Finale (per punteggio)' };
+  return null;
+}
+
+// Applies a completed (or in-progress) match's result back into the
+// tournament. `ref` identifies where the match lives:
+//   { kind: 'round', roundIdx, matchIdx }  — a normal bracket position
+//   { kind: 'thirdPlace' }                 — standard format's bronze match
+//   { kind: 'prelim' }                     — threeway's 3rd/4th decider
+//   { kind: 'lancaster1'|'lancaster2'|'lancaster3' } — Lancaster's ladder
+//   { kind: 'threeFinal' }                 — the 3-way final itself
+// and drives the propagation appropriate to that spot (see FINAL_FORMATS
+// for what each one feeds into).
+function applyMatchResult(tournament, ref, updatedMatch) {
+  if (ref.kind === 'round') {
+    const rounds = tournament.rounds.map(r => r.slice());
+    rounds[ref.roundIdx][ref.matchIdx] = updatedMatch;
+    const next = { ...tournament, rounds };
+    if (updatedMatch.status !== 'completed') return next;
+
+    const isLastRound = ref.roundIdx === rounds.length - 1;
+    if (!isLastRound) {
+      propagateWinner(rounds, ref.roundIdx, ref.matchIdx, updatedMatch.winnerSlot);
+
+      if (tournament.finalFormat === 'standard' && tournament.thirdPlaceMatch && ref.roundIdx === rounds.length - 2) {
+        const loser = updatedMatch.winnerSlot === 'A' ? updatedMatch.slotB : updatedMatch.slotA;
+        const key = ref.matchIdx % 2 === 0 ? 'slotA' : 'slotB';
+        let tp = fillMatchSlot(tournament.thirdPlaceMatch, key, loser);
+        if (rounds[ref.roundIdx].every(m => m.status === 'completed' || m.status === 'bye')) tp = resolveByeIfLonely(tp);
+        next.thirdPlaceMatch = tp;
+      }
+      return next;
+    }
+
+    // This round produces the semifinalists for a custom final stage —
+    // threeway plays it as real matches (winners feed the 3-way final,
+    // losers feed the prelim); lancaster just needs its 4 winners to rank
+    // by seed score once all of them are in.
+    if (tournament.finalFormat === 'threeway' && tournament.finalStage) {
+      const winner = updatedMatch.winnerSlot === 'A' ? updatedMatch.slotA : updatedMatch.slotB;
+      const loser = updatedMatch.winnerSlot === 'A' ? updatedMatch.slotB : updatedMatch.slotA;
+      const sides = tournament.finalStage.final.sides.slice();
+      sides[ref.matchIdx] = winner;
+      let prelim = fillMatchSlot(tournament.finalStage.prelim, ref.matchIdx === 0 ? 'slotA' : 'slotB', loser);
+      if (rounds[ref.roundIdx].every(m => m.status === 'completed' || m.status === 'bye')) prelim = resolveByeIfLonely(prelim);
+      const final = { ...tournament.finalStage.final, sides, status: (sides[0] && sides[1] && sides[2]) ? 'pending' : tournament.finalStage.final.status };
+      next.finalStage = { ...tournament.finalStage, prelim, final };
+      return next;
+    }
+
+    if (tournament.finalFormat === 'lancaster' && tournament.finalStage) {
+      const winners = rounds[ref.roundIdx].map(m => ((m.status === 'completed' || m.status === 'bye') ? (m.winnerSlot === 'A' ? m.slotA : m.slotB) : null));
+      const finalStage = { ...tournament.finalStage };
+      if (winners.every(Boolean)) {
+        finalStage.sides = seedLancasterSides(winners);
+        seedLancasterLadder(finalStage);
+      }
+      next.finalStage = finalStage;
+      return next;
+    }
+
+    return next; // standard format's own final round — nothing extra to do
+  }
+
+  if (ref.kind === 'thirdPlace') {
+    return { ...tournament, thirdPlaceMatch: updatedMatch };
+  }
+
+  if (ref.kind === 'prelim') {
+    const finalStage = { ...tournament.finalStage, prelim: updatedMatch };
+    if (updatedMatch.status === 'completed') {
+      const winner = updatedMatch.winnerSlot === 'A' ? updatedMatch.slotA : updatedMatch.slotB;
+      const loser = updatedMatch.winnerSlot === 'A' ? updatedMatch.slotB : updatedMatch.slotA;
+      const sides = finalStage.final.sides.slice();
+      sides[2] = winner;
+      finalStage.final = { ...finalStage.final, sides, status: (sides[0] && sides[1]) ? 'pending' : finalStage.final.status };
+      finalStage.standings = { ...finalStage.standings, fourth: loser };
+    }
+    return { ...tournament, finalStage };
+  }
+
+  if (ref.kind === 'lancaster1') {
+    const finalStage = { ...tournament.finalStage, match1: updatedMatch };
+    if (updatedMatch.status === 'completed') {
+      const winner = updatedMatch.winnerSlot === 'A' ? updatedMatch.slotA : updatedMatch.slotB;
+      const loser = updatedMatch.winnerSlot === 'A' ? updatedMatch.slotB : updatedMatch.slotA;
+      finalStage.match2 = fillMatchSlot(finalStage.match2, 'slotB', winner);
+      finalStage.standings = { ...finalStage.standings, fourth: loser };
+    }
+    return { ...tournament, finalStage };
+  }
+
+  if (ref.kind === 'lancaster2') {
+    const finalStage = { ...tournament.finalStage, match2: updatedMatch };
+    if (updatedMatch.status === 'completed') {
+      const winner = updatedMatch.winnerSlot === 'A' ? updatedMatch.slotA : updatedMatch.slotB;
+      const loser = updatedMatch.winnerSlot === 'A' ? updatedMatch.slotB : updatedMatch.slotA;
+      finalStage.match3 = fillMatchSlot(finalStage.match3, 'slotB', winner);
+      finalStage.standings = { ...finalStage.standings, third: loser };
+    }
+    return { ...tournament, finalStage };
+  }
+
+  if (ref.kind === 'lancaster3') {
+    const finalStage = { ...tournament.finalStage, match3: updatedMatch };
+    if (updatedMatch.status === 'completed') {
+      const winner = updatedMatch.winnerSlot === 'A' ? updatedMatch.slotA : updatedMatch.slotB;
+      const loser = updatedMatch.winnerSlot === 'A' ? updatedMatch.slotB : updatedMatch.slotA;
+      finalStage.standings = { ...finalStage.standings, first: winner, second: loser };
+    }
+    return { ...tournament, finalStage };
+  }
+
+  if (ref.kind === 'threeFinal') {
+    return { ...tournament, finalStage: { ...tournament.finalStage, final: updatedMatch } };
+  }
+
+  return tournament;
 }
 
 function tournamentIsComplete(tournament) {
+  if (tournament.finalStage) {
+    if (tournament.finalFormat === 'threeway') return tournament.finalStage.final.status === 'completed';
+    if (tournament.finalFormat === 'lancaster') return tournament.finalStage.match3.status === 'completed';
+  }
   const last = tournament.rounds[tournament.rounds.length - 1];
   return last.length === 1 && last[0].status === 'completed';
+}
+
+// Unifies "who finished where" across all three final formats once the
+// tournament (or as much of it as has a result) allows it — used for the
+// podium display. Returns null until there's at least a gold medalist.
+function tournamentPodium(tournament) {
+  if (tournament.finalFormat === 'threeway' && tournament.finalStage) {
+    const f = tournament.finalStage.final;
+    if (f.status !== 'completed') return null;
+    return {
+      gold: f.sides[f.goldSlot], silver: f.sides[f.silverSlot], bronze: f.sides[f.bronzeSlot],
+      fourth: tournament.finalStage.standings.fourth || null,
+    };
+  }
+  if (tournament.finalFormat === 'lancaster' && tournament.finalStage) {
+    if (tournament.finalStage.match3.status !== 'completed') return null;
+    const s = tournament.finalStage.standings;
+    return { gold: s.first || null, silver: s.second || null, bronze: s.third || null, fourth: s.fourth || null };
+  }
+  const last = tournament.rounds[tournament.rounds.length - 1];
+  if (!last || last.length !== 1 || last[0].status !== 'completed') return null;
+  const f = last[0];
+  const gold = f.winnerSlot === 'A' ? f.slotA : f.slotB;
+  const silver = f.winnerSlot === 'A' ? f.slotB : f.slotA;
+  let bronze = null, fourth = null;
+  const tp = tournament.thirdPlaceMatch;
+  if (tp && (tp.status === 'completed' || tp.status === 'bye')) {
+    bronze = tp.winnerSlot === 'A' ? tp.slotA : tp.slotB;
+    fourth = tp.status === 'completed' ? (tp.winnerSlot === 'A' ? tp.slotB : tp.slotA) : null;
+  }
+  return { gold, silver, bronze, fourth };
 }
 
 // True once any match has a real result on it (played or forfeited).
@@ -2406,8 +2789,14 @@ function tournamentIsComplete(tournament) {
 // Used to gate the "edit participants & redraw bracket" flow: safe only
 // while nothing in the draw has actually happened yet.
 function tournamentHasStarted(tournament) {
-  return tournament.rounds.some(round => round.some(m =>
-    m.status === 'completed' || m.status === 'in_progress' || m.status === 'shootoff'));
+  if (tournament.rounds.some(round => round.some(matchHasResult))) return true;
+  if (matchHasResult(tournament.thirdPlaceMatch)) return true;
+  const fs = tournament.finalStage;
+  if (fs) {
+    if (fs.format === 'threeway' && (matchHasResult(fs.prelim) || fs.final.units.length > 0 || fs.final.status === 'completed')) return true;
+    if (fs.format === 'lancaster' && (matchHasResult(fs.match1) || matchHasResult(fs.match2) || matchHasResult(fs.match3))) return true;
+  }
+  return false;
 }
 
 // Re-seeds and rebuilds the whole bracket from scratch against a new
@@ -2417,8 +2806,8 @@ function tournamentHasStarted(tournament) {
 function rebuildTournamentBracket(tournament, participants) {
   const sorted = participants.slice().sort((a, b) => b.seedScore - a.seedScore);
   const seeded = sorted.map((p, i) => ({ ...p, seed: i + 1 }));
-  const { size, rounds } = buildBracket(seeded);
-  return { ...tournament, participants: seeded, bracketSize: size, rounds };
+  const { size, rounds, finalStage, thirdPlaceMatch } = buildBracket(seeded, tournament.finalFormat);
+  return { ...tournament, participants: seeded, bracketSize: size, rounds, finalStage, thirdPlaceMatch };
 }
 
 // ---------- tournament: create / setup ----------
@@ -2548,6 +2937,7 @@ function TournamentCreateScreen({ onCreate, onCancel }) {
   const [distanceM, setDistanceM] = useState(70);
   const [faceCm, setFaceCm] = useState(122);
   const [participants, setParticipants] = useState([]);
+  const [finalFormat, setFinalFormat] = useState('standard');
 
   const canCreate = name.trim() && participants.length >= 2;
 
@@ -2596,7 +2986,24 @@ function TournamentCreateScreen({ onCreate, onCancel }) {
         <ParticipantEditor formatId={formatId} participants={participants} setParticipants={setParticipants} />
       </div>
 
-      <button onClick={() => canCreate && onCreate(createTournament({ name: name.trim(), date, distanceM, faceCm, formatId, participants }))}
+      <div className="flex flex-col gap-2">
+        <div className="text-xs" style={{ color: T.textDim }}>Formato finale (con almeno 4 partecipanti)</div>
+        <div className="flex flex-col gap-2">
+          {FINAL_FORMATS.map(f => (
+            <button key={f.id} onClick={() => setFinalFormat(f.id)}
+              className="text-left rounded-2xl px-4 py-3 flex items-center justify-between gap-3"
+              style={{ background: f.id === finalFormat ? T.surfaceAlt : T.surface, border: `1px solid ${f.id === finalFormat ? T.gold : T.border}` }}>
+              <div>
+                <div className="font-semibold">{f.label}</div>
+                <div className="text-xs" style={{ color: T.textDim }}>{f.desc}</div>
+              </div>
+              {f.id === finalFormat && <Check color={T.gold} size={20} className="shrink-0" />}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <button onClick={() => canCreate && onCreate(createTournament({ name: name.trim(), date, distanceM, faceCm, formatId, participants, finalFormat }))}
         disabled={!canCreate} className="rounded-2xl py-4 font-bold text-lg flex items-center justify-center gap-2 disabled:opacity-40"
         style={{ background: T.gold, color: GOLD_TEXT }}>
         <Shuffle size={20} /> Genera tabellone
@@ -2752,7 +3159,7 @@ function BracketTree({ tournament, onOpenMatch }) {
               {roundName(rounds.length, r)}
             </div>
             {round.map((m, i) => (
-              <CompactMatchCard key={i} match={m} x={r * colWidth} y={centers[r][i] - BRACKET_CARD_H / 2 + BRACKET_Y_OFFSET} onOpen={() => onOpenMatch(r, i)} />
+              <CompactMatchCard key={i} match={m} x={r * colWidth} y={centers[r][i] - BRACKET_CARD_H / 2 + BRACKET_Y_OFFSET} onOpen={() => onOpenMatch({ kind: 'round', roundIdx: r, matchIdx: i })} />
             ))}
           </React.Fragment>
         ))}
@@ -2761,13 +3168,62 @@ function BracketTree({ tournament, onOpenMatch }) {
   );
 }
 
-function BracketScreen({ tournament, onBack, onOpenMatch, onDelete, onEditParticipants }) {
+// Compact summary of the 3-way final's live state — three names instead of
+// the usual two, with each side's running set-points and, once decided,
+// gold/silver markers (bronze is implied: whoever's left).
+function ThreeWayFinalCard({ final, onOpen }) {
+  const playable = final.status === 'pending' || final.status === 'in_progress' || final.status === 'shootoff3' || final.status === 'runoff';
+  const statusLabel = final.status === 'waiting' ? 'In attesa' : final.status === 'pending' ? 'Da giocare'
+    : final.status === 'shootoff3' ? 'Spareggio per l’oro' : final.status === 'runoff' ? 'Spareggio 2°/3° posto'
+    : final.status === 'completed' ? 'Conclusa' : 'In corso';
+  return (
+    <button onClick={() => playable && onOpen()} disabled={!playable}
+      className="w-full text-left rounded-2xl px-4 py-3 flex flex-col gap-2"
+      style={{ background: T.surface, border: `1px solid ${playable ? T.gold : T.border}`, opacity: final.status === 'waiting' ? 0.6 : 1 }}>
+      <div className="text-xs" style={{ color: T.textDim }}>{statusLabel}</div>
+      {[0, 1, 2].map(i => (
+        <div key={i} className="flex items-center justify-between gap-2">
+          <div className={`truncate ${final.goldSlot === i ? 'font-bold' : ''}`} style={{ color: T.text }}>
+            {final.sides[i] ? final.sides[i].name : '—'}
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs" style={numeralStyle}>{final.cumSp ? final.cumSp[i] || 0 : 0}</span>
+            {final.goldSlot === i && <Trophy size={14} color={T.gold} />}
+            {final.silverSlot === i && <Check size={14} color={T.textDim} />}
+          </div>
+        </div>
+      ))}
+    </button>
+  );
+}
+
+function PodiumCard({ podium }) {
+  if (!podium || !podium.gold) return null;
+  return (
+    <div className="rounded-2xl p-4 flex flex-col gap-2" style={{ background: T.surfaceAlt, border: `1px solid ${T.gold}` }}>
+      <div className="flex items-center gap-3">
+        <Trophy color={T.gold} size={28} />
+        <div>
+          <div className="text-xs uppercase tracking-wide" style={{ color: T.gold }}>Campione</div>
+          <div className="text-lg font-bold">{podium.gold.name}</div>
+        </div>
+      </div>
+      {(podium.silver || podium.bronze || podium.fourth) && (
+        <div className="text-sm flex flex-col gap-0.5 pl-1" style={{ color: T.textDim }}>
+          {podium.silver && <div>2° — {podium.silver.name}</div>}
+          {podium.bronze && <div>3° — {podium.bronze.name}</div>}
+          {podium.fourth && <div>4° — {podium.fourth.name}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BracketScreen({ tournament, onBack, onOpenMatch, onOpenThreeFinal, onDelete, onEditParticipants }) {
   const [viewMode, setViewMode] = useState('list');
-  const complete = tournamentIsComplete(tournament);
   const started = tournamentHasStarted(tournament);
-  const champion = complete ? (tournament.rounds[tournament.rounds.length - 1][0].winnerSlot === 'A'
-    ? tournament.rounds[tournament.rounds.length - 1][0].slotA
-    : tournament.rounds[tournament.rounds.length - 1][0].slotB) : null;
+  const podium = tournamentPodium(tournament);
+  const fs = tournament.finalStage;
 
   return (
     <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
@@ -2781,32 +3237,57 @@ function BracketScreen({ tournament, onBack, onOpenMatch, onDelete, onEditPartic
         )}
       </div>
       <div className="text-sm" style={{ color: T.textDim }}>
-        {formatDateShort(tournament.date)} · {matchFormatDef(tournament.formatId).label} · {tournament.distanceM}m/{tournament.faceCm}cm
+        {formatDateShort(tournament.date)} · {matchFormatDef(tournament.formatId).label} · {tournament.distanceM}m/{tournament.faceCm}cm · {finalFormatDef(tournament.finalFormat).label}
       </div>
 
-      {champion && (
-        <div className="rounded-2xl p-4 flex items-center gap-3" style={{ background: T.surfaceAlt, border: `1px solid ${T.gold}` }}>
-          <Trophy color={T.gold} size={28} />
-          <div>
-            <div className="text-xs uppercase tracking-wide" style={{ color: T.gold }}>Campione</div>
-            <div className="text-lg font-bold">{champion.name}</div>
-          </div>
-        </div>
+      <PodiumCard podium={podium} />
+
+      {tournament.rounds.length > 0 && (
+        <SegmentedControl options={[{ id: 'list', label: 'Elenco' }, { id: 'bracket', label: 'Tabellone' }]} value={viewMode} onChange={setViewMode} />
       )}
 
-      <SegmentedControl options={[{ id: 'list', label: 'Elenco' }, { id: 'bracket', label: 'Tabellone' }]} value={viewMode} onChange={setViewMode} />
-
-      {viewMode === 'bracket' ? (
+      {viewMode === 'bracket' && tournament.rounds.length > 0 ? (
         <BracketTree tournament={tournament} onOpenMatch={onOpenMatch} />
       ) : (
         tournament.rounds.map((round, ri) => (
           <div key={ri} className="flex flex-col gap-2">
             <div className="text-sm font-semibold" style={{ color: T.textDim }}>{roundName(tournament.rounds.length, ri)}</div>
             <div className="flex flex-col gap-2">
-              {round.map((m, mi) => <MatchCard key={mi} match={m} onOpen={() => onOpenMatch(ri, mi)} />)}
+              {round.map((m, mi) => <MatchCard key={mi} match={m} onOpen={() => onOpenMatch({ kind: 'round', roundIdx: ri, matchIdx: mi })} />)}
             </div>
           </div>
         ))
+      )}
+
+      {tournament.finalFormat === 'standard' && tournament.thirdPlaceMatch && (
+        <div className="flex flex-col gap-2">
+          <div className="text-sm font-semibold" style={{ color: T.textDim }}>Finale 3°/4° posto</div>
+          <MatchCard match={tournament.thirdPlaceMatch} onOpen={() => onOpenMatch({ kind: 'thirdPlace' })} />
+        </div>
+      )}
+
+      {tournament.finalFormat === 'threeway' && fs && (
+        <>
+          <div className="flex flex-col gap-2">
+            <div className="text-sm font-semibold" style={{ color: T.textDim }}>Preliminare 3°/4° posto</div>
+            <MatchCard match={fs.prelim} onOpen={() => onOpenMatch({ kind: 'prelim' })} />
+          </div>
+          <div className="flex flex-col gap-2">
+            <div className="text-sm font-semibold" style={{ color: T.textDim }}>Finale a 3 — oro/argento/bronzo</div>
+            <ThreeWayFinalCard final={fs.final} onOpen={onOpenThreeFinal} />
+          </div>
+        </>
+      )}
+
+      {tournament.finalFormat === 'lancaster' && fs && (
+        <div className="flex flex-col gap-2">
+          <div className="text-sm font-semibold" style={{ color: T.textDim }}>Finale Lancaster (per punteggio di qualifica)</div>
+          <div className="flex flex-col gap-2">
+            <MatchCard match={fs.match1} onOpen={() => onOpenMatch({ kind: 'lancaster1' })} />
+            <MatchCard match={fs.match2} onOpen={() => onOpenMatch({ kind: 'lancaster2' })} />
+            <MatchCard match={fs.match3} onOpen={() => onOpenMatch({ kind: 'lancaster3' })} />
+          </div>
+        </div>
       )}
 
       <DeleteSessionButton onDelete={onDelete} label="Elimina torneo" />
@@ -2868,9 +3349,14 @@ function ArrowsInputColumn({ label, needed, pending, onAdd, onUndo, disabled }) 
   );
 }
 
-function MatchScreen({ tournament, roundIdx, matchIdx, onBack, onComplete }) {
-  const match = tournament.rounds[roundIdx][matchIdx];
-  const formatDef = matchFormatDef(tournament.formatId);
+// Plays out any ordinary 2-way match, wherever it lives in the tournament
+// — a normal bracket position, the standard format's bronze match, the
+// threeway format's preliminary decider, or one of Lancaster's three
+// ladder matches. The caller resolves `match`+`title` from whatever
+// reference it's tracking and gets back just the updated match object via
+// onComplete — it decides how that propagates (see applyMatchResult).
+function MatchScreen({ match, title, formatId, onBack, onComplete }) {
+  const formatDef = matchFormatDef(formatId);
   const needed = arrowsPerUnit(formatDef);
   const unitIdx = currentUnitIndex(match);
 
@@ -2900,16 +3386,16 @@ function MatchScreen({ tournament, roundIdx, matchIdx, onBack, onComplete }) {
     let m = recordUnit(match, formatDef, unitIdx, 'A', pendingA.map(a => a.score));
     m = recordUnit(m, formatDef, unitIdx, 'B', pendingB.map(a => a.score));
     setPendingA([]); setPendingB([]); setActiveSide('A');
-    onComplete(roundIdx, matchIdx, m);
+    onComplete(m);
   }
 
   function submitShootOff(winnerSlot) {
     const m = recordShootOff(match, winnerSlot, shootA.map(a => a.score), shootB.map(a => a.score));
-    onComplete(roundIdx, matchIdx, m);
+    onComplete(m);
   }
 
   function submitForfeit(winnerSlot) {
-    onComplete(roundIdx, matchIdx, forfeitMatch(match, winnerSlot));
+    onComplete(forfeitMatch(match, winnerSlot));
   }
 
   if (match.status === 'completed') {
@@ -2917,7 +3403,7 @@ function MatchScreen({ tournament, roundIdx, matchIdx, onBack, onComplete }) {
       <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4 items-center text-center">
         <div className="flex items-center gap-2 self-start">
           <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
-          <div className="text-xl font-bold">{roundName(tournament.rounds.length, roundIdx)}</div>
+          <div className="text-xl font-bold">{title}</div>
         </div>
         <Trophy color={T.gold} size={32} />
         <div className="text-2xl font-bold">{match.winnerSlot === 'A' ? sideLabel(match.slotA) : sideLabel(match.slotB)}</div>
@@ -2933,7 +3419,7 @@ function MatchScreen({ tournament, roundIdx, matchIdx, onBack, onComplete }) {
     <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
         <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
-        <div className="text-xl font-bold">{roundName(tournament.rounds.length, roundIdx)}</div>
+        <div className="text-xl font-bold">{title}</div>
       </div>
 
       <div className="rounded-2xl p-4 flex items-center justify-around" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
@@ -2987,6 +3473,134 @@ function MatchScreen({ tournament, roundIdx, matchIdx, onBack, onComplete }) {
           </button>
         </>
       )}
+    </div>
+  );
+}
+
+// The threeway format's 3-way final: all 3 shoot every end simultaneously
+// until gold is decided (see record3WayUnit), then hands off to an
+// ordinary MatchScreen for the silver/bronze runoff between whoever's left
+// — that phase needs nothing special, it's just a normal match that starts
+// at a carried-over score.
+function ThreeWayFinalScreen({ tournament, onBack, onComplete }) {
+  const formatDef = matchFormatDef(tournament.formatId);
+  const needed = arrowsPerUnit(formatDef);
+  const final = tournament.finalStage.final;
+  const openUnitIdx = final.units.findIndex(u => !u || u.totals.some(t => t == null));
+  const activeUnitIdx = openUnitIdx === -1 ? final.units.length : openUnitIdx;
+
+  const [pending, setPending] = useState([[], [], []]);
+  const [activeSide, setActiveSide] = useState(0);
+  const [shootPending, setShootPending] = useState([[], [], []]);
+
+  if (final.status === 'runoff') {
+    return (
+      <MatchScreen match={final.runoff} title="Spareggio 2°/3° posto" formatId={tournament.formatId}
+        onBack={onBack} onComplete={(updatedRunoff) => onComplete(applyThreeWayRunoffUpdate(final, updatedRunoff))} />
+    );
+  }
+
+  if (final.status === 'completed') {
+    return (
+      <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4 items-center text-center">
+        <div className="flex items-center gap-2 self-start">
+          <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
+          <div className="text-xl font-bold">Finale a 3</div>
+        </div>
+        <Trophy color={T.gold} size={32} />
+        <div className="text-2xl font-bold">{final.sides[final.goldSlot].name}</div>
+        <div className="text-sm flex flex-col gap-1" style={{ color: T.textDim }}>
+          <div>2° — {final.sides[final.silverSlot].name}</div>
+          <div>3° — {final.sides[final.bronzeSlot].name}</div>
+        </div>
+        <button onClick={onBack} className="w-full rounded-2xl py-3.5 font-bold" style={{ background: T.gold, color: GOLD_TEXT }}>Torna al tabellone</button>
+      </div>
+    );
+  }
+
+  function addArrow(sideIdx, score, isX) {
+    setPending(p => {
+      if (p[sideIdx].length >= needed) return p;
+      const next = p.map((arr, i) => (i === sideIdx ? [...arr, { score, isX }] : arr));
+      if (next[sideIdx].length === needed) {
+        const nextSide = [0, 1, 2].find(i => i !== sideIdx && next[i].length < needed);
+        if (nextSide != null) setActiveSide(nextSide);
+      }
+      return next;
+    });
+  }
+  function undoArrow(sideIdx) {
+    setPending(p => p.map((arr, i) => (i === sideIdx ? arr.slice(0, -1) : arr)));
+  }
+  function submitUnit() {
+    let f = final;
+    [0, 1, 2].forEach(i => { f = record3WayUnit(f, formatDef, activeUnitIdx, i, pending[i].map(a => a.score)); });
+    setPending([[], [], []]); setActiveSide(0);
+    onComplete(f);
+  }
+  function submitShootOff3(goldSlot) {
+    onComplete(record3WayShootOff(final, formatDef, goldSlot, shootPending));
+  }
+
+  if (final.status === 'shootoff3') {
+    const contenders = final.shootoffContenders || [0, 1, 2];
+    return (
+      <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+        <div className="flex items-center gap-2">
+          <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
+          <div className="text-xl font-bold">Finale a 3</div>
+        </div>
+        <div className="text-center text-sm font-semibold" style={{ color: T.gold }}>Spareggio per l’oro — chi ha piazzato la freccia più vicina al centro?</div>
+        <div className="flex gap-3">
+          {contenders.map(i => (
+            <ArrowsInputColumn key={i} label={final.sides[i].name} needed={formatDef.archersPerSide} pending={shootPending[i]}
+              onAdd={(s, x) => setShootPending(p => p.map((arr, j) => (j === i ? [...arr, { score: s, isX: x }] : arr)))}
+              onUndo={() => setShootPending(p => p.map((arr, j) => (j === i ? arr.slice(0, -1) : arr)))} />
+          ))}
+        </div>
+        <SegmentedControl options={contenders.map(i => ({ id: i, label: final.sides[i].name }))} value={activeSide} onChange={setActiveSide} />
+        <Keypad onScore={(score, isX) => setShootPending(p => p.map((arr, j) => (j === activeSide ? [...arr, { score, isX }] : arr)))} />
+        <div className="flex gap-2">
+          {contenders.map(i => (
+            <button key={i} onClick={() => submitShootOff3(i)} className="flex-1 rounded-2xl py-3.5 font-bold" style={{ background: T.gold, color: GOLD_TEXT }}>
+              Vince {final.sides[i].name}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+      <div className="flex items-center gap-2">
+        <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
+        <div className="text-xl font-bold">Finale a 3</div>
+      </div>
+
+      <div className="rounded-2xl p-4 flex items-center justify-around" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+        {[0, 1, 2].map(i => (
+          <div key={i} className="text-center">
+            <div className="font-semibold truncate max-w-[6rem]">{final.sides[i] ? final.sides[i].name : '—'}</div>
+            <div className="text-2xl font-bold" style={numeralStyle}>{final.cumSp[i]}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="text-center text-sm" style={{ color: T.textDim }}>
+        {formatDef.unitLabel} {activeUnitIdx + 1} di {formatDef.units}
+      </div>
+      <div className="flex gap-2">
+        {[0, 1, 2].map(i => (
+          <ArrowsInputColumn key={i} label={final.sides[i] ? final.sides[i].name : '—'} needed={needed} pending={pending[i]} onUndo={() => undoArrow(i)} />
+        ))}
+      </div>
+      <SegmentedControl options={[0, 1, 2].map(i => ({ id: i, label: final.sides[i] ? final.sides[i].name : '—' }))} value={activeSide} onChange={setActiveSide} />
+      <Keypad onScore={(score, isX) => addArrow(activeSide, score, isX)} />
+      <button onClick={submitUnit} disabled={[0, 1, 2].some(i => pending[i].length < needed)}
+        className="rounded-2xl py-3.5 font-bold disabled:opacity-40" style={{ background: T.gold, color: GOLD_TEXT }}>
+        Conferma {formatDef.unitLabel.toLowerCase()}
+      </button>
     </div>
   );
 }
@@ -3150,6 +3764,8 @@ export default function ArcheryScorecard() {
   const activeSession = sessions.find(s => s.id === activeSessionId) || null;
   const detailSession = sessions.find(s => s.id === detailSessionId) || null;
   const activeTournament = tournaments.find(t => t.id === activeTournamentId) || null;
+  const resolvedMatch = (activeTournament && activeMatchRef && activeMatchRef.kind !== 'threeFinal')
+    ? resolveMatchRef(activeTournament, activeMatchRef) : null;
 
   return (
     <div className="flex flex-col font-sans antialiased" style={{ background: T.bg, color: T.text, minHeight: '100vh' }}>
@@ -3216,7 +3832,8 @@ export default function ArcheryScorecard() {
         {view === 'bracket' && activeTournament && (
           <BracketScreen tournament={activeTournament}
             onBack={() => { setActiveTournamentId(null); setView('tornei'); }}
-            onOpenMatch={(roundIdx, matchIdx) => { setActiveMatchRef({ roundIdx, matchIdx }); setView('match'); }}
+            onOpenMatch={(ref) => { setActiveMatchRef(ref); setView('match'); }}
+            onOpenThreeFinal={() => { setActiveMatchRef({ kind: 'threeFinal' }); setView('threefinal'); }}
             onDelete={() => { deleteTournament(activeTournament.id); setActiveTournamentId(null); setView('tornei'); }}
             onEditParticipants={() => setView('tornei-edit')} />
         )}
@@ -3227,16 +3844,20 @@ export default function ArcheryScorecard() {
             onCancel={() => setView('bracket')} />
         )}
 
-        {view === 'match' && activeTournament && activeMatchRef && (
-          <MatchScreen tournament={activeTournament} roundIdx={activeMatchRef.roundIdx} matchIdx={activeMatchRef.matchIdx}
+        {view === 'match' && activeTournament && activeMatchRef && resolvedMatch && (
+          <MatchScreen match={resolvedMatch.match} title={resolvedMatch.title} formatId={activeTournament.formatId}
             onBack={() => { setActiveMatchRef(null); setView('bracket'); }}
-            onComplete={(roundIdx, matchIdx, updatedMatch) => {
-              updateTournament(activeTournament.id, t => applyMatchResult(t, roundIdx, matchIdx, updatedMatch));
-            }} />
+            onComplete={(updatedMatch) => updateTournament(activeTournament.id, t => applyMatchResult(t, activeMatchRef, updatedMatch))} />
+        )}
+
+        {view === 'threefinal' && activeTournament && (
+          <ThreeWayFinalScreen tournament={activeTournament}
+            onBack={() => { setActiveMatchRef(null); setView('bracket'); }}
+            onComplete={(updatedFinal) => updateTournament(activeTournament.id, t => applyMatchResult(t, { kind: 'threeFinal' }, updatedFinal))} />
         )}
       </div>
 
-      {view !== 'shoot' && view !== 'match' && <BottomNav view={view} setView={setView} />}
+      {view !== 'shoot' && view !== 'match' && view !== 'threefinal' && <BottomNav view={view} setView={setView} />}
     </div>
   );
 }

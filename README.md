@@ -282,3 +282,32 @@ a single-elimination tournament with live match scoring.
   (`rebuildTournamentBracket()`) — for a no-show discovered before the
   first match, or a late arrival. The button disappears once any match has
   a real result, since redrawing after that would silently discard it.
+- **Three ways to decide the podium**, chosen per tournament at creation
+  (`FINAL_FORMATS`, stored as `tournament.finalFormat`):
+  - **Finale classica** (default): normal semifinal + final, plus an
+    independent bronze match between the two semifinal losers — the app
+    previously had no bronze match at all, losers were just eliminated.
+  - **Finale a 3**: the semifinal round is still played normally; its two
+    losers play a preliminary decider, and the winner joins the two
+    semifinal winners for a genuine 3-way final. All three shoot every end
+    simultaneously — the end's top score gets 2 set-points, a 2- or 3-way
+    tie for the top score splits 1 point each — first to 6 wins gold
+    outright (`record3WayUnit()`); a tie for the lead once ends run out
+    goes to a 3-way shoot-off among just the tied contenders
+    (`record3WayShootOff()`). Once gold's decided, the other two play on
+    for silver/bronze as an ordinary match, seeded with the exact
+    set-points they already had against each other in the 3-way stage
+    (`startThreeWayRunoff()`) — reuses `MatchScreen` unchanged, including
+    forfeit.
+  - **Finale Lancaster**: skips the bracket's semifinal and final rounds
+    entirely. Once the field is down to its last 4, they're re-ranked by
+    their original qualification seeding score — not by how the bracket
+    happened to pair them, since upsets can put a lower seed through — into
+    a sequential ladder: 4th-seed vs 3rd-seed, winner vs 2nd-seed, winner
+    vs 1st-seed for gold (`seedLancasterLadder()`), three ordinary matches
+    chained together.
+  - All three reduce to the existing 2-way match engine except the 3-way
+    final's own pre-gold phase, which is the one genuinely new piece
+    (`ThreeWayFinalScreen`). Tournaments saved before this feature default
+    to "Finale classica" with no bronze match (`normalizeTournament()`),
+    exactly how they behaved before.
