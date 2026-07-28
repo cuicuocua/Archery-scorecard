@@ -6,6 +6,7 @@ import {
 import {
   Target, Clock, ChevronLeft, ChevronRight, Plus, Trash2,
   Download, Upload, RotateCcw, Play, Check, StickyNote, LogOut, BarChart3,
+  Swords, Trophy, Users, UserPlus, Shuffle, Minus,
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
@@ -666,6 +667,40 @@ async function deleteSessionRemote(sessionId) {
     if (error) throw error;
   } catch (err) {
     console.error('Errore nella eliminazione', err);
+  }
+}
+
+// Tournaments live in their own table (same pattern as sessions) so a
+// tournament can be created, scored live, and revisited across devices
+// without touching the personal-scorecard data at all.
+async function loadTournamentsRemote(userId) {
+  try {
+    const { data, error } = await supabase.from('tournaments').select('data').eq('user_id', userId);
+    if (error) throw error;
+    return (data || []).map(row => row.data);
+  } catch (err) {
+    console.error('Errore nel caricamento dei tornei', err);
+    return [];
+  }
+}
+
+async function upsertTournamentRemote(userId, tournament) {
+  try {
+    const { error } = await supabase.from('tournaments').upsert({
+      id: tournament.id, user_id: userId, data: tournament, updated_at: new Date().toISOString(),
+    });
+    if (error) throw error;
+  } catch (err) {
+    console.error('Errore nel salvataggio del torneo', err);
+  }
+}
+
+async function deleteTournamentRemote(tournamentId) {
+  try {
+    const { error } = await supabase.from('tournaments').delete().eq('id', tournamentId);
+    if (error) throw error;
+  } catch (err) {
+    console.error('Errore nella eliminazione del torneo', err);
   }
 }
 
@@ -1924,13 +1959,13 @@ function StatisticheScreen({ sessions }) {
 
 // ---------- session detail ----------
 
-function DeleteSessionButton({ onDelete }) {
+function DeleteSessionButton({ onDelete, label = 'Elimina sessione' }) {
   const [confirming, setConfirming] = useState(false);
   return (
     <button onClick={() => (confirming ? onDelete() : setConfirming(true))}
       className="rounded-2xl py-3 font-semibold flex items-center justify-center gap-2"
       style={{ background: confirming ? T.red : T.surface, color: confirming ? '#fff' : T.textDim, border: `1px solid ${confirming ? T.red : T.border}` }}>
-      <Trash2 size={16} /> {confirming ? 'Conferma eliminazione' : 'Elimina sessione'}
+      <Trash2 size={16} /> {confirming ? 'Conferma eliminazione' : label}
     </button>
   );
 }
@@ -2094,6 +2129,580 @@ function BottomNav({ view, setView }) {
       <NavButton icon={Target} label="Home" active={view === 'home'} onClick={() => setView('home')} />
       <NavButton icon={Clock} label="Storico" active={view === 'storico'} onClick={() => setView('storico')} />
       <NavButton icon={BarChart3} label="Statistiche" active={view === 'statistiche'} onClick={() => setView('statistiche')} />
+      <NavButton icon={Swords} label="Tornei" active={view === 'tornei'} onClick={() => setView('tornei')} />
+    </div>
+  );
+}
+
+// ==========================================================================
+// Tournament manager
+// ==========================================================================
+//
+// A tournament is single-elimination with WA-style set play. Individual and
+// team matches both reduce to the same shape — play a sequence of "units"
+// (sets for individual, ends for team), award 2 set-points to the higher
+// side each unit (1-1 if tied), first to the target set-points wins; if
+// still tied after every unit is played, it goes to a shoot-off. That lets
+// one match engine drive both formats instead of two.
+//
+// WA/FITARCO assumptions (verify locally, same spirit as ROUND_TYPES above):
+//  - Individual: best of 5 sets, 3 arrows/set, 2 SP to the set winner (1-1
+//    tied), first to 6 SP wins, shoot-off at 5-5.
+//  - Team (3 archers/side) and Mixed Team (2 archers/side): 4 ends, each
+//    archer shoots 2 arrows/end, 2 SP to the higher end total (1-1 tied),
+//    first to 5 SP wins, shoot-off if still tied after 4 ends. Individual
+//    archers' arrows are recorded as one combined list per end/side rather
+//    than attributed to a specific team member — a deliberate simplification.
+//  - Compound elimination is technically cumulative-score, not set play,
+//    under WA rules; the "custom" match format below covers that too by
+//    setting arrowsPerUnit to the full match and units to 1.
+
+const MATCH_FORMATS = [
+  { id: 'individual', label: 'Individuale', archersPerSide: 1, arrowsPerArcherPerUnit: 3, units: 5, setPointsToWin: 6, unitLabel: 'Set' },
+  { id: 'mixedTeam', label: 'Team misto', archersPerSide: 2, arrowsPerArcherPerUnit: 2, units: 4, setPointsToWin: 5, unitLabel: 'Volée' },
+  { id: 'team', label: 'A squadre', archersPerSide: 3, arrowsPerArcherPerUnit: 2, units: 4, setPointsToWin: 5, unitLabel: 'Volée' },
+];
+
+function matchFormatDef(id) { return MATCH_FORMATS.find(f => f.id === id) || MATCH_FORMATS[0]; }
+function arrowsPerUnit(formatDef) { return formatDef.archersPerSide * formatDef.arrowsPerArcherPerUnit; }
+
+// ---------- bracket seeding ----------
+
+// Classic recursive tournament seeding order: for size 8 this returns
+// [1,8,4,5,2,7,3,6] — i.e. round-1 pairs are 1v8, 4v5, 2v7, 3v6, and the
+// top 2 seeds are kept in opposite halves so they can only meet in the
+// final. Standard practice for any single-elimination bracket.
+function standardSeedOrder(size) {
+  if (size <= 1) return [1];
+  if (size === 2) return [1, 2];
+  const half = standardSeedOrder(size / 2);
+  const out = [];
+  half.forEach(s => { out.push(s); out.push(size + 1 - s); });
+  return out;
+}
+
+// participants: array of { id, name, seedScore, ... } already sorted best
+// seed first (highest seedScore first). Returns { size, rounds } where
+// rounds[0] is the first round (byes already resolved into empty slotB) and
+// later rounds start with null slots, filled in as earlier rounds complete.
+function buildBracket(participants) {
+  const n = participants.length;
+  const size = n <= 1 ? 1 : Math.pow(2, Math.ceil(Math.log2(n)));
+  const order = standardSeedOrder(size);
+  const bySeedPos = order.map(seedNum => participants[seedNum - 1] || null);
+
+  const round0 = [];
+  for (let i = 0; i < size / 2; i++) {
+    const slotA = bySeedPos[i * 2];
+    const slotB = bySeedPos[i * 2 + 1];
+    round0.push(makeMatch(0, i, slotA, slotB));
+  }
+
+  const rounds = [round0];
+  let count = size / 2;
+  while (count > 1) {
+    count = count / 2;
+    const roundIdx = rounds.length;
+    rounds.push(Array.from({ length: count }, (_, i) => makeMatch(roundIdx, i, null, null)));
+  }
+
+  // Byes resolve immediately and propagate into round 1.
+  rounds[0].forEach((m, i) => { if (m.status === 'bye') propagateWinner(rounds, 0, i, m.winnerSlot); });
+
+  return { size, rounds };
+}
+
+function makeMatch(roundIdx, matchIdx, slotA, slotB) {
+  const bye = !!(slotA && !slotB) || !!(!slotA && slotB);
+  return {
+    roundIdx, matchIdx,
+    slotA: slotA || null, slotB: slotB || null,
+    status: bye ? 'bye' : (slotA && slotB) ? 'pending' : 'waiting', // 'waiting' = future round, not yet fed
+    winnerSlot: bye ? (slotA ? 'A' : 'B') : null,
+    units: [],
+    cumSpA: 0, cumSpB: 0,
+    shootOff: null,
+  };
+}
+
+// Pushes a completed match's winner into the correct slot of the next
+// round, and re-derives that match's status/bye handling.
+function propagateWinner(rounds, roundIdx, matchIdx, winnerSlot) {
+  const nextRound = rounds[roundIdx + 1];
+  if (!nextRound) return; // final already played
+  const match = rounds[roundIdx][matchIdx];
+  const winner = winnerSlot === 'A' ? match.slotA : match.slotB;
+  const nextMatchIdx = Math.floor(matchIdx / 2);
+  const nextSlotKey = matchIdx % 2 === 0 ? 'slotA' : 'slotB';
+  const next = nextRound[nextMatchIdx];
+  next[nextSlotKey] = winner;
+  if (next.slotA && next.slotB) {
+    next.status = 'pending';
+  } else if (next.slotA || next.slotB) {
+    // The other slot is still waiting on an earlier match — leave as
+    // 'waiting' until it's filled too (byes only ever happen in round 0,
+    // since a real bracket never produces a lone empty slot past that).
+  }
+}
+
+// ---------- match engine ----------
+
+function sumArrows(scores) { return scores.reduce((s, v) => s + v, 0); }
+
+// Records one unit's (set/end) arrows for one side. Once both sides have
+// this unit recorded, set-points are awarded and the match's cumulative
+// state + status are recomputed.
+function recordUnit(match, formatDef, unitIndex, side, arrows) {
+  const units = match.units.slice();
+  let unit = units[unitIndex] || { index: unitIndex, arrowsA: null, arrowsB: null, totalA: null, totalB: null, spA: null, spB: null };
+  unit = { ...unit, [side === 'A' ? 'arrowsA' : 'arrowsB']: arrows, [side === 'A' ? 'totalA' : 'totalB']: sumArrows(arrows) };
+  units[unitIndex] = unit;
+
+  let cumSpA = 0, cumSpB = 0;
+  units.forEach(u => {
+    if (u.totalA == null || u.totalB == null) return;
+    if (u.totalA > u.totalB) { u.spA = 2; u.spB = 0; }
+    else if (u.totalB > u.totalA) { u.spA = 0; u.spB = 2; }
+    else { u.spA = 1; u.spB = 1; }
+    cumSpA += u.spA;
+    cumSpB += u.spB;
+  });
+
+  const decided = cumSpA >= formatDef.setPointsToWin || cumSpB >= formatDef.setPointsToWin;
+  const unitsPlayed = units.filter(u => u.totalA != null && u.totalB != null).length;
+  const exhausted = unitsPlayed >= formatDef.units;
+  const tied = cumSpA === cumSpB;
+
+  let status = match.status;
+  let winnerSlot = match.winnerSlot;
+  if (decided) {
+    status = 'completed';
+    winnerSlot = cumSpA > cumSpB ? 'A' : 'B';
+  } else if (exhausted && tied) {
+    status = 'shootoff';
+  } else {
+    status = 'in_progress';
+  }
+
+  return { ...match, units, cumSpA, cumSpB, status, winnerSlot };
+}
+
+function recordShootOff(match, winnerSlot, arrowsA, arrowsB) {
+  return {
+    ...match,
+    status: 'completed',
+    winnerSlot,
+    shootOff: { arrowsA: arrowsA || null, arrowsB: arrowsB || null, winner: winnerSlot },
+  };
+}
+
+function currentUnitIndex(match) {
+  const idx = match.units.findIndex(u => !u || u.totalA == null || u.totalB == null);
+  return idx === -1 ? match.units.length : idx;
+}
+
+function sideLabel(slot) { return slot ? slot.name : '—'; }
+
+function roundName(totalRounds, idx) {
+  const fromEnd = totalRounds - 1 - idx;
+  if (fromEnd === 0) return 'Finale';
+  if (fromEnd === 1) return 'Semifinale';
+  if (fromEnd === 2) return 'Quarti di finale';
+  if (fromEnd === 3) return 'Ottavi di finale';
+  return `Turno ${idx + 1}`;
+}
+
+function uidT() { return 't_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8); }
+
+function createTournament({ name, date, distanceM, faceCm, formatId, participants }) {
+  const sorted = participants.slice().sort((a, b) => b.seedScore - a.seedScore);
+  const seeded = sorted.map((p, i) => ({ ...p, seed: i + 1 }));
+  const { size, rounds } = buildBracket(seeded);
+  return {
+    id: uidT(),
+    name, date, distanceM, faceCm, formatId,
+    participants: seeded,
+    bracketSize: size,
+    rounds,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+// Applies a completed match's result back into the tournament's bracket —
+// records the score/shoot-off on the match itself and, if it wasn't the
+// final, advances the winner into next round's slot.
+function applyMatchResult(tournament, roundIdx, matchIdx, updatedMatch) {
+  const rounds = tournament.rounds.map(r => r.slice());
+  rounds[roundIdx][matchIdx] = updatedMatch;
+  if (updatedMatch.status === 'completed') propagateWinner(rounds, roundIdx, matchIdx, updatedMatch.winnerSlot);
+  return { ...tournament, rounds };
+}
+
+function tournamentIsComplete(tournament) {
+  const last = tournament.rounds[tournament.rounds.length - 1];
+  return last.length === 1 && last[0].status === 'completed';
+}
+
+// ---------- tournament: create / setup ----------
+
+function ParticipantEditor({ formatId, participants, setParticipants }) {
+  const [name, setName] = useState('');
+  const [score, setScore] = useState('');
+  const isTeam = formatId !== 'individual';
+
+  function add() {
+    if (!name.trim()) return;
+    const seedScore = Number(score) || 0;
+    setParticipants(list => [...list, { id: uidT(), name: name.trim(), seedScore }]);
+    setName(''); setScore('');
+  }
+
+  function remove(id) {
+    setParticipants(list => list.filter(p => p.id !== id));
+  }
+
+  const sorted = participants.slice().sort((a, b) => b.seedScore - a.seedScore);
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex gap-2">
+        <input value={name} onChange={e => setName(e.target.value)} placeholder={isTeam ? 'Nome squadra' : 'Nome arciere'}
+          className="flex-1 rounded-xl px-3 py-2.5" style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.text }} />
+        <input value={score} onChange={e => setScore(e.target.value.replace(/[^0-9]/g, ''))} placeholder="Punteggio" inputMode="numeric"
+          className="w-24 rounded-xl px-3 py-2.5" style={{ ...numeralStyle, background: T.surface, border: `1px solid ${T.border}`, color: T.text }} />
+        <button onClick={add} disabled={!name.trim()} className="w-11 h-11 rounded-xl flex items-center justify-center disabled:opacity-40" style={{ background: T.gold, color: GOLD_TEXT }}>
+          <UserPlus size={18} />
+        </button>
+      </div>
+      {sorted.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          {sorted.map((p, i) => (
+            <div key={p.id} className="rounded-xl px-3 py-2 flex items-center gap-2" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+              <div className="w-6 text-xs shrink-0" style={{ color: T.textFaint, ...numeralStyle }}>{i + 1}</div>
+              <div className="flex-1 truncate font-medium">{p.name}</div>
+              <div className="text-sm shrink-0" style={{ ...numeralStyle, color: T.textDim }}>{p.seedScore}</div>
+              <button onClick={() => remove(p.id)} className="p-1 rounded-full shrink-0" style={{ color: T.textFaint }}><Trash2 size={14} /></button>
+            </div>
+          ))}
+        </div>
+      )}
+      {sorted.length < 2 && <div className="text-xs" style={{ color: T.textDim }}>Servono almeno 2 {isTeam ? 'squadre' : 'arcieri'} per creare il tabellone.</div>}
+    </div>
+  );
+}
+
+function TournamentCreateScreen({ onCreate, onCancel }) {
+  const [name, setName] = useState('');
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [formatId, setFormatId] = useState('individual');
+  const [distanceM, setDistanceM] = useState(70);
+  const [faceCm, setFaceCm] = useState(122);
+  const [participants, setParticipants] = useState([]);
+
+  const canCreate = name.trim() && participants.length >= 2;
+
+  return (
+    <div className="max-w-md mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+      <div className="flex items-center gap-2">
+        <button onClick={onCancel} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
+        <div className="text-xl font-bold">Nuovo torneo</div>
+      </div>
+
+      <input value={name} onChange={e => setName(e.target.value)} placeholder="Nome del torneo"
+        className="rounded-xl px-3 py-2.5" style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.text }} />
+      <input type="date" value={date} onChange={e => setDate(e.target.value)}
+        className="rounded-xl px-3 py-2.5" style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.text, colorScheme: 'dark' }} />
+
+      <div className="flex flex-col gap-2">
+        <div className="text-xs" style={{ color: T.textDim }}>Formato match</div>
+        <div className="flex flex-col gap-2">
+          {MATCH_FORMATS.map(f => (
+            <button key={f.id} onClick={() => setFormatId(f.id)}
+              className="text-left rounded-2xl px-4 py-3 flex items-center justify-between"
+              style={{ background: f.id === formatId ? T.surfaceAlt : T.surface, border: `1px solid ${f.id === formatId ? T.gold : T.border}` }}>
+              <div>
+                <div className="font-semibold">{f.label}</div>
+                <div className="text-xs" style={{ color: T.textDim }}>
+                  {f.archersPerSide > 1 ? `${f.archersPerSide} arcieri/squadra · ` : ''}
+                  {f.units} {f.unitLabel.toLowerCase()}{f.units > 1 ? 'i' : ''} · {f.arrowsPerArcherPerUnit} frecce a testa · primo a {f.setPointsToWin} PS
+                </div>
+              </div>
+              {f.id === formatId && <Check color={T.gold} size={20} />}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="rounded-2xl p-4 flex flex-col gap-3" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+        <Stepper label="Distanza (m)" value={distanceM} onChange={setDistanceM} min={5} max={100} step={5} />
+        <Stepper label="Diametro bersaglio (cm)" value={faceCm} onChange={setFaceCm} min={20} max={122} step={10} />
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <div className="text-xs" style={{ color: T.textDim }}>Partecipanti (ordinati per punteggio di qualifica)</div>
+        <ParticipantEditor formatId={formatId} participants={participants} setParticipants={setParticipants} />
+      </div>
+
+      <button onClick={() => canCreate && onCreate(createTournament({ name: name.trim(), date, distanceM, faceCm, formatId, participants }))}
+        disabled={!canCreate} className="rounded-2xl py-4 font-bold text-lg flex items-center justify-center gap-2 disabled:opacity-40"
+        style={{ background: T.gold, color: GOLD_TEXT }}>
+        <Shuffle size={20} /> Genera tabellone
+      </button>
+    </div>
+  );
+}
+
+// ---------- tournament: bracket + match ----------
+
+function MatchCard({ match, onOpen }) {
+  const playable = match.status === 'pending' || match.status === 'in_progress' || match.status === 'shootoff';
+  const statusLabel = match.status === 'bye' ? 'Bye' : match.status === 'waiting' ? 'In attesa' :
+    match.status === 'completed' ? 'Conclusa' : match.status === 'shootoff' ? 'Spareggio' : 'Da giocare';
+  return (
+    <button onClick={() => playable && onOpen()} disabled={!playable}
+      className="w-full text-left rounded-2xl px-4 py-3 flex flex-col gap-2"
+      style={{ background: T.surface, border: `1px solid ${playable ? T.gold : T.border}`, opacity: match.status === 'waiting' ? 0.6 : 1 }}>
+      <div className="flex items-center justify-between text-xs" style={{ color: T.textDim }}>
+        <span>{statusLabel}</span>
+        {(match.status === 'completed' || match.status === 'in_progress' || match.status === 'shootoff') && (
+          <span style={numeralStyle}>{match.cumSpA} - {match.cumSpB}</span>
+        )}
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        <div className={`truncate ${match.winnerSlot === 'A' ? 'font-bold' : ''}`} style={{ color: match.winnerSlot === 'B' ? T.textDim : T.text }}>
+          {match.slotA ? `${match.slotA.seed}. ${match.slotA.name}` : '—'}
+        </div>
+        {match.winnerSlot === 'A' && <Check size={16} color={T.gold} />}
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        <div className={`truncate ${match.winnerSlot === 'B' ? 'font-bold' : ''}`} style={{ color: match.winnerSlot === 'A' ? T.textDim : T.text }}>
+          {match.slotB ? `${match.slotB.seed}. ${match.slotB.name}` : '—'}
+        </div>
+        {match.winnerSlot === 'B' && <Check size={16} color={T.gold} />}
+      </div>
+    </button>
+  );
+}
+
+function BracketScreen({ tournament, onBack, onOpenMatch, onDelete }) {
+  const complete = tournamentIsComplete(tournament);
+  const champion = complete ? (tournament.rounds[tournament.rounds.length - 1][0].winnerSlot === 'A'
+    ? tournament.rounds[tournament.rounds.length - 1][0].slotA
+    : tournament.rounds[tournament.rounds.length - 1][0].slotB) : null;
+
+  return (
+    <div className="max-w-md mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+      <div className="flex items-center gap-2">
+        <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
+        <div className="text-xl font-bold flex-1 truncate">{tournament.name}</div>
+      </div>
+      <div className="text-sm" style={{ color: T.textDim }}>
+        {formatDateShort(tournament.date)} · {matchFormatDef(tournament.formatId).label} · {tournament.distanceM}m/{tournament.faceCm}cm
+      </div>
+
+      {champion && (
+        <div className="rounded-2xl p-4 flex items-center gap-3" style={{ background: T.surfaceAlt, border: `1px solid ${T.gold}` }}>
+          <Trophy color={T.gold} size={28} />
+          <div>
+            <div className="text-xs uppercase tracking-wide" style={{ color: T.gold }}>Campione</div>
+            <div className="text-lg font-bold">{champion.name}</div>
+          </div>
+        </div>
+      )}
+
+      {tournament.rounds.map((round, ri) => (
+        <div key={ri} className="flex flex-col gap-2">
+          <div className="text-sm font-semibold" style={{ color: T.textDim }}>{roundName(tournament.rounds.length, ri)}</div>
+          <div className="flex flex-col gap-2">
+            {round.map((m, mi) => <MatchCard key={mi} match={m} onOpen={() => onOpenMatch(ri, mi)} />)}
+          </div>
+        </div>
+      ))}
+
+      <DeleteSessionButton onDelete={onDelete} label="Elimina torneo" />
+    </div>
+  );
+}
+
+function ArrowsInputColumn({ label, needed, pending, onAdd, onUndo, disabled }) {
+  return (
+    <div className="flex-1 flex flex-col gap-2">
+      <div className="text-sm font-semibold text-center">{label}</div>
+      <div className="flex flex-wrap justify-center gap-1.5 min-h-[2.5rem]">
+        {pending.map((a, i) => <ArrowChipSmall key={i} arrow={a} />)}
+        {Array.from({ length: Math.max(0, needed - pending.length) }).map((_, i) => (
+          <div key={`ph-${i}`} className="w-8 h-8 rounded-full" style={{ border: `2px dashed ${T.border}` }} />
+        ))}
+      </div>
+      <div className="text-center text-xs" style={{ color: T.textDim }}>{sumArrows(pending.map(a => a.score))} punti</div>
+      <button onClick={onUndo} disabled={disabled || pending.length === 0} className="text-xs py-1 rounded-full disabled:opacity-30" style={{ color: T.textDim }}>
+        Annulla ultima
+      </button>
+    </div>
+  );
+}
+
+function MatchScreen({ tournament, roundIdx, matchIdx, onBack, onComplete }) {
+  const match = tournament.rounds[roundIdx][matchIdx];
+  const formatDef = matchFormatDef(tournament.formatId);
+  const needed = arrowsPerUnit(formatDef);
+  const unitIdx = currentUnitIndex(match);
+
+  const [pendingA, setPendingA] = useState([]);
+  const [pendingB, setPendingB] = useState([]);
+  const [activeSide, setActiveSide] = useState('A');
+  const [shootA, setShootA] = useState([]);
+  const [shootB, setShootB] = useState([]);
+
+  function addArrow(side, score, isX) {
+    const setPending = side === 'A' ? setPendingA : setPendingB;
+    setPending(list => {
+      if (list.length >= needed) return list;
+      const next = [...list, { score, isX }];
+      // Auto-advance to the other side once this one's full, so the scorer
+      // doesn't have to remember to switch the toggle between sets.
+      if (next.length === needed) setActiveSide(side === 'A' ? 'B' : 'A');
+      return next;
+    });
+  }
+  function undoArrow(side) {
+    const setPending = side === 'A' ? setPendingA : setPendingB;
+    setPending(list => list.slice(0, -1));
+  }
+
+  function submitUnit() {
+    let m = recordUnit(match, formatDef, unitIdx, 'A', pendingA.map(a => a.score));
+    m = recordUnit(m, formatDef, unitIdx, 'B', pendingB.map(a => a.score));
+    setPendingA([]); setPendingB([]); setActiveSide('A');
+    onComplete(roundIdx, matchIdx, m);
+  }
+
+  function submitShootOff(winnerSlot) {
+    const m = recordShootOff(match, winnerSlot, shootA.map(a => a.score), shootB.map(a => a.score));
+    onComplete(roundIdx, matchIdx, m);
+  }
+
+  if (match.status === 'completed') {
+    return (
+      <div className="max-w-md mx-auto px-4 pt-4 pb-8 flex flex-col gap-4 items-center text-center">
+        <div className="flex items-center gap-2 self-start">
+          <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
+          <div className="text-xl font-bold">{roundName(tournament.rounds.length, roundIdx)}</div>
+        </div>
+        <Trophy color={T.gold} size={32} />
+        <div className="text-2xl font-bold">{match.winnerSlot === 'A' ? sideLabel(match.slotA) : sideLabel(match.slotB)}</div>
+        <div className="text-sm" style={{ color: T.textDim }}>vince {match.cumSpA} - {match.cumSpB}</div>
+        <button onClick={onBack} className="w-full rounded-2xl py-3.5 font-bold" style={{ background: T.gold, color: GOLD_TEXT }}>Torna al tabellone</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-md mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+      <div className="flex items-center gap-2">
+        <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
+        <div className="text-xl font-bold">{roundName(tournament.rounds.length, roundIdx)}</div>
+      </div>
+
+      <div className="rounded-2xl p-4 flex items-center justify-around" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+        <div className="text-center">
+          <div className="font-semibold truncate max-w-[9rem]">{sideLabel(match.slotA)}</div>
+          <div className="text-3xl font-bold" style={numeralStyle}>{match.cumSpA}</div>
+        </div>
+        <div className="text-sm" style={{ color: T.textFaint }}>PS</div>
+        <div className="text-center">
+          <div className="font-semibold truncate max-w-[9rem]">{sideLabel(match.slotB)}</div>
+          <div className="text-3xl font-bold" style={numeralStyle}>{match.cumSpB}</div>
+        </div>
+      </div>
+
+      {match.status === 'shootoff' ? (
+        <div className="flex flex-col gap-4">
+          <div className="text-center text-sm font-semibold" style={{ color: T.gold }}>Spareggio — chi ha piazzato la freccia più vicina al centro?</div>
+          <div className="flex gap-3">
+            <ArrowsInputColumn label={sideLabel(match.slotA)} needed={formatDef.archersPerSide} pending={shootA}
+              onAdd={(s, x) => setShootA(l => [...l, { score: s, isX: x }])} onUndo={() => setShootA(l => l.slice(0, -1))} />
+            <ArrowsInputColumn label={sideLabel(match.slotB)} needed={formatDef.archersPerSide} pending={shootB}
+              onAdd={(s, x) => setShootB(l => [...l, { score: s, isX: x }])} onUndo={() => setShootB(l => l.slice(0, -1))} />
+          </div>
+          <SegmentedControl options={[{ id: 'A', label: sideLabel(match.slotA) }, { id: 'B', label: sideLabel(match.slotB) }]} value={activeSide} onChange={setActiveSide} />
+          <Keypad onScore={(score, isX) => (activeSide === 'A' ? setShootA(l => [...l, { score, isX }]) : setShootB(l => [...l, { score, isX }]))} />
+          <div className="flex gap-2">
+            <button onClick={() => submitShootOff('A')} className="flex-1 rounded-2xl py-3.5 font-bold" style={{ background: T.gold, color: GOLD_TEXT }}>
+              Vince {sideLabel(match.slotA)}
+            </button>
+            <button onClick={() => submitShootOff('B')} className="flex-1 rounded-2xl py-3.5 font-bold" style={{ background: T.gold, color: GOLD_TEXT }}>
+              Vince {sideLabel(match.slotB)}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="text-center text-sm" style={{ color: T.textDim }}>
+            {formatDef.unitLabel} {unitIdx + 1} di {formatDef.units}
+          </div>
+          <div className="flex gap-3">
+            <ArrowsInputColumn label={sideLabel(match.slotA)} needed={needed} pending={pendingA} onUndo={() => undoArrow('A')} />
+            <ArrowsInputColumn label={sideLabel(match.slotB)} needed={needed} pending={pendingB} onUndo={() => undoArrow('B')} />
+          </div>
+          <SegmentedControl options={[{ id: 'A', label: sideLabel(match.slotA) }, { id: 'B', label: sideLabel(match.slotB) }]} value={activeSide} onChange={setActiveSide} />
+          <Keypad onScore={(score, isX) => addArrow(activeSide, score, isX)} />
+          <button onClick={submitUnit} disabled={pendingA.length < needed || pendingB.length < needed}
+            className="rounded-2xl py-3.5 font-bold disabled:opacity-40" style={{ background: T.gold, color: GOLD_TEXT }}>
+            Conferma {formatDef.unitLabel.toLowerCase()}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+function TournamentRow({ tournament, onOpen, onDelete }) {
+  const [confirming, setConfirming] = useState(false);
+  useEffect(() => {
+    if (!confirming) return;
+    const t = setTimeout(() => setConfirming(false), 3000);
+    return () => clearTimeout(t);
+  }, [confirming]);
+
+  const complete = tournamentIsComplete(tournament);
+  return (
+    <div className="rounded-2xl px-4 py-3 flex items-center gap-3" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+      <button onClick={onOpen} className="flex-1 text-left min-w-0">
+        <div className="font-semibold truncate flex items-center gap-2">
+          <span className="truncate">{tournament.name}</span>
+          {complete && <Trophy size={14} color={T.gold} />}
+        </div>
+        <div className="text-xs truncate" style={{ color: T.textDim }}>
+          {formatDateShort(tournament.date)} · {matchFormatDef(tournament.formatId).label} · {tournament.participants.length} partecipanti
+        </div>
+      </button>
+      <button onClick={() => (confirming ? onDelete() : setConfirming(true))} className="p-2 rounded-full shrink-0"
+        style={{ background: confirming ? T.red : 'transparent', color: confirming ? '#fff' : T.textFaint }}>
+        <Trash2 size={16} />
+      </button>
+    </div>
+  );
+}
+
+function TorneiScreen({ tournaments, onNew, onOpen, onDelete }) {
+  return (
+    <div className="max-w-md mx-auto px-4 pt-6 pb-8 flex flex-col gap-4">
+      <div className="flex items-center justify-between">
+        <div className="text-2xl font-bold">Tornei</div>
+        <button onClick={onNew} className="p-2.5 rounded-full" style={{ background: T.gold, color: GOLD_TEXT }}><Plus size={20} /></button>
+      </div>
+      {tournaments.length === 0 ? (
+        <div className="rounded-2xl p-4 text-sm" style={{ background: T.surface, border: `1px dashed ${T.border}`, color: T.textDim }}>
+          Nessun torneo ancora. Crea un tabellone a eliminazione diretta e inizia a registrare i match dal vivo.
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {tournaments.slice().sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).map(t => (
+            <TournamentRow key={t.id} tournament={t} onOpen={() => onOpen(t.id)} onDelete={() => onDelete(t.id)} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -2109,6 +2718,9 @@ export default function ArcheryScorecard() {
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [detailSessionId, setDetailSessionId] = useState(null);
   const [legacyData, setLegacyData] = useState(null);
+  const [tournaments, setTournaments] = useState([]);
+  const [activeTournamentId, setActiveTournamentId] = useState(null);
+  const [activeMatchRef, setActiveMatchRef] = useState(null); // { roundIdx, matchIdx }
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setAuthSession(data.session ?? null));
@@ -2119,7 +2731,7 @@ export default function ArcheryScorecard() {
   const userId = authSession?.user?.id ?? null;
 
   useEffect(() => {
-    if (!userId) { setSessions([]); setLoaded(false); return; }
+    if (!userId) { setSessions([]); setTournaments([]); setLoaded(false); return; }
     let mounted = true;
     loadSessionsRemote(userId).then(s => {
       if (!mounted) return;
@@ -2127,6 +2739,7 @@ export default function ArcheryScorecard() {
       setLoaded(true);
       if (s.length === 0) setLegacyData(findLegacyLocalSessions());
     });
+    loadTournamentsRemote(userId).then(t => { if (mounted) setTournaments(t); });
     return () => { mounted = false; };
   }, [userId]);
 
@@ -2171,12 +2784,32 @@ export default function ArcheryScorecard() {
     setLegacyData(null);
   }, []);
 
+  const addTournament = useCallback((tournament) => {
+    setTournaments(prev => [...prev, tournament]);
+    if (userId) upsertTournamentRemote(userId, tournament);
+  }, [userId]);
+
+  const updateTournament = useCallback((id, updater) => {
+    setTournaments(prev => {
+      const next = prev.map(t => (t.id === id ? updater(t) : t));
+      const changed = next.find(t => t.id === id);
+      if (changed && userId) upsertTournamentRemote(userId, changed);
+      return next;
+    });
+  }, [userId]);
+
+  const deleteTournament = useCallback((id) => {
+    setTournaments(prev => prev.filter(t => t.id !== id));
+    if (userId) deleteTournamentRemote(id);
+  }, [userId]);
+
   if (authSession === undefined) return <LoadingScreen />;
   if (authSession === null) return <AuthGate />;
   if (!loaded) return <LoadingScreen />;
 
   const activeSession = sessions.find(s => s.id === activeSessionId) || null;
   const detailSession = sessions.find(s => s.id === detailSessionId) || null;
+  const activeTournament = tournaments.find(t => t.id === activeTournamentId) || null;
 
   return (
     <div className="flex flex-col font-sans antialiased" style={{ background: T.bg, color: T.text, minHeight: '100vh' }}>
@@ -2217,9 +2850,37 @@ export default function ArcheryScorecard() {
         )}
 
         {view === 'statistiche' && <StatisticheScreen sessions={sessions} />}
+
+        {view === 'tornei' && (
+          <TorneiScreen tournaments={tournaments}
+            onNew={() => setView('tornei-new')}
+            onOpen={(id) => { setActiveTournamentId(id); setView('bracket'); }}
+            onDelete={deleteTournament} />
+        )}
+
+        {view === 'tornei-new' && (
+          <TournamentCreateScreen
+            onCreate={(t) => { addTournament(t); setActiveTournamentId(t.id); setView('bracket'); }}
+            onCancel={() => setView('tornei')} />
+        )}
+
+        {view === 'bracket' && activeTournament && (
+          <BracketScreen tournament={activeTournament}
+            onBack={() => { setActiveTournamentId(null); setView('tornei'); }}
+            onOpenMatch={(roundIdx, matchIdx) => { setActiveMatchRef({ roundIdx, matchIdx }); setView('match'); }}
+            onDelete={() => { deleteTournament(activeTournament.id); setActiveTournamentId(null); setView('tornei'); }} />
+        )}
+
+        {view === 'match' && activeTournament && activeMatchRef && (
+          <MatchScreen tournament={activeTournament} roundIdx={activeMatchRef.roundIdx} matchIdx={activeMatchRef.matchIdx}
+            onBack={() => { setActiveMatchRef(null); setView('bracket'); }}
+            onComplete={(roundIdx, matchIdx, updatedMatch) => {
+              updateTournament(activeTournament.id, t => applyMatchResult(t, roundIdx, matchIdx, updatedMatch));
+            }} />
+        )}
       </div>
 
-      {view !== 'shoot' && <BottomNav view={view} setView={setView} />}
+      {view !== 'shoot' && view !== 'match' && <BottomNav view={view} setView={setView} />}
     </div>
   );
 }

@@ -190,3 +190,43 @@ as JSON, meant to seed the future offline app.
   notable — group bias, in-session fatigue (first half vs second half),
   misses, or gold rate — omitted if nothing stands out. Shown right after
   finishing a session and again anytime you revisit it in Storico.
+
+## v1.6 additions — Tournament manager
+
+A fourth bottom-nav tab, entirely separate from the personal scorecard: run
+a single-elimination tournament with live match scoring.
+
+- **Data model**: a tournament is `{ participants, bracketSize, rounds }`,
+  stored in its own `tournaments` table (`supabase/schema.sql`), same
+  RLS-per-user pattern as `sessions`. `rounds[0]` is the first round;
+  `buildBracket()` seeds it and every later round from `participants`
+  (already sorted best-seed-first) using the classic recursive tournament
+  seeding order (`standardSeedOrder()` — for 8 players: 1v8, 4v5, 2v7, 3v6,
+  so the top 2 seeds can't meet before the final). Byes go to the top seeds
+  automatically when the field isn't a power of 2, and resolve immediately
+  — no user action needed to advance a bye.
+- **One match engine for both formats**: individual and team matches both
+  reduce to "play a sequence of units (sets or ends), award 2 set-points to
+  the higher side each unit (1-1 if tied), first to the target set-points
+  wins, shoot-off if still tied once every unit is played" — see
+  `MATCH_FORMATS` for the three presets (Individuale: 5 sets/3 arrows/6 SP;
+  Team misto: 2 archers/side, 4 ends/2 arrows each/5 SP; A squadre: 3
+  archers/side, same end structure) and `recordUnit()`/`recordShootOff()`
+  for the engine itself. These are WA-standard assumptions — verify locally,
+  same spirit as `ROUND_TYPES`. Team formats record each end's arrows as one
+  combined list per side rather than attributing them to a specific archer
+  — a deliberate simplification.
+  - Shoot-off winner is a manual declaration (tap "Vince X"), not
+    auto-computed from arrow position — closest-to-center requires a
+    judgment call the app can't make from a keypad score. Optional score
+    entry is there for the record only.
+- **Live scoring**: `MatchScreen` reuses the same `Keypad` component the
+  personal scorecard uses. Entering a side's last arrow for a unit
+  auto-advances the active-side toggle to the other side, so the scorer
+  doesn't have to remember to switch manually between sets. A completed
+  match calls `applyMatchResult()`, which records the result and — unless
+  it was the final — propagates the winner into next round's slot via
+  `propagateWinner()`.
+- **Bracket view** is a vertical round-by-round list of match cards (not a
+  wide horizontal tree), deliberately — a horizontal bracket doesn't work
+  on a phone-width screen, and the vertical list scrolls naturally.

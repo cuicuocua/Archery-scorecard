@@ -23,3 +23,26 @@ create policy "update own sessions" on public.sessions
 
 create policy "delete own sessions" on public.sessions
   for delete using (auth.uid() = user_id);
+
+create table if not exists public.tournaments (
+  id text primary key,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  data jsonb not null,
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists tournaments_user_id_idx on public.tournaments(user_id);
+
+alter table public.tournaments enable row level security;
+
+create policy "select own tournaments" on public.tournaments
+  for select using (auth.uid() = user_id);
+
+create policy "insert own tournaments" on public.tournaments
+  for insert with check (auth.uid() = user_id);
+
+create policy "update own tournaments" on public.tournaments
+  for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+create policy "delete own tournaments" on public.tournaments
+  for delete using (auth.uid() = user_id);
