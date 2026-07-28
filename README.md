@@ -344,7 +344,8 @@ a single-elimination tournament with live match scoring.
   (highlighted with a ring) and `Enter` opens whichever one it's on, docking
   it exactly like a click would — a full round can be scored without
   touching the mouse. The scoring digits/`x`/`m` stay undocumented, but
-  every other shortcut (`↑↓`, `←→`, `Invio`, `⌫`) is listed in a small
-  on-screen legend that appears next to the "Superuser" badge while the mode
-  is on. Declaring a shoot-off winner still requires a manual tap, keyboard
+  every other shortcut (`↑↓`, `←→`, `Invio`, `⌫`) is listed in a banner
+  across the top of the page while the mode is on — in normal document flow
+  rather than a fixed overlay, so it never sits on top of the bracket cards
+  it's describing. Declaring a shoot-off winner still requires a manual tap, keyboard
   or not, since that's a judgment call.

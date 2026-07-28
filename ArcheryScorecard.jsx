@@ -4007,19 +4007,13 @@ export default function ArcheryScorecard() {
         </div>
       )}
       {superuser && (
-        <div className="fixed top-3 right-3 z-40 flex flex-col items-end gap-2 pointer-events-none">
-          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold shadow-lg"
-            style={{ background: T.gold, color: GOLD_TEXT }}>
-            <Unlock size={12} /> Superuser (q per uscire)
-          </div>
-          <div className="flex flex-col gap-1 px-3 py-2 rounded-xl text-[11px] shadow-lg" style={{ background: T.surfaceAlt, border: `1px solid ${T.border}` }}>
-            {[['↑ ↓', 'sfoglia match'], ['←  →', 'cambia lato'], ['Invio', 'apri / conferma'], ['⌫', 'annulla freccia']].map(([key, label]) => (
-              <div key={key} className="flex items-center justify-between gap-4">
-                <span className="font-semibold" style={{ color: T.text }}>{key}</span>
-                <span style={{ color: T.textDim }}>{label}</span>
-              </div>
-            ))}
-          </div>
+        <div className="w-full px-4 py-2 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-xs font-semibold"
+          style={{ background: T.gold, color: GOLD_TEXT }}>
+          <span className="flex items-center gap-1.5"><Unlock size={12} /> Superuser (q per uscire)</span>
+          <span className="flex items-center gap-1"><span className="font-mono">↑↓</span> sfoglia match</span>
+          <span className="flex items-center gap-1"><span className="font-mono">←→</span> cambia lato</span>
+          <span className="flex items-center gap-1"><span className="font-mono">Invio</span> apri / conferma</span>
+          <span className="flex items-center gap-1"><span className="font-mono">⌫</span> annulla freccia</span>
         </div>
       )}
       <div className="flex-1">
