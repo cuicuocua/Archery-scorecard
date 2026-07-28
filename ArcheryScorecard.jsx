@@ -2166,6 +2166,10 @@ const MATCH_FORMATS = [
 function matchFormatDef(id) { return MATCH_FORMATS.find(f => f.id === id) || MATCH_FORMATS[0]; }
 function arrowsPerUnit(formatDef) { return formatDef.archersPerSide * formatDef.arrowsPerArcherPerUnit; }
 
+// The four real WA target face sizes — same values ROUND_TYPES already
+// uses — rather than a stepper that lands on non-standard diameters.
+const FACE_SIZE_OPTIONS = [40, 60, 80, 122].map(cm => ({ id: cm, label: `${cm}` }));
+
 // ---------- bracket seeding ----------
 
 // Classic recursive tournament seeding order: for size 8 this returns
@@ -2350,14 +2354,24 @@ function tournamentIsComplete(tournament) {
 // number on the line as the seed score and everything before it as the
 // name. Lines that don't end in a recognizable number are skipped (and
 // reported) rather than guessed at.
+// Accepts either order — "Name Score" or "Score Name" — since people paste
+// scoreboards both ways (a ranked list is often "280 Alessio", one per
+// line). Tries name-then-score first, falls back to score-then-name.
 function parseParticipantList(text) {
   const ok = [];
   const bad = [];
+  const nameFirst = /^(.*?)[\s,;:|\t-]+(\d+(?:[.,]\d+)?)\s*$/;
+  const scoreFirst = /^(\d+(?:[.,]\d+)?)[\s,;:|\t-]+(.*)$/;
+  const clean = s => s.trim().replace(/^[-,;:|]+|[-,;:|]+$/g, '').trim();
   text.split('\n').map(l => l.trim()).filter(Boolean).forEach(line => {
-    const m = line.match(/^(.*?)[\s,;:|\t-]+(\d+(?:[.,]\d+)?)\s*$/);
-    const name = m ? m[1].trim().replace(/^[-,;:|]+|[-,;:|]+$/g, '') : '';
-    const score = m ? Number(m[2].replace(',', '.')) : NaN;
-    if (m && name && !Number.isNaN(score)) ok.push({ id: uidT(), name, seedScore: score });
+    let name = '', score = NaN;
+    const m1 = line.match(nameFirst);
+    if (m1) { name = clean(m1[1]); score = Number(m1[2].replace(',', '.')); }
+    else {
+      const m2 = line.match(scoreFirst);
+      if (m2) { score = Number(m2[1].replace(',', '.')); name = clean(m2[2]); }
+    }
+    if (name && !Number.isNaN(score)) ok.push({ id: uidT(), name, seedScore: score });
     else bad.push(line);
   });
   return { ok, bad };
@@ -2496,8 +2510,11 @@ function TournamentCreateScreen({ onCreate, onCancel }) {
       </div>
 
       <div className="rounded-2xl p-4 flex flex-col gap-3" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
-        <Stepper label="Distanza (m)" value={distanceM} onChange={setDistanceM} min={5} max={100} step={5} />
-        <Stepper label="Diametro bersaglio (cm)" value={faceCm} onChange={setFaceCm} min={20} max={122} step={10} />
+        <Stepper label="Distanza (m)" value={distanceM} onChange={setDistanceM} min={10} max={90} step={5} />
+        <div className="flex items-center justify-between">
+          <div className="text-sm" style={{ color: T.textDim }}>Diametro bersaglio (cm)</div>
+          <SegmentedControl options={FACE_SIZE_OPTIONS} value={faceCm} onChange={setFaceCm} small />
+        </div>
       </div>
 
       <div className="flex flex-col gap-2">
