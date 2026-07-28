@@ -32,22 +32,42 @@ import { createClient } from '@supabase/supabase-js';
  *    modelled — all bow types score the full 10-zone face here.
  */
 
+// Every round definition is a list of "stages" — most rounds are a single
+// stage (one distance/face/arrows/ends), but multi-distance rounds (WA1440,
+// WA Combined, ...) are a sequence of stages shot back to back within one
+// session. A session mirrors this: session.stages[] instead of one flat
+// round. Personal-best/pace comparisons and analysis are scoped per STAGE
+// SHAPE (distance+face+arrows+ends), not per session — so a WA1440's 70m
+// stage is compared against every other 70m stage ever shot, whether it
+// came from a standalone Targa 70m session or from inside another
+// multi-stage round. See stageEntries() below.
 const ROUND_TYPES = [
-  { id: 'indoor18', label: 'Indoor 18m', category: 'Indoor', distanceM: 18, faceCm: 40, arrowsPerEnd: 3, ends: 20, editable: false },
-  { id: 'indoor25', label: 'Indoor 25m', category: 'Indoor', distanceM: 25, faceCm: 60, arrowsPerEnd: 3, ends: 20, editable: false },
+  { id: 'indoor18', label: 'Indoor 18m', category: 'Indoor', editable: false,
+    stages: [{ distanceM: 18, faceCm: 40, arrowsPerEnd: 3, ends: 20 }] },
+  { id: 'indoor25', label: 'Indoor 25m', category: 'Indoor', editable: false,
+    stages: [{ distanceM: 25, faceCm: 60, arrowsPerEnd: 3, ends: 20 }] },
 
-  { id: 'targa90', label: 'Targa 90m', category: 'Targa 122cm', distanceM: 90, faceCm: 122, arrowsPerEnd: 6, ends: 12, editable: false },
-  { id: 'targa70', label: 'Targa 70m', category: 'Targa 122cm', distanceM: 70, faceCm: 122, arrowsPerEnd: 6, ends: 12, editable: false },
-  { id: 'targa60', label: 'Targa 60m', category: 'Targa 122cm', distanceM: 60, faceCm: 122, arrowsPerEnd: 6, ends: 12, editable: false },
+  { id: 'targa90', label: 'Targa 90m', category: 'Targa 122cm', editable: false,
+    stages: [{ distanceM: 90, faceCm: 122, arrowsPerEnd: 6, ends: 12 }] },
+  { id: 'targa70', label: 'Targa 70m', category: 'Targa 122cm', editable: false,
+    stages: [{ distanceM: 70, faceCm: 122, arrowsPerEnd: 6, ends: 12 }] },
+  { id: 'targa60', label: 'Targa 60m', category: 'Targa 122cm', editable: false,
+    stages: [{ distanceM: 60, faceCm: 122, arrowsPerEnd: 6, ends: 12 }] },
 
-  { id: 'targa50', label: 'Targa 50m', category: 'Targa 80cm', distanceM: 50, faceCm: 80, arrowsPerEnd: 6, ends: 12, editable: false },
-  { id: 'targa40', label: 'Targa 40m', category: 'Targa 80cm', distanceM: 40, faceCm: 80, arrowsPerEnd: 6, ends: 12, editable: false },
-  { id: 'targa30', label: 'Targa 30m', category: 'Targa 80cm', distanceM: 30, faceCm: 80, arrowsPerEnd: 6, ends: 12, editable: false },
+  { id: 'targa50', label: 'Targa 50m', category: 'Targa 80cm', editable: false,
+    stages: [{ distanceM: 50, faceCm: 80, arrowsPerEnd: 6, ends: 12 }] },
+  { id: 'targa40', label: 'Targa 40m', category: 'Targa 80cm', editable: false,
+    stages: [{ distanceM: 40, faceCm: 80, arrowsPerEnd: 6, ends: 12 }] },
+  { id: 'targa30', label: 'Targa 30m', category: 'Targa 80cm', editable: false,
+    stages: [{ distanceM: 30, faceCm: 80, arrowsPerEnd: 6, ends: 12 }] },
 
-  // Fully custom: distance, face, arrows/end and ends are all pickable at
-  // session start, for anything not covered above (para/youth classes,
-  // club rounds, field-style faces, etc.) — see the editable steppers.
-  { id: 'custom', label: 'Personalizzata', category: 'Personalizzata', distanceM: 30, faceCm: 40, arrowsPerEnd: 3, ends: 10, editable: true },
+  // Fully custom: one or more stages, each with its own pickable
+  // distance/face/arrows/ends — for anything not covered above (para/youth
+  // classes, club rounds, field-style faces, WA1440 in whichever distance
+  // combination your category shoots, WA Combined, etc). Starts as a single
+  // stage; "+ Aggiungi tappa" in the picker appends more.
+  { id: 'custom', label: 'Personalizzata', category: 'Personalizzata', editable: true,
+    stages: [{ distanceM: 30, faceCm: 40, arrowsPerEnd: 3, ends: 10 }] },
 ];
 
 // ROUND_TYPES grouped by category, in declaration order — drives the
@@ -207,96 +227,46 @@ function uid() {
   return 'id_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
 }
 
-function createSession(roundDef, meta) {
-  return {
-    id: uid(),
-    roundId: roundDef.id,
-    round: {
-      label: roundDef.label,
-      distanceM: roundDef.distanceM,
-      faceCm: roundDef.faceCm,
-      arrowsPerEnd: roundDef.arrowsPerEnd,
-      ends: roundDef.ends,
-    },
-    sessionType: meta.sessionType || 'allenamento',
-    bowType: meta.bowType || null,
-    conditions: emptyConditions(),
-    status: 'in_progress',
-    startedAt: new Date().toISOString(),
-    completedAt: null,
-    location: meta.location || '',
-    note: meta.note || '',
-    ends: Array.from({ length: roundDef.ends }, (_, i) => ({ index: i, arrows: [] })),
-  };
-}
+// ---------- stage helpers ----------
+//
+// A "stage" is `{ round: {label,distanceM,faceCm,arrowsPerEnd,ends}, ends: [{index,arrows}] }`
+// — structurally identical to what a whole session used to be before v1.4.
+// Every function in this section operates on a single stage. A session is a
+// list of stages plus shared metadata (type, bow, date, conditions, ...);
+// see the "session helpers" section below for the aggregate operations.
 
-function flattenArrows(session) { return session.ends.flatMap(e => e.arrows); }
-function totalScore(session) { return flattenArrows(session).reduce((s, a) => s + a.score, 0); }
-function xCount(session) { return flattenArrows(session).filter(a => a.isX).length; }
-function arrowsShotCount(session) { return flattenArrows(session).length; }
-function totalArrowsInRound(session) { return session.round.arrowsPerEnd * session.round.ends; }
+function flattenArrows(stage) { return stage.ends.flatMap(e => e.arrows); }
+function totalScore(stage) { return flattenArrows(stage).reduce((s, a) => s + a.score, 0); }
+function xCount(stage) { return flattenArrows(stage).filter(a => a.isX).length; }
+function arrowsShotCount(stage) { return flattenArrows(stage).length; }
+function totalArrowsInRound(stage) { return stage.round.arrowsPerEnd * stage.round.ends; }
 
-function cumulativeScores(session) {
+function cumulativeScores(stage) {
   let sum = 0;
-  return flattenArrows(session).map(a => (sum += a.score));
+  return flattenArrows(stage).map(a => (sum += a.score));
 }
 
-function currentEndIndex(session) {
-  const idx = session.ends.findIndex(e => e.arrows.length < session.round.arrowsPerEnd);
-  return idx === -1 ? session.ends.length - 1 : idx;
+function currentEndIndex(stage) {
+  const idx = stage.ends.findIndex(e => e.arrows.length < stage.round.arrowsPerEnd);
+  return idx === -1 ? stage.ends.length - 1 : idx;
 }
 
-function addArrow(session, arrow) {
-  const perEnd = session.round.arrowsPerEnd;
-  const idx = session.ends.findIndex(e => e.arrows.length < perEnd);
-  if (idx === -1) return session;
-  const ends = session.ends.map((e, i) => (i === idx ? { ...e, arrows: [...e.arrows, arrow] } : e));
-  const complete = ends.every(e => e.arrows.length >= perEnd);
-  return {
-    ...session,
-    ends,
-    status: complete ? 'completed' : 'in_progress',
-    completedAt: complete ? new Date().toISOString() : null,
-  };
+function addArrow(stage, arrow) {
+  const perEnd = stage.round.arrowsPerEnd;
+  const idx = stage.ends.findIndex(e => e.arrows.length < perEnd);
+  if (idx === -1) return stage;
+  const ends = stage.ends.map((e, i) => (i === idx ? { ...e, arrows: [...e.arrows, arrow] } : e));
+  return { ...stage, ends };
 }
 
-function undoLastArrow(session) {
-  for (let i = session.ends.length - 1; i >= 0; i--) {
-    if (session.ends[i].arrows.length > 0) {
-      const ends = session.ends.map((e, idx) => (idx === i ? { ...e, arrows: e.arrows.slice(0, -1) } : e));
-      return { ...session, ends, status: 'in_progress', completedAt: null };
+function undoLastArrow(stage) {
+  for (let i = stage.ends.length - 1; i >= 0; i--) {
+    if (stage.ends[i].arrows.length > 0) {
+      const ends = stage.ends.map((e, idx) => (idx === i ? { ...e, arrows: e.arrows.slice(0, -1) } : e));
+      return { ...stage, ends };
     }
   }
-  return session;
-}
-
-// Compares the actual round snapshot (distance/face/arrows/ends), not just
-// roundId — two "Personalizzata" sessions with different made-up rules
-// (common for gara sociale) are not the same round and must not be
-// compared as if chasing the same personal best.
-function sameRound(a, b) {
-  return a.distanceM === b.distanceM && a.faceCm === b.faceCm && a.arrowsPerEnd === b.arrowsPerEnd && a.ends === b.ends;
-}
-
-function findPersonalBest(sessions, scope, excludeId) {
-  const candidates = sessions.filter(s =>
-    s.status === 'completed' &&
-    s.id !== excludeId &&
-    sameRound(s.round, scope.round) &&
-    (s.bowType || null) === (scope.bowType || null) &&
-    (s.sessionType || 'allenamento') === (scope.sessionType || 'allenamento'));
-  if (!candidates.length) return null;
-  return candidates.reduce((best, s) => (totalScore(s) > totalScore(best) ? s : best));
-}
-
-function paceVsPB(session, pbSession) {
-  if (!pbSession) return null;
-  const shot = arrowsShotCount(session);
-  if (!shot) return null;
-  const curCum = cumulativeScores(session);
-  const pbCum = cumulativeScores(pbSession);
-  const pbAtShot = pbCum[Math.min(shot, pbCum.length) - 1] ?? 0;
-  return curCum[shot - 1] - pbAtShot;
+  return stage;
 }
 
 function computeGroupStats(points, faceCm) {
@@ -315,8 +285,146 @@ function computeGroupStats(points, faceCm) {
   return { x: cx, y: cy, cxCm: cx * r, cyCm: cy * r, meanRadiusCm: sumR / pts.length, maxRadiusCm: maxR, count: pts.length };
 }
 
-function groupStats(session, arrows) {
-  return computeGroupStats(arrows, session.round.faceCm);
+function groupStats(stage, arrows) {
+  return computeGroupStats(arrows, stage.round.faceCm);
+}
+
+// Compares the actual round snapshot (distance/face/arrows/ends), not any
+// id — two "Personalizzata" stages with different made-up rules (common for
+// gara sociale) are not the same round and must not be compared as if
+// chasing the same personal best; conversely a WA1440's 70m stage and a
+// standalone Targa 70m session DO count as the same round when the shape
+// matches, on purpose.
+function sameRound(a, b) {
+  return a.distanceM === b.distanceM && a.faceCm === b.faceCm && a.arrowsPerEnd === b.arrowsPerEnd && a.ends === b.ends;
+}
+
+// entries: a flat list from stageEntries() — see below. scope: { round, bowType, sessionType }.
+function findPersonalBest(entries, scope, excludeSessionId) {
+  const candidates = entries.filter(e =>
+    e.status === 'completed' &&
+    e.sessionId !== excludeSessionId &&
+    sameRound(e.round, scope.round) &&
+    (e.bowType || null) === (scope.bowType || null) &&
+    (e.sessionType || 'allenamento') === (scope.sessionType || 'allenamento'));
+  if (!candidates.length) return null;
+  return candidates.reduce((best, e) => (totalScore(e) > totalScore(best) ? e : best));
+}
+
+function paceVsPB(stage, pbEntry) {
+  if (!pbEntry) return null;
+  const shot = arrowsShotCount(stage);
+  if (!shot) return null;
+  const curCum = cumulativeScores(stage);
+  const pbCum = cumulativeScores(pbEntry);
+  const pbAtShot = pbCum[Math.min(shot, pbCum.length) - 1] ?? 0;
+  return curCum[shot - 1] - pbAtShot;
+}
+
+// ---------- session helpers ----------
+//
+// A session is `{ id, roundId, roundLabel, stages: [stage, ...], sessionType,
+// bowType, conditions, status, startedAt, completedAt, location, note }`.
+// status/completedAt are session-wide: a multi-stage session only becomes
+// 'completed' once every stage is full, so a partially-shot WA1440 never
+// counts toward anyone's personal best (matches how a partially-shot single
+// round already worked before multi-stage rounds existed).
+
+function createSession(roundDef, meta) {
+  const stages = roundDef.stages.map(st => ({
+    round: { label: `${st.distanceM}m`, distanceM: st.distanceM, faceCm: st.faceCm, arrowsPerEnd: st.arrowsPerEnd, ends: st.ends },
+    ends: Array.from({ length: st.ends }, (_, i) => ({ index: i, arrows: [] })),
+  }));
+  return {
+    id: uid(),
+    roundId: roundDef.id,
+    roundLabel: roundDef.label,
+    stages,
+    sessionType: meta.sessionType || 'allenamento',
+    bowType: meta.bowType || null,
+    conditions: emptyConditions(),
+    status: 'in_progress',
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+    location: meta.location || '',
+    note: meta.note || '',
+  };
+}
+
+function sessionFlattenArrows(session) { return session.stages.flatMap(flattenArrows); }
+function sessionTotalScore(session) { return session.stages.reduce((s, st) => s + totalScore(st), 0); }
+function sessionXCount(session) { return session.stages.reduce((s, st) => s + xCount(st), 0); }
+function sessionArrowsShot(session) { return session.stages.reduce((s, st) => s + arrowsShotCount(st), 0); }
+function sessionTotalArrows(session) { return session.stages.reduce((s, st) => s + totalArrowsInRound(st), 0); }
+
+// Index of the first not-yet-full stage, or the last stage if all are full.
+function activeStageIndex(session) {
+  const idx = session.stages.findIndex(st => arrowsShotCount(st) < totalArrowsInRound(st));
+  return idx === -1 ? session.stages.length - 1 : idx;
+}
+
+function sessionAddArrow(session, arrow) {
+  const idx = activeStageIndex(session);
+  const stages = session.stages.map((st, i) => (i === idx ? addArrow(st, arrow) : st));
+  const complete = stages.every(st => arrowsShotCount(st) >= totalArrowsInRound(st));
+  return {
+    ...session,
+    stages,
+    status: complete ? 'completed' : 'in_progress',
+    completedAt: complete ? new Date().toISOString() : null,
+  };
+}
+
+function sessionUndoLastArrow(session) {
+  for (let i = session.stages.length - 1; i >= 0; i--) {
+    if (arrowsShotCount(session.stages[i]) > 0) {
+      const stages = session.stages.map((st, j) => (j === i ? undoLastArrow(st) : st));
+      return { ...session, stages, status: 'in_progress', completedAt: null };
+    }
+  }
+  return session;
+}
+
+// "Tappa 2 di 4 · Volée 3 di 6" for a multi-stage session, or just "Volée 3
+// di 6" for a single-stage one — used anywhere a compact progress string is
+// shown (Home's resume card, the shooting screen header).
+function sessionProgressLabel(session) {
+  const idx = activeStageIndex(session);
+  const stage = session.stages[idx];
+  const endLabel = `Volée ${currentEndIndex(stage) + 1} di ${stage.round.ends}`;
+  return session.stages.length > 1 ? `Tappa ${idx + 1} di ${session.stages.length} · ${endLabel}` : endLabel;
+}
+
+// Flattens every session's stages into virtual per-stage records for
+// personal-best matching and analysis — the one place a multi-distance
+// round gets "unbundled" so each distance is judged on its own history.
+function stageEntries(sessions) {
+  return sessions.flatMap(s => s.stages.map((stage, i) => ({
+    sessionId: s.id,
+    stageIndex: i,
+    stageCount: s.stages.length,
+    round: stage.round,
+    ends: stage.ends,
+    sessionType: s.sessionType,
+    bowType: s.bowType,
+    conditions: s.conditions,
+    status: s.status,
+    startedAt: s.startedAt,
+    completedAt: s.completedAt,
+  })));
+}
+
+// Sessions saved before v1.4 have a single flat `round`+`ends` instead of
+// `stages`. Rather than migrate stored data, normalize on the way in — old
+// sessions keep working untouched and only get rewritten to the new shape
+// the next time they're edited (via the normal upsert-on-update path).
+function normalizeSession(session) {
+  if (session.stages) return session;
+  return {
+    ...session,
+    roundLabel: session.round?.label || 'Sessione',
+    stages: [{ round: session.round, ends: session.ends }],
+  };
 }
 
 function describeBias(cxCm, cyCm) {
@@ -328,8 +436,11 @@ function describeBias(cxCm, cyCm) {
   return parts.join(', ');
 }
 
-// completedList: sessions already filtered to status==='completed' and whatever
-// round/arco/tipo scope the caller cares about.
+// completedList: stage entries (from stageEntries()) already filtered to
+// status==='completed' and whatever round-shape/arco/tipo scope the caller
+// cares about. A stage entry has the same {round, ends, ...} shape a stage
+// does, so every function below works whether it's called with entries
+// (Storico) or, in the shooting screen, directly with the active stage.
 function fatigueCurve(completedList) {
   const maxEnds = completedList.reduce((m, s) => Math.max(m, s.round.ends), 0);
   const rows = [];
@@ -416,7 +527,7 @@ function formatDateFull(iso) {
 
 function exportJson(sessions) {
   try {
-    const payload = { app: 'arcieri-senesi-scorecard', version: 1, exportedAt: new Date().toISOString(), sessions };
+    const payload = { app: 'arcieri-senesi-scorecard', version: 2, exportedAt: new Date().toISOString(), sessions };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -447,7 +558,7 @@ async function loadSessionsRemote(userId) {
   try {
     const { data, error } = await supabase.from('sessions').select('data').eq('user_id', userId);
     if (error) throw error;
-    return (data || []).map(row => row.data);
+    return (data || []).map(row => normalizeSession(row.data));
   } catch (err) {
     console.error('Errore nel caricamento dei dati', err);
     return [];
@@ -829,8 +940,8 @@ function StatsBar({ total, avg, projected, pace, hasPb }) {
 }
 
 function SessionSummary({ session, onExit, onUpdate }) {
-  const total = totalScore(session);
-  const shot = arrowsShotCount(session);
+  const total = sessionTotalScore(session);
+  const shot = sessionArrowsShot(session);
   const avg = shot ? total / shot : 0;
   return (
     <div className="px-4 py-6 flex flex-col gap-5 items-center text-center max-w-md mx-auto">
@@ -841,16 +952,25 @@ function SessionSummary({ session, onExit, onUpdate }) {
         </div>
         <div className="text-5xl font-bold" style={numeralStyle}>{total}</div>
         <div className="text-sm mt-1" style={{ color: T.textDim }}>
-          {session.round.label} · media {avg.toFixed(2)} · {xCount(session)} X
+          {session.roundLabel} · media {avg.toFixed(2)} · {sessionXCount(session)} X
           {bowLabel(session.bowType) ? ` · ${bowLabel(session.bowType)}` : ''}
         </div>
+        {session.stages.length > 1 && (
+          <div className="text-xs mt-2 flex flex-wrap gap-1.5 justify-center">
+            {session.stages.map((st, i) => (
+              <span key={i} className="px-2 py-0.5 rounded-full" style={{ background: T.surfaceAlt, color: T.textDim }}>
+                {st.round.distanceM}m: {totalScore(st)}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
       <SessionMetaEditor session={session} onUpdate={onUpdate} />
       <ConditionsEditor session={session} onUpdate={onUpdate} />
       <button onClick={onExit} className="w-full rounded-2xl py-4 font-bold text-lg" style={{ background: T.gold, color: GOLD_TEXT }}>
         Torna alla home
       </button>
-      <button onClick={() => onUpdate(s => undoLastArrow(s))} className="flex items-center gap-1 text-sm px-3 py-1.5 rounded-full" style={{ color: T.textDim }}>
+      <button onClick={() => onUpdate(s => sessionUndoLastArrow(s))} className="flex items-center gap-1 text-sm px-3 py-1.5 rounded-full" style={{ color: T.textDim }}>
         <RotateCcw size={14} /> Correggi l'ultima freccia
       </button>
     </div>
@@ -862,32 +982,40 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
   const [zoom, setZoom] = useState(1);
   const [noteOpen, setNoteOpen] = useState(false);
 
-  const round = session.round;
   const isComplete = session.status === 'completed';
-  const endIdx = currentEndIndex(session);
-  const currentEnd = session.ends[endIdx];
-  const ghostArrows = useMemo(() => session.ends.slice(0, endIdx).flatMap(e => e.arrows), [session, endIdx]);
+  const stageIdx = activeStageIndex(session);
+  const stage = session.stages[stageIdx];
+  const round = stage.round;
+  const multiStage = session.stages.length > 1;
+  const endIdx = currentEndIndex(stage);
+  const currentEnd = stage.ends[endIdx];
+  const ghostArrows = useMemo(() => stage.ends.slice(0, endIdx).flatMap(e => e.arrows), [stage, endIdx]);
 
-  const total = totalScore(session);
-  const shot = arrowsShotCount(session);
+  // Stats are scoped to the stage currently being shot, since that's what a
+  // personal best is scoped to — the session-wide total (shown separately
+  // for multi-stage rounds) would mix distances into a meaningless number.
+  const total = totalScore(stage);
+  const shot = arrowsShotCount(stage);
   const avg = shot ? total / shot : 0;
-  const projected = shot ? Math.round(avg * totalArrowsInRound(session)) : null;
+  const projected = shot ? Math.round(avg * totalArrowsInRound(stage)) : null;
+  const sessionTotalSoFar = sessionTotalScore(session);
 
+  const entries = useMemo(() => stageEntries(sessions), [sessions]);
   const pb = useMemo(
-    () => findPersonalBest(sessions, { round: session.round, bowType: session.bowType, sessionType: session.sessionType }, session.id),
-    [sessions, session.round, session.bowType, session.sessionType, session.id]);
-  const pace = shot ? paceVsPB(session, pb) : null;
+    () => findPersonalBest(entries, { round, bowType: session.bowType, sessionType: session.sessionType }, session.id),
+    [entries, round, session.bowType, session.sessionType, session.id]);
+  const pace = shot ? paceVsPB(stage, pb) : null;
 
   const last3 = useMemo(() => {
-    const withArrows = session.ends.filter(e => e.arrows.length > 0);
+    const withArrows = stage.ends.filter(e => e.arrows.length > 0);
     return withArrows.slice(-3).flatMap(e => e.arrows);
-  }, [session]);
-  const stats3 = groupStats(session, last3);
-  const endsShotCount = session.ends.filter(e => e.arrows.length > 0).length;
+  }, [stage]);
+  const stats3 = groupStats(stage, last3);
+  const endsShotCount = stage.ends.filter(e => e.arrows.length > 0).length;
 
   function handleAddArrow(score, isX, x, y) {
     if (isComplete) return;
-    onUpdate(s => addArrow(s, { score, isX, x: x ?? null, y: y ?? null }));
+    onUpdate(s => sessionAddArrow(s, { score, isX, x: x ?? null, y: y ?? null }));
   }
 
   function handleFaceTap(x, y) {
@@ -897,7 +1025,7 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
   }
 
   function handleUndo() {
-    onUpdate(s => undoLastArrow(s));
+    onUpdate(s => sessionUndoLastArrow(s));
   }
 
   return (
@@ -906,11 +1034,11 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
         <button onClick={onExit} className="p-2 -ml-2 rounded-full active:scale-95 transition-transform"><ChevronLeft /></button>
         <div className="text-center">
           <div className="font-semibold leading-tight flex items-center gap-2 justify-center">
-            {round.label}
+            {session.roundLabel}
             <SessionTypeBadge sessionType={session.sessionType} />
           </div>
           <div className="text-xs" style={{ color: T.textDim }}>
-            {isComplete ? 'Completata' : `Volée ${endIdx + 1} di ${round.ends}`}
+            {isComplete ? 'Completata' : sessionProgressLabel(session)}
             {bowLabel(session.bowType) ? ` · ${bowLabel(session.bowType)}` : ''}
           </div>
         </div>
@@ -925,6 +1053,12 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
 
       {!isComplete && (
         <>
+          {multiStage && (
+            <div className="px-4 pt-3 text-xs text-center" style={{ color: T.textDim }}>
+              Totale sessione finora: <span style={{ ...numeralStyle, color: T.text, fontWeight: 700 }}>{sessionTotalSoFar}</span>
+              {' '}· tappa attuale {round.distanceM}m / {round.faceCm}cm
+            </div>
+          )}
           <StatsBar total={total} avg={avg} projected={projected} pace={pace} hasPb={!!pb} />
 
           <div className="px-4 pt-3 flex items-center justify-between gap-2">
@@ -957,7 +1091,7 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
           <div className="px-4 pt-4 pb-6">
             <div className="flex items-center justify-between mb-2">
               <div className="text-xs uppercase tracking-wide" style={{ color: T.textDim }}>Volée corrente</div>
-              <button onClick={handleUndo} disabled={shot === 0}
+              <button onClick={handleUndo} disabled={shot === 0 && stageIdx === 0}
                 className="flex items-center gap-1 text-sm px-3 py-1.5 rounded-full disabled:opacity-30"
                 style={{ background: T.surfaceAlt }}>
                 <RotateCcw size={14} /> Annulla
@@ -991,18 +1125,29 @@ function Stepper({ label, value, onChange, min, max, step }) {
 const NEW_SESSION_STEPS = ['type', 'round', 'bow', 'details'];
 const NEW_SESSION_TITLES = { type: 'Che tipo di sessione?', round: 'Che prova?', bow: 'Con che arco?', details: 'Ultimi dettagli' };
 
+// Short one-line summary shown under a round's name in the picker.
+function roundSummary(r) {
+  if (r.editable) return 'Scegli distanza, bersaglio, frecce e volée — puoi aggiungere più tappe';
+  if (r.stages.length > 1) return `${r.stages.length} tappe · ${r.stages.map(s => s.distanceM).join('/')} m`;
+  const s = r.stages[0];
+  return `${s.distanceM} m · ${s.faceCm} cm · ${s.arrowsPerEnd}×${s.ends} frecce`;
+}
+
 function NewSessionScreen({ onCreate, onCancel }) {
   const customDef = ROUND_TYPES.find(r => r.id === 'custom');
   const [step, setStep] = useState('type');
   const [sessionType, setSessionType] = useState('allenamento');
   const [selectedId, setSelectedId] = useState(null);
   const [bowType, setBowType] = useState(null);
-  const [free, setFree] = useState({ distanceM: customDef.distanceM, faceCm: customDef.faceCm, arrowsPerEnd: customDef.arrowsPerEnd, ends: customDef.ends });
+  // Editable rounds keep a local list of stages (starts as a copy of the
+  // preset's own stages — one, for "Personalizzata" — and can grow via
+  // "+ Aggiungi tappa" for a multi-distance round like WA1440).
+  const [free, setFree] = useState(() => customDef.stages.map(s => ({ ...s })));
   const [location, setLocation] = useState('');
   const [note, setNote] = useState('');
 
   const selected = ROUND_TYPES.find(r => r.id === selectedId);
-  const effective = selected && selected.editable ? { ...selected, ...free } : selected;
+  const effective = selected && selected.editable ? { ...selected, stages: free } : selected;
 
   function goBack() {
     const idx = NEW_SESSION_STEPS.indexOf(step);
@@ -1077,9 +1222,7 @@ function NewSessionScreen({ onCreate, onCancel }) {
                     style={{ background: r.id === selectedId ? T.surfaceAlt : T.surface, border: `1px solid ${r.id === selectedId ? T.gold : T.border}` }}>
                     <div>
                       <div className="font-semibold">{r.label}</div>
-                      <div className="text-xs" style={{ color: T.textDim }}>
-                        {r.editable ? 'Scegli distanza, bersaglio, frecce e volée' : `${r.distanceM} m · ${r.faceCm} cm · ${r.arrowsPerEnd}×${r.ends} frecce`}
-                      </div>
+                      <div className="text-xs" style={{ color: T.textDim }}>{roundSummary(r)}</div>
                     </div>
                     {r.id === selectedId && <Check color={T.gold} size={20} />}
                   </button>
@@ -1090,11 +1233,27 @@ function NewSessionScreen({ onCreate, onCancel }) {
 
           {selected && selected.editable && (
             <>
-              <div className="rounded-2xl p-4 flex flex-col gap-3" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
-                <Stepper label="Distanza (m)" value={free.distanceM} onChange={v => setFree(f => ({ ...f, distanceM: v }))} min={5} max={100} step={5} />
-                <Stepper label="Diametro bersaglio (cm)" value={free.faceCm} onChange={v => setFree(f => ({ ...f, faceCm: v }))} min={20} max={122} step={10} />
-                <Stepper label="Frecce a volée" value={free.arrowsPerEnd} onChange={v => setFree(f => ({ ...f, arrowsPerEnd: v }))} min={1} max={6} step={1} />
-                <Stepper label="Numero di volée" value={free.ends} onChange={v => setFree(f => ({ ...f, ends: v }))} min={1} max={40} step={1} />
+              <div className="flex flex-col gap-3">
+                {free.map((st, i) => (
+                  <div key={i} className="rounded-2xl p-4 flex flex-col gap-3" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+                    {free.length > 1 && (
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: T.textFaint }}>Tappa {i + 1}</div>
+                        <button onClick={() => setFree(f => f.filter((_, j) => j !== i))} className="p-1.5 rounded-full" style={{ color: T.textDim }}>
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    )}
+                    <Stepper label="Distanza (m)" value={st.distanceM} onChange={v => setFree(f => f.map((s2, j) => (j === i ? { ...s2, distanceM: v } : s2)))} min={5} max={100} step={5} />
+                    <Stepper label="Diametro bersaglio (cm)" value={st.faceCm} onChange={v => setFree(f => f.map((s2, j) => (j === i ? { ...s2, faceCm: v } : s2)))} min={20} max={122} step={10} />
+                    <Stepper label="Frecce a volée" value={st.arrowsPerEnd} onChange={v => setFree(f => f.map((s2, j) => (j === i ? { ...s2, arrowsPerEnd: v } : s2)))} min={1} max={6} step={1} />
+                    <Stepper label="Numero di volée" value={st.ends} onChange={v => setFree(f => f.map((s2, j) => (j === i ? { ...s2, ends: v } : s2)))} min={1} max={40} step={1} />
+                  </div>
+                ))}
+                <button onClick={() => setFree(f => [...f, { ...f[f.length - 1] }])}
+                  className="rounded-xl py-2.5 text-sm font-semibold" style={{ background: T.surfaceAlt, border: `1px dashed ${T.border}`, color: T.textDim }}>
+                  + Aggiungi tappa
+                </button>
               </div>
               <button onClick={() => setStep('bow')} className="rounded-2xl py-3.5 font-bold" style={{ background: T.gold, color: GOLD_TEXT }}>
                 Continua
@@ -1223,7 +1382,7 @@ function SessionRow({ session, onOpen, onDelete }) {
       <button onClick={onOpen} className="flex-1 text-left flex items-center justify-between gap-2 min-w-0">
         <div className="min-w-0">
           <div className="font-semibold truncate flex items-center gap-2">
-            <span className="truncate">{session.round.label}</span>
+            <span className="truncate">{session.roundLabel}</span>
             <SessionTypeBadge sessionType={session.sessionType} />
             {!isDone && <span className="text-xs font-normal shrink-0" style={{ color: T.gold }}>in corso</span>}
           </div>
@@ -1234,7 +1393,7 @@ function SessionRow({ session, onOpen, onDelete }) {
           </div>
         </div>
         <div className="text-lg font-bold shrink-0" style={numeralStyle}>
-          {isDone ? totalScore(session) : `${currentEndIndex(session) + 1}/${session.round.ends}`}
+          {isDone ? sessionTotalScore(session) : sessionProgressBadge(session)}
         </div>
       </button>
       <button onClick={() => (confirming ? onDelete() : setConfirming(true))} className="p-2 rounded-full shrink-0"
@@ -1245,31 +1404,56 @@ function SessionRow({ session, onOpen, onDelete }) {
   );
 }
 
+// Compact "3/6" progress badge, prefixed with the stage number for
+// multi-stage sessions ("2.3/6").
+function sessionProgressBadge(session) {
+  const idx = activeStageIndex(session);
+  const stage = session.stages[idx];
+  const frac = `${currentEndIndex(stage) + 1}/${stage.round.ends}`;
+  return session.stages.length > 1 ? `${idx + 1}.${frac}` : frac;
+}
+
 function StoricoScreen({ sessions, onOpen, onResume, onDelete, onImport, onSignOut }) {
-  const [filterId, setFilterId] = useState('all');
+  const [filterId, setFilterId] = useState('all'); // 'all' or a round-shape key from roundShapeKey()
   const [typeFilter, setTypeFilter] = useState('all');
   const [bowFilter, setBowFilter] = useState('all');
   const [conditionDim, setConditionDim] = useState('wind');
 
-  const filtered = sessions.filter(s =>
-    (filterId === 'all' || s.roundId === filterId) &&
+  // Type/bow are session-level filters; round is a STAGE-shape filter — a
+  // multi-stage session can have some stages match and others not, so it
+  // can't be filtered at the session level. Round-filter chips are built
+  // from every distinct shape actually shot (not the static preset list),
+  // since custom/multi-stage rounds aren't enumerable in advance.
+  const typeAndBowFiltered = sessions.filter(s =>
     (typeFilter === 'all' || (s.sessionType || 'allenamento') === typeFilter) &&
     (bowFilter === 'all' || s.bowType === bowFilter));
-  const completed = filtered.filter(s => s.status === 'completed');
-  const roundDef = filterId === 'all' ? null : ROUND_TYPES.find(r => r.id === filterId);
+
+  const stageShapes = useMemo(() => {
+    const map = new Map();
+    stageEntries(sessions).forEach(e => {
+      const key = roundShapeKey(e.round);
+      if (!map.has(key)) map.set(key, { key, round: e.round });
+    });
+    return Array.from(map.values()).sort((a, b) => b.round.distanceM - a.round.distanceM || b.round.faceCm - a.round.faceCm);
+  }, [sessions]);
+
+  const allEntries = useMemo(() => stageEntries(typeAndBowFiltered), [typeAndBowFiltered]);
+  const activeShape = filterId === 'all' ? null : stageShapes.find(s => s.key === filterId)?.round;
+  const matchingEntries = filterId === 'all' ? [] : allEntries.filter(e => roundShapeKey(e.round) === filterId);
+  const completed = matchingEntries.filter(e => e.status === 'completed');
 
   const trend = useMemo(() =>
     completed.slice().sort((a, b) => new Date(a.completedAt) - new Date(b.completedAt))
-      .map(s => ({ label: formatDateShort(s.completedAt), score: totalScore(s) })),
+      .map(e => ({ label: formatDateShort(e.completedAt), score: totalScore(e) })),
     [completed]);
 
-  const pb = completed.length ? completed.reduce((b, s) => (totalScore(s) > totalScore(b) ? s : b)) : null;
-  const avgScore = completed.length ? completed.reduce((s, x) => s + totalScore(x), 0) / completed.length : null;
+  const pb = completed.length ? completed.reduce((b, e) => (totalScore(e) > totalScore(b) ? e : b)) : null;
+  const avgScore = completed.length ? completed.reduce((s, e) => s + totalScore(e), 0) / completed.length : null;
 
   const fatigue = useMemo(() => (filterId === 'all' ? [] : fatigueCurve(completed)), [completed, filterId]);
 
-  const allArrows = useMemo(() => completed.flatMap(s => flattenArrows(s)), [completed]);
-  const cumGroup = useMemo(() => (roundDef ? computeGroupStats(allArrows, roundDef.faceCm) : null), [allArrows, roundDef]);
+  const allArrows = useMemo(() => completed.flatMap(e => flattenArrows(e)), [completed]);
+  const cumGroup = useMemo(() => (activeShape ? computeGroupStats(allArrows, activeShape.faceCm) : null), [allArrows, activeShape]);
 
   const dispersion = useMemo(() => (filterId === 'all' ? [] : dispersionTrend(completed)), [completed, filterId]);
   const distribution = useMemo(() => (filterId === 'all' ? [] : scoreDistribution(completed)), [completed, filterId]);
@@ -1294,7 +1478,7 @@ function StoricoScreen({ sessions, onOpen, onResume, onDelete, onImport, onSignO
       <div className="flex flex-col gap-2">
         <div className="flex gap-2 overflow-x-auto pb-1">
           <FilterChip active={filterId === 'all'} onClick={() => setFilterId('all')} label="Tutte le prove" />
-          {ROUND_TYPES.map(r => <FilterChip key={r.id} active={filterId === r.id} onClick={() => setFilterId(r.id)} label={r.label} />)}
+          {stageShapes.map(s => <FilterChip key={s.key} active={filterId === s.key} onClick={() => setFilterId(s.key)} label={roundShapeLabel(s.round)} />)}
         </div>
         <div className="flex gap-2 overflow-x-auto pb-1">
           <FilterChip active={typeFilter === 'all'} onClick={() => setTypeFilter('all')} label="Tutti i tipi" />
@@ -1307,7 +1491,7 @@ function StoricoScreen({ sessions, onOpen, onResume, onDelete, onImport, onSignO
       </div>
 
       {filterId === 'all' ? (
-        <div className="text-sm" style={{ color: T.textDim }}>{filtered.length} sessioni. Seleziona una prova per le statistiche dettagliate.</div>
+        <div className="text-sm" style={{ color: T.textDim }}>{typeAndBowFiltered.length} sessioni. Seleziona una prova per le statistiche dettagliate.</div>
       ) : (
         <>
           <div className="grid grid-cols-3 gap-2">
@@ -1347,7 +1531,7 @@ function StoricoScreen({ sessions, onOpen, onResume, onDelete, onImport, onSignO
 
           <div className="flex flex-col gap-2">
             <div className="text-sm font-semibold" style={{ color: T.textDim }}>Gruppo cumulativo</div>
-            <TargetFace faceCm={roundDef.faceCm} points={allArrows.filter(a => a.x != null)} centroid={cumGroup} dense />
+            <TargetFace faceCm={activeShape.faceCm} points={allArrows.filter(a => a.x != null)} centroid={cumGroup} dense />
             {cumGroup ? (
               <div className="text-sm" style={{ color: T.textDim }}>
                 Deviazione orizzontale: {Math.abs(cumGroup.cxCm).toFixed(1)} cm {cumGroup.cxCm >= 0 ? 'a destra' : 'a sinistra'} ·
@@ -1435,12 +1619,59 @@ function StoricoScreen({ sessions, onOpen, onResume, onDelete, onImport, onSignO
 
       <div className="flex flex-col gap-2">
         <div className="text-sm font-semibold" style={{ color: T.textDim }}>Sessioni</div>
-        {filtered.length === 0 && <div className="text-sm" style={{ color: T.textDim }}>Nessuna sessione.</div>}
-        {filtered.slice().sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt)).map(s => (
-          <SessionRow key={s.id} session={s} onOpen={() => (s.status === 'completed' ? onOpen(s.id) : onResume(s.id))} onDelete={() => onDelete(s.id)} />
-        ))}
+        {filterId === 'all' ? (
+          <>
+            {typeAndBowFiltered.length === 0 && <div className="text-sm" style={{ color: T.textDim }}>Nessuna sessione.</div>}
+            {typeAndBowFiltered.slice().sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt)).map(s => (
+              <SessionRow key={s.id} session={s} onOpen={() => (s.status === 'completed' ? onOpen(s.id) : onResume(s.id))} onDelete={() => onDelete(s.id)} />
+            ))}
+          </>
+        ) : (
+          <>
+            {matchingEntries.length === 0 && <div className="text-sm" style={{ color: T.textDim }}>Nessuna sessione.</div>}
+            {matchingEntries.slice().sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt)).map((e, i) => (
+              <StageEntryRow key={`${e.sessionId}-${e.stageIndex}`} entry={e} onOpen={() => (e.status === 'completed' ? onOpen(e.sessionId) : onResume(e.sessionId))} />
+            ))}
+          </>
+        )}
       </div>
     </div>
+  );
+}
+
+// Groups distinct stage shapes into a stable key for the round filter — a
+// custom/multi-stage round's shape isn't a fixed preset id, so the filter
+// list is built from what's actually been shot.
+function roundShapeKey(round) { return `${round.distanceM}|${round.faceCm}|${round.arrowsPerEnd}|${round.ends}`; }
+
+function roundShapeLabel(round) {
+  const preset = ROUND_TYPES.find(r => r.stages.length === 1 && sameRound(r.stages[0], round));
+  if (preset) return preset.label;
+  return `${round.distanceM}m · ${round.faceCm}cm`;
+}
+
+// A row for one stage-entry — used when Storico is filtered to a specific
+// round shape, so a WA1440's 70m stage shows up (and scores) on its own,
+// separate from the session's grand total.
+function StageEntryRow({ entry, onOpen }) {
+  const isDone = entry.status === 'completed';
+  return (
+    <button onClick={onOpen} className="w-full text-left rounded-2xl px-4 py-3 flex items-center justify-between gap-2" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+      <div className="min-w-0">
+        <div className="font-semibold truncate flex items-center gap-2">
+          <span className="truncate">{entry.round.distanceM}m · {entry.round.faceCm}cm</span>
+          <SessionTypeBadge sessionType={entry.sessionType} />
+          {!isDone && <span className="text-xs font-normal shrink-0" style={{ color: T.gold }}>in corso</span>}
+          {entry.stageCount > 1 && <span className="text-xs font-normal shrink-0" style={{ color: T.textFaint }}>Tappa {entry.stageIndex + 1}/{entry.stageCount}</span>}
+        </div>
+        <div className="text-xs truncate" style={{ color: T.textDim }}>
+          {formatDateFull(entry.startedAt)}{bowLabel(entry.bowType) ? ` · ${bowLabel(entry.bowType)}` : ''}
+        </div>
+      </div>
+      <div className="text-lg font-bold shrink-0" style={numeralStyle}>
+        {isDone ? totalScore(entry) : `${currentEndIndex(entry) + 1}/${entry.round.ends}`}
+      </div>
+    </button>
   );
 }
 
@@ -1457,13 +1688,30 @@ function DeleteSessionButton({ onDelete }) {
   );
 }
 
+function StageEnds({ stage }) {
+  return (
+    <div className="flex flex-col gap-2">
+      {stage.ends.map((e, i) => e.arrows.length > 0 && (
+        <div key={i} className="flex items-center gap-2">
+          <div className="w-6 text-sm shrink-0" style={{ color: T.textFaint, ...numeralStyle }}>{i + 1}</div>
+          <div className="flex flex-wrap gap-1.5">
+            {[...e.arrows].sort((a, b) => scoreRank(b) - scoreRank(a)).map((a, j) => <ArrowChipSmall key={j} arrow={a} />)}
+          </div>
+          <div className="ml-auto text-sm font-semibold" style={numeralStyle}>{e.arrows.reduce((s, a) => s + a.score, 0)}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function DetailScreen({ session, onBack, onUpdate, onDelete }) {
+  const multiStage = session.stages.length > 1;
   return (
     <div className="max-w-md mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
         <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
         <div className="text-xl font-bold flex items-center gap-2">
-          {session.round.label}
+          {session.roundLabel}
           <SessionTypeBadge sessionType={session.sessionType} />
         </div>
       </div>
@@ -1475,29 +1723,38 @@ function DetailScreen({ session, onBack, onUpdate, onDelete }) {
       </div>
 
       <div className="text-center py-2">
-        <div className="text-5xl font-bold" style={numeralStyle}>{totalScore(session)}</div>
+        <div className="text-5xl font-bold" style={numeralStyle}>{sessionTotalScore(session)}</div>
         <div className="text-sm" style={{ color: T.textDim }}>
-          media {(totalScore(session) / arrowsShotCount(session)).toFixed(2)} · {xCount(session)} X
+          media {(sessionTotalScore(session) / sessionArrowsShot(session)).toFixed(2)} · {sessionXCount(session)} X
         </div>
       </div>
 
-      <TargetFace faceCm={session.round.faceCm} points={flattenArrows(session).filter(a => a.x != null)} />
-
-      <SessionMetaEditor session={session} onUpdate={onUpdate} />
-      <ConditionsEditor session={session} onUpdate={onUpdate} />
-
-      <div className="flex flex-col gap-2">
-        <div className="text-sm font-semibold" style={{ color: T.textDim }}>Volée</div>
-        {session.ends.map((e, i) => e.arrows.length > 0 && (
-          <div key={i} className="flex items-center gap-2">
-            <div className="w-6 text-sm shrink-0" style={{ color: T.textFaint, ...numeralStyle }}>{i + 1}</div>
-            <div className="flex flex-wrap gap-1.5">
-              {[...e.arrows].sort((a, b) => scoreRank(b) - scoreRank(a)).map((a, j) => <ArrowChipSmall key={j} arrow={a} />)}
-            </div>
-            <div className="ml-auto text-sm font-semibold" style={numeralStyle}>{e.arrows.reduce((s, a) => s + a.score, 0)}</div>
+      {!multiStage ? (
+        <>
+          <TargetFace faceCm={session.stages[0].round.faceCm} points={flattenArrows(session.stages[0]).filter(a => a.x != null)} />
+          <SessionMetaEditor session={session} onUpdate={onUpdate} />
+          <ConditionsEditor session={session} onUpdate={onUpdate} />
+          <div className="flex flex-col gap-2">
+            <div className="text-sm font-semibold" style={{ color: T.textDim }}>Volée</div>
+            <StageEnds stage={session.stages[0]} />
           </div>
-        ))}
-      </div>
+        </>
+      ) : (
+        <>
+          <SessionMetaEditor session={session} onUpdate={onUpdate} />
+          <ConditionsEditor session={session} onUpdate={onUpdate} />
+          {session.stages.map((stage, i) => (
+            <div key={i} className="flex flex-col gap-3 rounded-2xl p-4" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+              <div className="flex items-center justify-between">
+                <div className="font-semibold">Tappa {i + 1} · {stage.round.distanceM}m · {stage.round.faceCm}cm</div>
+                <div className="text-lg font-bold" style={numeralStyle}>{totalScore(stage)}</div>
+              </div>
+              <TargetFace faceCm={stage.round.faceCm} points={flattenArrows(stage).filter(a => a.x != null)} />
+              <StageEnds stage={stage} />
+            </div>
+          ))}
+        </>
+      )}
 
       <DeleteSessionButton onDelete={onDelete} />
     </div>
@@ -1546,11 +1803,11 @@ function HomeScreen({ sessions, onNew, onResume, legacyData, onImportLegacy, onD
           <div>
             <div className="text-sm" style={{ color: T.textDim }}>Sessione in corso</div>
             <div className="text-lg font-semibold flex items-center gap-2">
-              {s.round.label}
+              {s.roundLabel}
               <SessionTypeBadge sessionType={s.sessionType} />
             </div>
             <div className="text-sm" style={{ color: T.textDim }}>
-              Volée {currentEndIndex(s) + 1} di {s.round.ends}{bowLabel(s.bowType) ? ` · ${bowLabel(s.bowType)}` : ''}
+              {sessionProgressLabel(s)}{bowLabel(s.bowType) ? ` · ${bowLabel(s.bowType)}` : ''}
             </div>
           </div>
           <ChevronRight color={T.textDim} />
@@ -1642,11 +1899,12 @@ export default function ArcheryScorecard() {
   }, [userId]);
 
   const importSessions = useCallback((imported) => {
+    const normalized = imported.map(normalizeSession);
     setSessions(prev => {
       const byId = new Map(prev.map(s => [s.id, s]));
-      imported.forEach(s => byId.set(s.id, s));
+      normalized.forEach(s => byId.set(s.id, s));
       const next = Array.from(byId.values());
-      if (userId) imported.forEach(s => upsertSessionRemote(userId, s));
+      if (userId) normalized.forEach(s => upsertSessionRemote(userId, s));
       return next;
     });
   }, [userId]);

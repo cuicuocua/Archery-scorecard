@@ -24,9 +24,11 @@ Supabase).
 
 ## Round definitions
 
-Edit the `ROUND_TYPES` array at the top of the file — every field
-(distance, face diameter, arrows/end, number of ends) drives the whole
-app, nothing about a round is hardcoded elsewhere.
+Edit the `ROUND_TYPES` array at the top of the file. Every round is a list
+of `stages` (distance, face diameter, arrows/end, number of ends per
+stage) — nothing about a round is hardcoded elsewhere. Most rounds are one
+stage; a few (WA1440, WA Combined) are shot as several distances back to
+back within a single session.
 
 Assumptions made, to check against FITARCO/World Archery rules:
 - **Indoor 18m**: 40cm face, 3 frecce/volée, 20 volée (60 frecce) — standard.
@@ -38,8 +40,11 @@ Assumptions made, to check against FITARCO/World Archery rules:
 - **Targa 50m / 40m / 30m**: 80cm face, 6×12 — the WA1440 short distances,
   and the standard compound/barebow distances.
 - **Personalizzata**: fully editable at session start (distance, face,
-  arrows/end, ends) — for anything not covered above (para/youth classes,
-  club rounds, etc.), and available for both allenamento and gara.
+  arrows/end, ends per stage), and lets you add more stages via
+  "+ Aggiungi tappa" — this is how WA1440 (any of its several age/gender
+  distance combinations), WA Combined, or any club-invented multi-distance
+  round get logged, since there's no single fixed distance list that
+  covers every WA1440 variant. Available for both allenamento and gara.
 - Compound's WA rule of only scoring the inner 5-10 zone ("compound
   face") is **not** modelled — every bow type scores the full 10-zone
   face here.
@@ -51,14 +56,23 @@ black, black, white, white.
 ## Data model
 
 Each session is one row in Supabase's `sessions` table (`id`, `user_id`,
-`data jsonb`) — the whole session object (round snapshot, ends, arrows,
-conditions, etc.) lives in `data`, upserted on every change. Each session
-snapshots its round config at creation time, so editing `ROUND_TYPES`
-later never corrupts historical data. Arrows keep entry order; UI sorts a
-copy for display. Arrows entered via the tappable face carry `x`/`y`
-(normalized -1..1, fraction of face radius); keypad-entered arrows have
-`x`/`y: null` and are excluded from spatial analysis (correctly — there's
-no position to analyze).
+`data jsonb`) — the whole session object lives in `data`, upserted on every
+change. A session is `stages: [stage, ...]` plus shared metadata (tipo,
+arco, date, conditions, location, note); a stage is
+`{ round: {label,distanceM,faceCm,arrowsPerEnd,ends}, ends: [{index,arrows}] }`.
+Most rounds are one stage; multi-distance rounds (WA1440, WA Combined, ...)
+are several stages shot back to back within a single session — see "Round
+definitions" below. Each stage snapshots its own round config at creation
+time, so editing `ROUND_TYPES` later never corrupts historical data. Arrows
+keep entry order within a stage; UI sorts a copy for display. Arrows
+entered via the tappable face carry `x`/`y` (normalized -1..1, fraction of
+face radius); keypad-entered arrows have `x`/`y: null` and are excluded
+from spatial analysis (correctly — there's no position to analyze).
+
+Sessions saved before v1.4 have a flat `round`+`ends` instead of `stages`;
+`normalizeSession()` upgrades them to the new shape on load (wrapped as a
+single stage) without touching stored data — they only get rewritten to
+the new shape the next time they're edited.
 
 ## Export
 
@@ -131,3 +145,29 @@ as JSON, meant to seed the future offline app.
   delete and re-enter if the round itself was wrong. Changing the date
   shifts `startedAt`/`completedAt` together, preserving time-of-day and
   the gap between them.
+
+## v1.4 additions
+
+- **Multi-distance rounds** (WA1440, WA Combined, or any club round shot
+  across several distances): logged as a single session made of multiple
+  "tappe" instead of forcing you to split it into separate sessions. Build
+  one via "Personalizzata" → "+ Aggiungi tappa" in the New Session wizard.
+  The shooting screen walks through each stage in order — the target face
+  and distance swap automatically when a stage's volée are all shot — and
+  shows a running session-wide total alongside stage-scoped stats.
+- **Personal bests are now scoped per distance, not per session**: a
+  WA1440's 70m tappa is compared against every other 70m attempt you've
+  ever logged, including standalone Targa 70m sessions — not just other
+  WA1440s. This is the whole point of the change above: previously a
+  multi-distance round couldn't exist as one session at all, so there was
+  no way to compare "just the 70m part" of anything against your real 70m
+  personal best.
+- **Storico's round filter is now built from what you've actually shot**,
+  not a fixed preset list — since a custom/multi-distance round's shape
+  isn't enumerable in advance. Selecting a distance shows every session
+  (or stage, for multi-distance ones) shot at that exact distance/face/
+  arrows/ends, with its own PB, trend, dispersion, and score-distribution
+  charts, sourced by flattening every session into per-stage records
+  (`stageEntries()`) before any of that analysis runs.
+- Sessions saved before this version (single `round`+`ends`, no `stages`)
+  keep working unchanged — see "Data model" above.
