@@ -1120,7 +1120,7 @@ function SessionSummary({ session, sessions, onExit, onUpdate }) {
   const avg = shot ? total / shot : 0;
   const insight = useMemo(() => sessionInsight(session, sessions), [session, sessions]);
   return (
-    <div className="px-4 py-6 flex flex-col gap-5 items-center text-center max-w-md sm:max-w-xl lg:max-w-3xl mx-auto">
+    <div className="px-4 py-6 flex flex-col gap-5 items-center text-center max-w-md sm:max-w-xl lg:max-w-3xl xl:max-w-5xl 2xl:max-w-6xl mx-auto">
       <div>
         <div className="text-sm uppercase tracking-wide flex items-center gap-2 justify-center" style={{ color: T.textDim }}>
           Sessione completata
@@ -1206,7 +1206,7 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
   }
 
   return (
-    <div className="flex flex-col max-w-md sm:max-w-xl lg:max-w-3xl mx-auto min-h-screen">
+    <div className="flex flex-col max-w-md sm:max-w-xl lg:max-w-3xl xl:max-w-5xl 2xl:max-w-6xl mx-auto min-h-screen">
       <header className="sticky top-0 z-10 flex items-center justify-between px-3 py-3" style={{ background: T.bg, borderBottom: `1px solid ${T.border}` }}>
         <button onClick={onExit} className="p-2 -ml-2 rounded-full active:scale-95 transition-transform"><ChevronLeft /></button>
         <div className="text-center">
@@ -1358,7 +1358,7 @@ function NewSessionScreen({ onCreate, onCancel }) {
   }
 
   return (
-    <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+    <div className="max-w-md sm:max-w-xl lg:max-w-3xl xl:max-w-5xl 2xl:max-w-6xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
         <button onClick={goBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
         <div className="text-xl font-bold">{NEW_SESSION_TITLES[step]}</div>
@@ -1638,7 +1638,7 @@ function StoricoScreen({ sessions, onOpen, onResume, onDelete, onImport, onSignO
   const deepAnalysisReady = filterId !== 'all' && completed.length >= MIN_SESSIONS_FOR_DEEP_ANALYSIS;
 
   return (
-    <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-5">
+    <div className="max-w-md sm:max-w-xl lg:max-w-3xl xl:max-w-5xl 2xl:max-w-6xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-5">
       <div className="flex items-center justify-between">
         <div className="text-xl font-bold">Storico</div>
         <div className="flex items-center gap-2">
@@ -1926,7 +1926,7 @@ function StatisticheScreen({ sessions }) {
 
   if (!completedSessions.length) {
     return (
-      <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+      <div className="max-w-md sm:max-w-xl lg:max-w-3xl xl:max-w-5xl 2xl:max-w-6xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
         <div className="text-xl font-bold">Statistiche</div>
         <div className="rounded-2xl p-4 text-sm" style={{ background: T.surface, border: `1px dashed ${T.border}`, color: T.textDim }}>
           Completa qualche sessione per iniziare a vedere le tue statistiche cumulative.
@@ -1936,7 +1936,7 @@ function StatisticheScreen({ sessions }) {
   }
 
   return (
-    <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-5">
+    <div className="max-w-md sm:max-w-xl lg:max-w-3xl xl:max-w-5xl 2xl:max-w-6xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-5">
       <div className="text-xl font-bold">Statistiche</div>
 
       <div className="grid grid-cols-4 gap-2">
@@ -2034,7 +2034,7 @@ function DetailScreen({ session, sessions, onBack, onUpdate, onDelete }) {
   const multiStage = session.stages.length > 1;
   const insight = useMemo(() => sessionInsight(session, sessions), [session, sessions]);
   return (
-    <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+    <div className="max-w-md sm:max-w-xl lg:max-w-3xl xl:max-w-5xl 2xl:max-w-6xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
         <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
         <div className="text-xl font-bold flex items-center gap-2">
@@ -2097,7 +2097,7 @@ function HomeScreen({ sessions, onNew, onResume, legacyData, onImportLegacy, onD
   const completedCount = sessions.filter(s => s.status === 'completed').length;
 
   return (
-    <div className="px-4 pt-6 pb-4 flex flex-col gap-6 max-w-md sm:max-w-xl lg:max-w-3xl mx-auto">
+    <div className="px-4 pt-6 pb-4 flex flex-col gap-6 max-w-md sm:max-w-xl lg:max-w-3xl xl:max-w-5xl 2xl:max-w-6xl mx-auto">
       <header className="flex items-center gap-3">
         <div className="rounded-2xl p-3" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
           <Target size={28} color={T.gold} />
@@ -2177,7 +2177,7 @@ function BottomNav({ view, setView }) {
       {/* Bar background stays full-bleed; the tappable row aligns to the
           same centered column as the screen content above it, so icons
           don't spread across the full width on a wide viewport. */}
-      <div className="flex max-w-md sm:max-w-xl lg:max-w-3xl mx-auto">
+      <div className="flex max-w-md sm:max-w-xl lg:max-w-3xl xl:max-w-5xl 2xl:max-w-6xl mx-auto">
         <NavButton icon={Target} label="Home" active={view === 'home'} onClick={() => setView('home')} />
         <NavButton icon={Clock} label="Storico" active={view === 'storico'} onClick={() => setView('storico')} />
         <NavButton icon={BarChart3} label="Statistiche" active={view === 'statistiche'} onClick={() => setView('statistiche')} />
@@ -2942,7 +2942,7 @@ function TournamentCreateScreen({ onCreate, onCancel }) {
   const canCreate = name.trim() && participants.length >= 2;
 
   return (
-    <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+    <div className="max-w-md sm:max-w-xl lg:max-w-3xl xl:max-w-5xl 2xl:max-w-6xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
         <button onClick={onCancel} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
         <div className="text-xl font-bold">Nuovo torneo</div>
@@ -3021,7 +3021,7 @@ function TournamentEditParticipantsScreen({ tournament, onSave, onCancel }) {
   const canSave = participants.length >= 2;
 
   return (
-    <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+    <div className="max-w-md sm:max-w-xl lg:max-w-3xl xl:max-w-5xl 2xl:max-w-6xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
         <button onClick={onCancel} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
         <div className="text-xl font-bold">Modifica partecipanti</div>
@@ -3226,7 +3226,7 @@ function BracketScreen({ tournament, onBack, onOpenMatch, onOpenThreeFinal, onDe
   const fs = tournament.finalStage;
 
   return (
-    <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+    <div className="max-w-md sm:max-w-xl lg:max-w-3xl xl:max-w-5xl 2xl:max-w-6xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
         <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
         <div className="text-xl font-bold flex-1 truncate">{tournament.name}</div>
@@ -3400,7 +3400,7 @@ function MatchScreen({ match, title, formatId, onBack, onComplete }) {
 
   if (match.status === 'completed') {
     return (
-      <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4 items-center text-center">
+      <div className="max-w-md sm:max-w-xl lg:max-w-3xl xl:max-w-5xl 2xl:max-w-6xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4 items-center text-center">
         <div className="flex items-center gap-2 self-start">
           <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
           <div className="text-xl font-bold">{title}</div>
@@ -3416,7 +3416,7 @@ function MatchScreen({ match, title, formatId, onBack, onComplete }) {
   }
 
   return (
-    <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+    <div className="max-w-md sm:max-w-xl lg:max-w-3xl xl:max-w-5xl 2xl:max-w-6xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
         <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
         <div className="text-xl font-bold">{title}</div>
@@ -3502,7 +3502,7 @@ function ThreeWayFinalScreen({ tournament, onBack, onComplete }) {
 
   if (final.status === 'completed') {
     return (
-      <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4 items-center text-center">
+      <div className="max-w-md sm:max-w-xl lg:max-w-3xl xl:max-w-5xl 2xl:max-w-6xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4 items-center text-center">
         <div className="flex items-center gap-2 self-start">
           <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
           <div className="text-xl font-bold">Finale a 3</div>
@@ -3545,7 +3545,7 @@ function ThreeWayFinalScreen({ tournament, onBack, onComplete }) {
   if (final.status === 'shootoff3') {
     const contenders = final.shootoffContenders || [0, 1, 2];
     return (
-      <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+      <div className="max-w-md sm:max-w-xl lg:max-w-3xl xl:max-w-5xl 2xl:max-w-6xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
         <div className="flex items-center gap-2">
           <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
           <div className="text-xl font-bold">Finale a 3</div>
@@ -3572,7 +3572,7 @@ function ThreeWayFinalScreen({ tournament, onBack, onComplete }) {
   }
 
   return (
-    <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+    <div className="max-w-md sm:max-w-xl lg:max-w-3xl xl:max-w-5xl 2xl:max-w-6xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
         <button onClick={onBack} className="p-2 -ml-2 rounded-full"><ChevronLeft /></button>
         <div className="text-xl font-bold">Finale a 3</div>
@@ -3635,7 +3635,7 @@ function TournamentRow({ tournament, onOpen, onDelete }) {
 
 function TorneiScreen({ tournaments, onNew, onOpen, onDelete }) {
   return (
-    <div className="max-w-md sm:max-w-xl lg:max-w-3xl mx-auto px-4 pt-6 pb-8 flex flex-col gap-4">
+    <div className="max-w-md sm:max-w-xl lg:max-w-3xl xl:max-w-5xl 2xl:max-w-6xl mx-auto px-4 pt-6 pb-8 flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <div className="text-2xl font-bold">Tornei</div>
         <button onClick={onNew} className="p-2.5 rounded-full" style={{ background: T.gold, color: GOLD_TEXT }}><Plus size={20} /></button>
@@ -3771,7 +3771,7 @@ export default function ArcheryScorecard() {
     <div className="flex flex-col font-sans antialiased" style={{ background: T.bg, color: T.text, minHeight: '100vh' }}>
       {saveError && (
         <div className="fixed top-0 left-0 right-0 z-50 px-4 pt-3 flex justify-center pointer-events-none">
-          <div className="w-full max-w-md sm:max-w-xl lg:max-w-3xl rounded-xl px-4 py-3 text-sm font-medium flex items-start gap-3 shadow-lg pointer-events-auto"
+          <div className="w-full max-w-md sm:max-w-xl lg:max-w-3xl xl:max-w-5xl 2xl:max-w-6xl rounded-xl px-4 py-3 text-sm font-medium flex items-start gap-3 shadow-lg pointer-events-auto"
             style={{ background: T.red, color: '#fff' }}>
             <span className="flex-1">{saveError}</span>
             <button onClick={() => setSaveError(null)} className="font-bold shrink-0" aria-label="Chiudi avviso">✕</button>
