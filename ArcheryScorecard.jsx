@@ -6,7 +6,7 @@ import {
 import {
   Target, Clock, ChevronLeft, ChevronRight, Plus, Trash2,
   Download, Upload, RotateCcw, Play, Check, StickyNote, LogOut, BarChart3,
-  Swords, Trophy, Users, UserPlus, Shuffle, Minus, RefreshCw, Unlock, Pencil,
+  Swords, Trophy, Users, UserPlus, Shuffle, Minus, RefreshCw, Unlock, Pencil, Share2,
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
@@ -3701,7 +3701,57 @@ function ResetTournamentButton({ tournament, onReset }) {
   );
 }
 
-function BracketScreen({ tournament, onBack, onOpenMatch, onOpenThreeFinal, onDelete, onEditParticipants, onReset, onSetLancasterWildcard, onClearLancasterWildcard, focusRef }) {
+// Same collapsed-button-expands-to-panel idiom as ResetTournamentButton
+// right above. Minting a token is idempotent (re-tapping "Condividi
+// torneo" after a link already exists just re-copies it) so an already-
+// sent link never silently breaks.
+function ShareTournamentControl({ tournament, onSetShareToken }) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 2000);
+    return () => clearTimeout(t);
+  }, [copied]);
+
+  const handleCopy = () => {
+    const token = tournament.shareToken || crypto.randomUUID();
+    if (!tournament.shareToken) onSetShareToken(token);
+    const url = `${window.location.origin}${window.location.pathname}?share=${token}`;
+    navigator.clipboard.writeText(url);
+    setCopied(true);
+  };
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)}
+        className="rounded-2xl py-3 font-semibold flex items-center justify-center gap-2 min-h-11"
+        style={{ background: T.surface, color: T.textDim, border: `1px solid ${T.border}` }}>
+        <Share2 size={16} /> Condividi torneo
+      </button>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl p-3 flex flex-col gap-3" style={{ background: T.surfaceAlt, border: `1px dashed ${T.border}` }}>
+      <div className="text-xs" style={{ color: T.textDim }}>
+        Chiunque abbia questo link può seguire il tabellone in tempo reale, senza bisogno di accedere.
+      </div>
+      <button onClick={handleCopy}
+        className="rounded-xl py-2.5 font-semibold flex items-center justify-center gap-2 min-h-11"
+        style={{ background: T.gold, color: GOLD_TEXT }}>
+        <Share2 size={16} /> {copied ? 'Link copiato!' : (tournament.shareToken ? 'Copia link' : 'Genera e copia link')}
+      </button>
+      {tournament.shareToken && (
+        <button onClick={() => onSetShareToken(null)} className="text-xs self-center py-1" style={{ color: T.textFaint }}>Disattiva condivisione</button>
+      )}
+      <button onClick={() => setOpen(false)} className="text-xs self-center py-1" style={{ color: T.textFaint }}>Chiudi</button>
+    </div>
+  );
+}
+
+function BracketScreen({ tournament, onBack, onOpenMatch, onOpenThreeFinal, onDelete, onEditParticipants, onReset, onSetShareToken, onSetLancasterWildcard, onClearLancasterWildcard, focusRef }) {
   const [viewMode, setViewMode] = useState('bracket');
   const started = tournamentHasStarted(tournament);
   const podium = tournamentPodium(tournament);
@@ -3721,6 +3771,8 @@ function BracketScreen({ tournament, onBack, onOpenMatch, onOpenThreeFinal, onDe
       <div className="text-sm" style={{ color: T.textDim }}>
         {formatDateShort(tournament.date)} · {matchFormatDef(tournament.formatId).label} · {tournament.distanceM}m/{tournament.faceCm}cm · {finalFormatDef(tournament.finalFormat).label}
       </div>
+
+      <ShareTournamentControl tournament={tournament} onSetShareToken={onSetShareToken} />
 
       <PodiumCard podium={podium} />
 
@@ -4617,6 +4669,7 @@ export default function ArcheryScorecard() {
               onDelete={() => { setActiveMatchRef(null); deleteTournament(activeTournament.id); setActiveTournamentId(null); setView('tornei'); }}
               onEditParticipants={() => setView('tornei-edit')}
               onReset={(finalFormat) => updateTournament(activeTournament.id, t => resetTournamentBracket(t, finalFormat))}
+              onSetShareToken={(token) => updateTournament(activeTournament.id, t => ({ ...t, shareToken: token }))}
               onSetLancasterWildcard={(wildcard) => updateTournament(activeTournament.id, t => ({ ...t, finalStage: setLancasterWildcard(t.finalStage, wildcard) }))}
               onClearLancasterWildcard={() => updateTournament(activeTournament.id, t => ({ ...t, finalStage: clearLancasterWildcard(t.finalStage) }))} />
           );
