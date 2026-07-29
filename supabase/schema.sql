@@ -76,9 +76,21 @@ grant execute on function public.get_shared_tournament(text) to anon, authentica
 -- table itself). Writes are still locked down: an authenticated user may
 -- only insert/update/delete objects inside a folder path prefixed with
 -- their own auth.uid(), enforced by matching the first path segment.
+-- A "select own logos" policy is required too, even though public reads
+-- never touch it (those go through the public-bucket URL path, which
+-- bypasses RLS entirely) — the client uploads with { upsert: true } so a
+-- re-uploaded logo overwrites in place, and upsert's "does this row
+-- already exist" check runs as an authenticated SELECT against
+-- storage.objects. Without this policy that existence check is denied by
+-- default-deny RLS, which surfaces as a confusing "new row violates
+-- row-level security policy" error on the INSERT/UPDATE itself.
 insert into storage.buckets (id, name, public)
 values ('tournament-logos', 'tournament-logos', true)
 on conflict (id) do nothing;
+
+create policy "select own logos" on storage.objects
+  for select to authenticated
+  using (bucket_id = 'tournament-logos' and (storage.foldername(name))[1] = auth.uid()::text);
 
 create policy "insert own logos" on storage.objects
   for insert to authenticated
