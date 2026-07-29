@@ -3664,10 +3664,10 @@ function MatchCard({ match, onOpen, focused, accentColor = T.gold }) {
 // size. Horizontally scrollable since a bracket wider than 2 rounds won't
 // fit a phone screen.
 
-const BRACKET_CARD_W = 208;
+const BRACKET_CARD_W = 264;
 const BRACKET_CARD_H = 64;
 const BRACKET_ROW_GAP = 16;
-const BRACKET_COL_GAP = 56;
+const BRACKET_COL_GAP = 80;
 const BRACKET_UNIT = BRACKET_CARD_H + BRACKET_ROW_GAP;
 const BRACKET_Y_OFFSET = 28; // room for the round-name label above round 0
 
