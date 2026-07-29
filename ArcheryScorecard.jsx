@@ -2917,6 +2917,64 @@ function roundName(totalRounds, idx) {
 
 function uidT() { return 't_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8); }
 
+function loadImageFromFile(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+function resizeToCanvas(img, maxEdge) {
+  const scale = Math.min(1, maxEdge / Math.max(img.width, img.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(img.width * scale);
+  canvas.height = Math.round(img.height * scale);
+  canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
+// Averages only the "colorful" pixels — filters out near-white, near-black,
+// and low-saturation ones a plain average would get dragged toward (usually
+// a logo's background, not its actual mark) — so the result reads as
+// roughly "the logo's color" instead of a washed-out gray.
+function extractAccentColor(canvas) {
+  const { width, height } = canvas;
+  const { data } = canvas.getContext('2d').getImageData(0, 0, width, height);
+  let rSum = 0, gSum = 0, bSum = 0, count = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
+    if (a < 128) continue;
+    const rn = r / 255, gn = g / 255, bn = b / 255;
+    const max = Math.max(rn, gn, bn), min = Math.min(rn, gn, bn);
+    const lightness = (max + min) / 2;
+    const delta = max - min;
+    const saturation = delta === 0 ? 0 : delta / (1 - Math.abs(2 * lightness - 1));
+    if (saturation < 0.15 || lightness < 0.12 || lightness > 0.9) continue;
+    rSum += r; gSum += g; bSum += b; count++;
+  }
+  if (count === 0) return null;
+  const toHex = v => Math.round(v / count).toString(16).padStart(2, '0');
+  return `#${toHex(rSum)}${toHex(gSum)}${toHex(bSum)}`;
+}
+
+function relativeLuminance(hex) {
+  const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255);
+  const lin = c => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
+function contrastRatio(hexA, hexB) {
+  const lA = relativeLuminance(hexA) + 0.05;
+  const lB = relativeLuminance(hexB) + 0.05;
+  return lA > lB ? lA / lB : lB / lA;
+}
+
+function accentColorContrastOk(hex) {
+  return contrastRatio(hex, T.bg) >= 3;
+}
+
 function createTournament({ name, date, distanceM, faceCm, formatId, participants, finalFormat = 'standard' }) {
   const sorted = participants.slice().sort((a, b) => b.seedScore - a.seedScore);
   const seeded = sorted.map((p, i) => ({ ...p, seed: i + 1 }));
