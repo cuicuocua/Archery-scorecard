@@ -724,6 +724,60 @@ const SUPABASE_URL = 'https://quomlosgvyrffvplkydc.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_qDItHcsh15cNtjDrZwdOXw_Hf38618_';
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+// Outbox: at a range, connectivity is often marginal, and every save above
+// is fire-and-forget straight to Supabase with no local copy — a failed
+// write used to just be gone on reload. Each upsert/delete below records
+// itself here BEFORE attempting the network call and only clears itself on
+// confirmed success, so a failed write survives reload/tab close and gets
+// retried (see flushPending, called on boot and on the 'online' event).
+const PENDING_KEY = 'archery-scorecard-pending-v1';
+function readPending() {
+  try { return JSON.parse(localStorage.getItem(PENDING_KEY)) || {}; } catch { return {}; }
+}
+function writePending(map) {
+  try { localStorage.setItem(PENDING_KEY, JSON.stringify(map)); } catch { /* storage full/unavailable */ }
+}
+function setPending(kind, id, op, data) {
+  const map = readPending();
+  map[`${kind}:${id}`] = { kind, id, op, data };
+  writePending(map);
+}
+function clearPending(kind, id) {
+  const map = readPending();
+  delete map[`${kind}:${id}`];
+  writePending(map);
+}
+// Overlays any writes still stuck in the outbox onto freshly-loaded remote
+// data, so a device that's still offline at boot shows the last edit made
+// on it instead of quietly reverting to stale server state.
+function applyPending(loaded, kind, normalize) {
+  const entries = Object.values(readPending()).filter(e => e.kind === kind);
+  if (entries.length === 0) return loaded;
+  let list = [...loaded];
+  entries.forEach(e => {
+    if (e.op === 'delete') {
+      list = list.filter(item => item.id !== e.id);
+    } else {
+      const normalized = normalize(e.data);
+      const idx = list.findIndex(item => item.id === e.id);
+      if (idx === -1) list.push(normalized); else list[idx] = normalized;
+    }
+  });
+  return list;
+}
+async function flushPending(userId) {
+  const entries = Object.values(readPending());
+  for (const e of entries) {
+    if (e.kind === 'session') {
+      if (e.op === 'delete') await deleteSessionRemote(e.id);
+      else await upsertSessionRemote(userId, e.data);
+    } else {
+      if (e.op === 'delete') await deleteTournamentRemote(e.id);
+      else await upsertTournamentRemote(userId, e.data);
+    }
+  }
+}
+
 async function loadSessionsRemote(userId) {
   try {
     const { data, error } = await supabase.from('sessions').select('data').eq('user_id', userId);
@@ -736,11 +790,13 @@ async function loadSessionsRemote(userId) {
 }
 
 async function upsertSessionRemote(userId, session) {
+  setPending('session', session.id, 'upsert', session);
   try {
     const { error } = await supabase.from('sessions').upsert({
       id: session.id, user_id: userId, data: session, updated_at: new Date().toISOString(),
     });
     if (error) throw error;
+    clearPending('session', session.id);
     return true;
   } catch (err) {
     console.error('Errore nel salvataggio dei dati', err);
@@ -749,9 +805,11 @@ async function upsertSessionRemote(userId, session) {
 }
 
 async function deleteSessionRemote(sessionId) {
+  setPending('session', sessionId, 'delete', null);
   try {
     const { error } = await supabase.from('sessions').delete().eq('id', sessionId);
     if (error) throw error;
+    clearPending('session', sessionId);
     return true;
   } catch (err) {
     console.error('Errore nella eliminazione', err);
@@ -783,11 +841,13 @@ async function loadTournamentsRemote(userId) {
 }
 
 async function upsertTournamentRemote(userId, tournament) {
+  setPending('tournament', tournament.id, 'upsert', tournament);
   try {
     const { error } = await supabase.from('tournaments').upsert({
       id: tournament.id, user_id: userId, data: tournament, updated_at: new Date().toISOString(),
     });
     if (error) throw error;
+    clearPending('tournament', tournament.id);
     return true;
   } catch (err) {
     console.error('Errore nel salvataggio del torneo', err);
@@ -796,9 +856,11 @@ async function upsertTournamentRemote(userId, tournament) {
 }
 
 async function deleteTournamentRemote(tournamentId) {
+  setPending('tournament', tournamentId, 'delete', null);
   try {
     const { error } = await supabase.from('tournaments').delete().eq('id', tournamentId);
     if (error) throw error;
+    clearPending('tournament', tournamentId);
     return true;
   } catch (err) {
     console.error('Errore nella eliminazione del torneo', err);
@@ -2912,6 +2974,8 @@ function roundName(totalRounds, idx) {
   if (fromEnd === 1) return 'Semifinale';
   if (fromEnd === 2) return 'Quarti di finale';
   if (fromEnd === 3) return 'Ottavi di finale';
+  if (fromEnd === 4) return 'Sedicesimi di finale';
+  if (fromEnd === 5) return 'Trentaduesimi di finale';
   return `Turno ${idx + 1}`;
 }
 
@@ -4784,33 +4848,53 @@ export default function ArcheryScorecard() {
   useEffect(() => {
     if (!userId) { setSessions([]); setTournaments([]); setLoaded(false); return; }
     let mounted = true;
-    loadSessionsRemote(userId).then(s => {
-      if (!mounted) return;
-      setSessions(s);
-      setLoaded(true);
-      if (s.length === 0) setLegacyData(findLegacyLocalSessions());
+    // Retry anything left in the outbox from a previous offline session
+    // before loading — if the retry itself fails (still offline), applyPending
+    // below still overlays those edits onto what we loaded, so nothing appears
+    // to have reverted.
+    flushPending(userId).then(() => {
+      loadSessionsRemote(userId).then(s => {
+        if (!mounted) return;
+        const merged = applyPending(s, 'session', normalizeSession);
+        setSessions(merged);
+        setLoaded(true);
+        if (merged.length === 0) setLegacyData(findLegacyLocalSessions());
+      });
+      loadTournamentsRemote(userId).then(t => {
+        if (mounted) setTournaments(applyPending(t, 'tournament', normalizeTournament));
+      });
     });
-    loadTournamentsRemote(userId).then(t => { if (mounted) setTournaments(t); });
     return () => { mounted = false; };
+  }, [userId]);
+
+  // Connectivity can return mid-session (e.g. walking back into range of a
+  // signal) without a reload — retry the outbox as soon as it does, so a
+  // save made while offline doesn't just sit there until the tab is closed
+  // and reopened.
+  useEffect(() => {
+    if (!userId) return;
+    function handleOnline() { flushPending(userId); }
+    window.addEventListener('online', handleOnline);
+    return () => window.removeEventListener('online', handleOnline);
   }, [userId]);
 
   const updateSession = useCallback((id, updater) => {
     setSessions(prev => {
       const next = prev.map(s => (s.id === id ? updater(s) : s));
       const changed = next.find(s => s.id === id);
-      if (changed && userId) upsertSessionRemote(userId, changed).then(ok => flagSaveError(ok, 'Impossibile salvare la sessione online: le modifiche resteranno solo su questo dispositivo finché non si risolve.'));
+      if (changed && userId) upsertSessionRemote(userId, changed).then(ok => flagSaveError(ok, 'Impossibile salvare la sessione online: la modifica resta su questo dispositivo e verrà sincronizzata da sola appena torna la connessione.'));
       return next;
     });
   }, [userId, flagSaveError]);
 
   const addSession = useCallback((session) => {
     setSessions(prev => [...prev, session]);
-    if (userId) upsertSessionRemote(userId, session).then(ok => flagSaveError(ok, 'Impossibile salvare la sessione online: resterà solo su questo dispositivo finché non si risolve.'));
+    if (userId) upsertSessionRemote(userId, session).then(ok => flagSaveError(ok, 'Impossibile salvare la sessione online: resta su questo dispositivo e verrà sincronizzata da sola appena torna la connessione.'));
   }, [userId, flagSaveError]);
 
   const deleteSession = useCallback((id) => {
     setSessions(prev => prev.filter(s => s.id !== id));
-    if (userId) deleteSessionRemote(id).then(ok => flagSaveError(ok, 'Impossibile eliminare la sessione online.'));
+    if (userId) deleteSessionRemote(id).then(ok => flagSaveError(ok, 'Impossibile eliminare la sessione online: verrà ritentato da solo appena torna la connessione.'));
   }, [userId, flagSaveError]);
 
   const importSessions = useCallback((imported) => {
@@ -4820,7 +4904,7 @@ export default function ArcheryScorecard() {
       normalized.forEach(s => byId.set(s.id, s));
       const next = Array.from(byId.values());
       if (userId) Promise.all(normalized.map(s => upsertSessionRemote(userId, s)))
-        .then(results => flagSaveError(results.every(Boolean), 'Alcune sessioni importate non sono state salvate online: resteranno solo su questo dispositivo finché non si risolve.'));
+        .then(results => flagSaveError(results.every(Boolean), 'Alcune sessioni importate non sono state salvate online: verranno sincronizzate da sole appena torna la connessione.'));
       return next;
     });
   }, [userId, flagSaveError]);
@@ -4838,21 +4922,21 @@ export default function ArcheryScorecard() {
 
   const addTournament = useCallback((tournament) => {
     setTournaments(prev => [...prev, tournament]);
-    if (userId) upsertTournamentRemote(userId, tournament).then(ok => flagSaveError(ok, 'Impossibile salvare il torneo online: resterà solo su questo dispositivo e andrà perso al ricaricamento. Controlla che la tabella "tournaments" esista su Supabase.'));
+    if (userId) upsertTournamentRemote(userId, tournament).then(ok => flagSaveError(ok, 'Impossibile salvare il torneo online: resta su questo dispositivo e verrà sincronizzato da solo appena torna la connessione. Se il problema persiste, controlla che la tabella "tournaments" esista su Supabase.'));
   }, [userId, flagSaveError]);
 
   const updateTournament = useCallback((id, updater) => {
     setTournaments(prev => {
       const next = prev.map(t => (t.id === id ? updater(t) : t));
       const changed = next.find(t => t.id === id);
-      if (changed && userId) upsertTournamentRemote(userId, changed).then(ok => flagSaveError(ok, 'Impossibile salvare gli aggiornamenti del torneo online: andranno persi al ricaricamento. Controlla che la tabella "tournaments" esista su Supabase.'));
+      if (changed && userId) upsertTournamentRemote(userId, changed).then(ok => flagSaveError(ok, 'Impossibile salvare gli aggiornamenti del torneo online: restano su questo dispositivo e verranno sincronizzati da soli appena torna la connessione. Se il problema persiste, controlla che la tabella "tournaments" esista su Supabase.'));
       return next;
     });
   }, [userId, flagSaveError]);
 
   const deleteTournament = useCallback((id) => {
     setTournaments(prev => prev.filter(t => t.id !== id));
-    if (userId) deleteTournamentRemote(id).then(ok => flagSaveError(ok, 'Impossibile eliminare il torneo online.'));
+    if (userId) deleteTournamentRemote(id).then(ok => flagSaveError(ok, 'Impossibile eliminare il torneo online: verrà ritentato da solo appena torna la connessione.'));
   }, [userId, flagSaveError]);
 
   if (authSession === undefined) return <LoadingScreen />;

@@ -10,12 +10,14 @@ It's built and deployed automatically to GitHub Pages by
 that matters for the app's behavior; everything under `site/` is just
 plumbing to publish it as a static page.
 
-Data lives in Supabase (Postgres + row-level security), not in browser
-storage — sign in with an email + password and your sessions follow
-you to any device. Schema in `supabase/schema.sql`; the project URL and
-publishable ("anon") key are inlined near the top of
-`ArcheryScorecard.jsx` — that key is meant to be public, security comes
-from the RLS policies in the schema, not from hiding it.
+Data lives in Supabase (Postgres + row-level security) — sign in with an
+email + password and your sessions follow you to any device. Schema in
+`supabase/schema.sql`; the project URL and publishable ("anon") key are
+inlined near the top of `ArcheryScorecard.jsx` — that key is meant to be
+public, security comes from the RLS policies in the schema, not from
+hiding it. Every write also goes through a localStorage outbox first (see
+"Offline-resilient saves" below), so Supabase stays the source of truth
+but a save made without connectivity isn't lost.
 
 This is v1: data model and export are the focus, no service worker /
 full offline install yet — that's a deliberate follow-up (though sync
@@ -625,3 +627,27 @@ despite correct data reaching them.
   (kept horizontal-only scroll) so a tall bracket extends the page's own
   scroll instead of trapping the podium and final-stage sections below it
   inside a separately-scrolling confined box.
+
+## v1.14 additions — Offline-resilient saves + more bracket round labels
+
+- **Offline-resilient saves**: every session/tournament save or delete used
+  to be fire-and-forget straight to Supabase, with no local copy — a
+  failed write (marginal signal at the range is the realistic case) was
+  gone the moment the tab reloaded, and the app's own error banner used to
+  say as much. Fixed with a small localStorage outbox
+  (`archery-scorecard-pending-v1`): `upsertSessionRemote`/
+  `deleteSessionRemote`/`upsertTournamentRemote`/`deleteTournamentRemote`
+  now record the write there *before* attempting the network call, and only
+  clear it on confirmed success. On boot, `flushPending()` retries anything
+  left over, and `applyPending()` overlays whatever's still stuck onto the
+  freshly-loaded remote data, so a device that's still offline at boot
+  shows its last edit instead of reverting to stale server state. A
+  `window.addEventListener('online', ...)` also retries immediately when
+  connectivity returns mid-session, rather than waiting for the next
+  reload. The save-error banner copy was updated to match — it now says
+  the change is saved locally and will sync automatically, not that it'll
+  be lost.
+- **More bracket round labels**: `roundName()` only named the last four
+  rounds (Finale/Semifinale/Quarti/Ottavi), so a round of 32 fell through
+  to the generic "Turno 1" instead of its real name. Added "Sedicesimi di
+  finale" (round of 32) and "Trentaduesimi di finale" (round of 64).
