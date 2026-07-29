@@ -69,3 +69,25 @@ as $$
 $$;
 
 grant execute on function public.get_shared_tournament(text) to anon, authenticated;
+
+-- Tournament logos: a public Storage bucket (public bucket = reads bypass
+-- RLS entirely, served via a plain URL — appropriate here since a logo
+-- isn't sensitive the way bracket/score data is, unlike the tournaments
+-- table itself). Writes are still locked down: an authenticated user may
+-- only insert/update/delete objects inside a folder path prefixed with
+-- their own auth.uid(), enforced by matching the first path segment.
+insert into storage.buckets (id, name, public)
+values ('tournament-logos', 'tournament-logos', true)
+on conflict (id) do nothing;
+
+create policy "insert own logos" on storage.objects
+  for insert to authenticated
+  with check (bucket_id = 'tournament-logos' and (storage.foldername(name))[1] = auth.uid()::text);
+
+create policy "update own logos" on storage.objects
+  for update to authenticated
+  using (bucket_id = 'tournament-logos' and (storage.foldername(name))[1] = auth.uid()::text);
+
+create policy "delete own logos" on storage.objects
+  for delete to authenticated
+  using (bucket_id = 'tournament-logos' and (storage.foldername(name))[1] = auth.uid()::text);
