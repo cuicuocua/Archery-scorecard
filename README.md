@@ -553,3 +553,29 @@ despite correct data reaching them.
   annotation. Gated on the same 2-session minimum the average chart uses,
   not the 5-session "Analisi avanzata" threshold — it's a peer of the
   average chart, not part of that deeper section.
+
+## v1.12 additions — Tournament sharing
+
+- **Public spectator link**: a "Condividi torneo" control on the bracket
+  screen generates a `?share=<token>` link that anyone can open without
+  logging in, to watch the bracket update as it's scored
+  (`SharedTournamentScreen`, mounted directly by `site/entry.jsx` — it
+  never touches Supabase auth at all). The token
+  (`crypto.randomUUID()`) lives inside the tournament's own `data` blob,
+  same as every other tournament field, so no database migration was
+  needed. The only public read path is a new `security definer` SQL
+  function, `get_shared_tournament()` (`supabase/schema.sql`) — it can
+  only ever return the one row whose token matches what the caller
+  already has, so (unlike a table-level RLS policy would) it can't be used
+  to enumerate every tournament anyone has ever shared. "Disattiva
+  condivisione" clears the token, turning existing copies of the link into
+  a plain "no longer shared" message on their next check.
+- **Deliberately polling, not push**: the public screen re-checks every
+  45 seconds (plus a manual refresh icon) rather than using a live
+  subscription — but it only ever re-renders when the fetched data's
+  `updated_at` actually changed, so an unchanged bracket never flickers.
+  True zero-polling push was considered and rejected: Supabase Realtime
+  subscriptions are filtered by table-level RLS, not by a security-definer
+  function, so enabling it for anonymous spectators would have meant
+  re-opening the exact "list every shared tournament" leak the RPC
+  design exists to avoid.
