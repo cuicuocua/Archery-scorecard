@@ -4071,8 +4071,10 @@ function BracketScreen({ tournament, onBack, onOpenMatch, onOpenThreeFinal, onDe
 // when the URL has ?share=<token>, bypassing AuthGate and every bit of
 // Supabase auth machinery entirely (a spectator's visit should never fire
 // an auth listener or session check). Polls get_shared_tournament() every
-// 45s but only touches state (and re-renders) when the row's updated_at
-// actually moved, so an unchanged bracket never visibly flickers.
+// 5min until the tournament's first result lands, then every 45s (see
+// `started` below) — and only touches state (and re-renders) when the
+// row's updated_at actually moved, so an unchanged bracket never visibly
+// flickers.
 export function SharedTournamentScreen({ token }) {
   const [tournament, setTournament] = useState(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState(null);
@@ -4104,12 +4106,19 @@ export function SharedTournamentScreen({ token }) {
     }
   }, [token]);
 
+  // Nothing changes on a bracket before its first result, so polling every
+  // 45s from the moment the link is opened just burns requests on a page
+  // that hasn't moved yet — poll every 5min until tournamentHasStarted()
+  // flips true, then switch to 45s for the rest of the live event. The
+  // effect re-arms (and immediately re-polls) whenever `started` flips.
+  const started = tournament ? tournamentHasStarted(tournament) : false;
+
   useEffect(() => {
     refresh();
-    // Temporarily raised to 1h while iterating — was 45s, revert once settled.
-    const interval = setInterval(refresh, 60 * 60 * 1000);
+    const intervalMs = started ? 45 * 1000 : 5 * 60 * 1000;
+    const interval = setInterval(refresh, intervalMs);
     return () => clearInterval(interval);
-  }, [refresh]);
+  }, [refresh, started]);
 
   if (status === 'loading') return <LoadingScreen />;
   if (status === 'not-found') {

@@ -573,15 +573,17 @@ despite correct data reaching them.
   condivisione" clears the token, turning existing copies of the link into
   a plain "no longer shared" message on their next check.
 - **Deliberately polling, not push**: the public screen re-checks every
-  45 seconds (plus a manual refresh icon) rather than using a live
-  subscription — but it only ever re-renders when the fetched data's
-  `updated_at` actually changed, so an unchanged bracket never flickers.
-  True zero-polling push was considered and rejected: Supabase Realtime
-  subscriptions are filtered by table-level RLS, not by a security-definer
-  function, so enabling it for anonymous spectators would have meant
-  re-opening the exact "list every shared tournament" leak the RPC
-  design exists to avoid. (Temporarily raised to 1h while iterating on
-  further changes — revert to 45s before relying on it for a live event.)
+  45 seconds once the tournament has its first result (plus a manual
+  refresh icon) rather than using a live subscription — but it only ever
+  re-renders when the fetched data's `updated_at` actually changed, so an
+  unchanged bracket never flickers. Before the first result, it polls
+  every 5 minutes instead (`tournamentHasStarted()` gates the interval) —
+  a freshly-shared link to a bracket nobody's played yet has nothing to
+  refresh quickly for. True zero-polling push was considered and
+  rejected: Supabase Realtime subscriptions are filtered by table-level
+  RLS, not by a security-definer function, so enabling it for anonymous
+  spectators would have meant re-opening the exact "list every shared
+  tournament" leak the RPC design exists to avoid.
 
 ## v1.13 additions — Tournament logo + accent color
 
