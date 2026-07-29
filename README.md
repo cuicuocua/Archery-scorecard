@@ -538,3 +538,18 @@ despite correct data reaching them.
   this screen entirely — that whole section moved into `Statistiche`
   above. `Storico` now only ever renders its three filter chip rows plus
   the session list.
+
+## v1.11 additions
+
+- **"Costanza" consistency chart**: Statistiche's scoped analysis section now
+  shows each session's arrow-score standard deviation over time
+  (`scoreStdDevBySession()`), right below the existing average-per-arrow
+  trend. Two sessions can share the same average and be very different
+  achievements — one nervy with a wide spread of scores, one tight and
+  repeatable — and this is the first chart on the page that distinguishes
+  them. Lower is better (tighter grouping of scores), the opposite reading
+  direction from every other trend chart here; no explanatory copy is added
+  for this, consistent with the app's existing habit of a labeled axis over
+  annotation. Gated on the same 2-session minimum the average chart uses,
+  not the 5-session "Analisi avanzata" threshold — it's a peer of the
+  average chart, not part of that deeper section.
