@@ -87,16 +87,29 @@ something unreadable.
 
 ### Rendering
 
+Every place "every gold accent" actually lives — the podium trophy, the
+winner check-mark, a playable match's border — is inside components
+`BracketScreen` and `SharedTournamentScreen` both render:
+`PodiumCard`, `MatchCard`, `CompactMatchCard` (rendered inside
+`BracketTree`), and `ThreeWayFinalCard`. To make the accent reach all of
+those on the public page without touching how they look on the organizer's
+own screen, each gets a new optional `accentColor` prop, **defaulting to
+`T.gold`** wherever it isn't passed, replacing that component's hardcoded
+`T.gold` references internally:
+
 - **`BracketScreen`**: shows the logo (if present) near the header,
-  alongside the `LogoUpload` control. No color re-theming here — this
-  screen's styling is unchanged, per the earlier decision to keep the
-  organizer's own view exactly as it looks today.
-- **`SharedTournamentScreen`**: shows the logo in its header. Every
-  `T.gold` reference in this component's own JSX (podium trophy, winner
-  highlight, focused-match ring, etc. — this screen only, not
-  `BracketTree`/`MatchCard`/`PodiumCard`, which are shared with the
-  organizer view and must stay visually identical there) becomes
-  `tournament.accentColor || T.gold`.
+  alongside the `LogoUpload` control. Renders `PodiumCard`, `BracketTree`,
+  `MatchCard`, `ThreeWayFinalCard` exactly as it does today — no new prop
+  passed, so they all keep defaulting to `T.gold`. Zero visual change here,
+  per the earlier decision to keep the organizer's own view exactly as it
+  looks today.
+- **`SharedTournamentScreen`**: shows the logo in its header, and passes
+  `accentColor={tournament.accentColor || T.gold}` to every one of those
+  same components (`BracketTree` forwards it on to each `CompactMatchCard`
+  it renders internally). No other prop or behavior changes on any of
+  them — this is purely which color constant they read for that one
+  visual role, everything else (layout, gating, click handling) is
+  untouched.
 
 ## Edge cases
 
