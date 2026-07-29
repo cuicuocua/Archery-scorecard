@@ -3576,7 +3576,12 @@ function BracketTree({ tournament, onOpenMatch, focusRef }) {
 
   return (
     <div className="overflow-auto -mx-4 px-4 pb-2" style={{ maxHeight: '70vh' }}>
-      <div className="relative" style={{ width: totalWidth, height: totalHeight + BRACKET_Y_OFFSET }}>
+      {/* mx-auto centers the tree when it's narrower than the viewport (wide
+          desktop screens) — auto margins can't go negative, so on a narrow
+          screen where the tree is wider than its container this has no
+          effect and round 1 stays flush-left, exactly as the horizontal
+          scroll already relies on. */}
+      <div className="relative mx-auto" style={{ width: totalWidth, height: totalHeight + BRACKET_Y_OFFSET }}>
         <svg className="absolute inset-0" width={totalWidth} height={totalHeight + BRACKET_Y_OFFSET} style={{ pointerEvents: 'none' }}>
           {rounds.slice(0, -1).map((_, r) => {
             const x1 = r * colWidth + BRACKET_CARD_W;
@@ -3878,7 +3883,8 @@ export function SharedTournamentScreen({ token }) {
 
   useEffect(() => {
     refresh();
-    const interval = setInterval(refresh, 45000);
+    // Temporarily raised to 1h while iterating — was 45s, revert once settled.
+    const interval = setInterval(refresh, 60 * 60 * 1000);
     return () => clearInterval(interval);
   }, [refresh]);
 
