@@ -1714,10 +1714,13 @@ function FilterChip({ active, onClick, label }) {
   );
 }
 
-function ChartCard({ title, children, tall = false }) {
+function ChartCard({ title, subtitle, children, tall = false }) {
   return (
     <div className="rounded-2xl p-3 flex flex-col gap-2" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
-      <div className="text-sm font-semibold" style={{ color: T.textDim }}>{title}</div>
+      <div>
+        <div className="text-sm font-semibold" style={{ color: T.textDim }}>{title}</div>
+        {subtitle && <div className="text-xs" style={{ color: T.textFaint }}>{subtitle}</div>}
+      </div>
       <div className={tall ? 'h-48' : 'h-40'}>{children}</div>
     </div>
   );
@@ -2103,7 +2106,7 @@ function StatisticheScreen({ sessions }) {
             <StatTile label="Primato/freccia" value={pb ? entryAvg(pb).toFixed(2) : '—'} />
           </div>
 
-          <ChartCard title="Andamento media a freccia">
+          <ChartCard title="Andamento media a freccia" subtitle="Punti medi per freccia, sessione per sessione">
             {trend.length >= 2 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={trend}>
@@ -2118,7 +2121,7 @@ function StatisticheScreen({ sessions }) {
             ) : <EmptyChart text="Servono almeno 2 sessioni completate" />}
           </ChartCard>
 
-          <ChartCard title="Costanza">
+          <ChartCard title="Costanza" subtitle="Variazione dei punteggi in ogni sessione: più basso, più costante">
             {consistencyTrend.filter(c => c.stddev != null).length >= 2 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={consistencyTrend}>
@@ -2133,7 +2136,7 @@ function StatisticheScreen({ sessions }) {
             ) : <EmptyChart text="Servono almeno 2 sessioni completate" />}
           </ChartCard>
 
-          <ChartCard title="Andamento colori nel tempo">
+          <ChartCard title="Andamento colori nel tempo" subtitle="Percentuale di frecce per colore, sessione per sessione">
             {colorTrend.length >= 2 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={colorTrend}>
@@ -2150,7 +2153,7 @@ function StatisticheScreen({ sessions }) {
             ) : <EmptyChart text="Servono almeno 2 sessioni completate" />}
           </ChartCard>
 
-          <ChartCard title="Frecce per colore">
+          <ChartCard title="Frecce per colore" subtitle="Percentuale di tutte le frecce finite in ciascun colore">
             {completed.length ? (
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={colorData}>
@@ -2167,7 +2170,7 @@ function StatisticheScreen({ sessions }) {
             ) : <EmptyChart text="Nessuna sessione per questa combinazione" />}
           </ChartCard>
 
-          <ChartCard title="Andamento per volée (min · media · max)">
+          <ChartCard title="Andamento per volée (min · media · max)" subtitle="Punteggio minimo, medio e massimo per ogni volée, su tutte le sessioni">
             {endRange.filter(f => f.range != null).length >= 2 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart data={endRange}>
@@ -2210,7 +2213,7 @@ function StatisticheScreen({ sessions }) {
               </div>
             ) : (
               <>
-                <ChartCard title="Dispersione media nel tempo (cm)">
+                <ChartCard title="Dispersione media nel tempo (cm)" subtitle="Distanza media delle frecce dal centro del gruppo, sessione per sessione">
                   {dispersion.length >= 2 ? (
                     <ResponsiveContainer width="100%" height="100%">
                       <LineChart data={dispersion}>
@@ -2225,7 +2228,7 @@ function StatisticheScreen({ sessions }) {
                   ) : <EmptyChart text="Nessuna freccia con posizione registrata" />}
                 </ChartCard>
 
-                <ChartCard title="Deriva orizzontale e verticale (cm)" tall>
+                <ChartCard title="Deriva orizzontale e verticale (cm)" subtitle="Scostamento medio del gruppo da centro, per direzione, nel tempo" tall>
                   {dispersion.length >= 2 ? (
                     <ResponsiveContainer width="100%" height="100%">
                       <LineChart data={dispersion}>
@@ -2242,7 +2245,7 @@ function StatisticheScreen({ sessions }) {
                   ) : <EmptyChart text="Nessuna freccia con posizione registrata" />}
                 </ChartCard>
 
-                <ChartCard title="Distribuzione dei punteggi">
+                <ChartCard title="Distribuzione dei punteggi" subtitle="Quante frecce hai segnato per ciascun punteggio">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={distribution}>
                       <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
@@ -2257,7 +2260,10 @@ function StatisticheScreen({ sessions }) {
                 </ChartCard>
 
                 <div className="rounded-2xl p-3 flex flex-col gap-2" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
-                  <div className="text-sm font-semibold" style={{ color: T.textDim }}>Media per condizioni</div>
+                  <div>
+                    <div className="text-sm font-semibold" style={{ color: T.textDim }}>Media per condizioni</div>
+                    <div className="text-xs" style={{ color: T.textFaint }}>Media punti/freccia per ogni condizione registrata</div>
+                  </div>
                   <div className="overflow-x-auto pb-1">
                     <SegmentedControl options={CONDITION_DIMENSIONS} value={conditionDim} onChange={setConditionDim} small />
                   </div>
