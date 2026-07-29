@@ -578,4 +578,50 @@ despite correct data reaching them.
   subscriptions are filtered by table-level RLS, not by a security-definer
   function, so enabling it for anonymous spectators would have meant
   re-opening the exact "list every shared tournament" leak the RPC
-  design exists to avoid.
+  design exists to avoid. (Temporarily raised to 1h while iterating on
+  further changes — revert to 45s before relying on it for a live event.)
+
+## v1.13 additions — Tournament logo + accent color
+
+- **Logo upload**: a "Carica logo" control on the bracket screen lets an
+  organizer upload an image for a tournament, shown on both the organizer's
+  own bracket screen and the public spectator page. Stored in a new public
+  Supabase Storage bucket (`tournament-logos`, `supabase/schema.sql`) at a
+  fixed `{user_id}/{tournament_id}.png` path — writes are locked to the
+  owner's own folder via Storage RLS policies (insert/update/delete *and*
+  select — the select policy is easy to miss but required, since the
+  client uploads with `{ upsert: true }` and Storage's upsert path checks
+  for an existing row first, which needs its own RLS-gated SELECT or every
+  upsert is rejected with a misleading "row-level security policy"
+  error). Reads are public (a plain URL, no auth check), appropriate here
+  since a logo isn't sensitive the way bracket/score data is. Resized
+  client-side (canvas, max 512px edge, re-encoded as PNG to preserve
+  transparency against the app's dark background) before upload, so every
+  stored file stays small regardless of the original.
+- **Public-page accent color**: uploading a logo extracts a representative
+  color from it (`extractAccentColor()` — averages only the "colorful"
+  pixels, filtering out near-white/near-black/low-saturation ones a plain
+  average would get dragged toward) and, if that color clears a WCAG 3:1
+  contrast check against the page's dark background, swaps it in for gold
+  across the public spectator page's podium, match cards, and winner
+  markers (`MatchCard`/`CompactMatchCard`/`BracketTree`/
+  `ThreeWayFinalCard`/`PodiumCard` all gained an optional `accentColor`
+  prop, defaulting to the normal gold — the organizer's own screen never
+  passes it, so it looks exactly as it always has). A logo whose color
+  fails the contrast check, or that has none, falls back to gold rather
+  than rendering something unreadable.
+- **Bracket round labels fixed for Lancaster/3-way finals**: labels
+  ("Ottavi di finale", "Quarti di finale", ecc.) were computed from
+  `tournament.rounds.length`, but that array is deliberately shorter than
+  the tournament's real depth for these two final formats — their actual
+  final happens in a separate `finalStage` object, not as a normal bracket
+  round. The last kept round was mislabeling itself "Finale" even though
+  the real final was the Lancaster ladder or 3-way final shown below it.
+  Fixed by computing label depth from `tournament.bracketSize` instead
+  (`trueRoundCount()`), which reflects the tournament's true bracket depth
+  regardless of how many of its rounds got moved into `finalStage`.
+- **Bracket tree uses more of the screen**: widened the tree's column/card
+  dimensions, and dropped its old `maxHeight`/inner-vertical-scroll wrapper
+  (kept horizontal-only scroll) so a tall bracket extends the page's own
+  scroll instead of trapping the podium and final-stage sections below it
+  inside a separately-scrolling confined box.
