@@ -2018,6 +2018,7 @@ function StatisticheScreen({ sessions }) {
     completed.slice().sort((a, b) => new Date(a.completedAt) - new Date(b.completedAt))
       .map(e => ({ label: formatDateShort(e.completedAt), avg: entryAvg(e) })),
     [completed]);
+  const consistencyTrend = useMemo(() => scoreStdDevBySession(completed), [completed]);
   const pb = completed.length ? completed.reduce((b, e) => (entryAvg(e) > entryAvg(b) ? e : b)) : null;
   const totalArrowsFiltered = completed.reduce((s, e) => s + arrowsShotCount(e), 0);
   const avgScore = totalArrowsFiltered ? completed.reduce((s, e) => s + totalScore(e), 0) / totalArrowsFiltered : null;
@@ -2112,6 +2113,21 @@ function StatisticheScreen({ sessions }) {
                   <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
                     formatter={(v) => [Number(v).toFixed(2), 'media a freccia']} />
                   <Line type="monotone" dataKey="avg" stroke={T.gold} strokeWidth={2} dot={{ r: 3, fill: T.gold }} isAnimationActive={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            ) : <EmptyChart text="Servono almeno 2 sessioni completate" />}
+          </ChartCard>
+
+          <ChartCard title="Costanza">
+            {consistencyTrend.filter(c => c.stddev != null).length >= 2 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={consistencyTrend}>
+                  <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
+                  <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 'auto']} />
+                  <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                    formatter={(v) => [`σ = ${Number(v).toFixed(2)} punti`, 'costanza']} />
+                  <Line type="monotone" dataKey="stddev" stroke={T.blue} strokeWidth={2} dot={{ r: 3, fill: T.blue }} isAnimationActive={false} />
                 </LineChart>
               </ResponsiveContainer>
             ) : <EmptyChart text="Servono almeno 2 sessioni completate" />}
