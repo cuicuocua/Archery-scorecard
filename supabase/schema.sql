@@ -46,3 +46,26 @@ create policy "update own tournaments" on public.tournaments
 
 create policy "delete own tournaments" on public.tournaments
   for delete using (auth.uid() = user_id);
+
+-- Tournament sharing: a tournament organizer can put a random token into
+-- their tournament's data (data->>'shareToken', set from the app — no
+-- migration needed since it's just a field inside the existing JSONB blob)
+-- to make it publicly viewable at /?share=<token>. This function is the
+-- ONLY public read path — it runs with the owner's privileges (security
+-- definer) so no new RLS policy is needed on the table itself, and unlike
+-- a table-level policy, a parameterized function can never be used to
+-- enumerate every shared tournament: it only ever returns the one row
+-- whose token exactly matches what the caller already has.
+create or replace function public.get_shared_tournament(p_token text)
+returns table(data jsonb, updated_at timestamptz)
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select data, updated_at from public.tournaments
+  where data ->> 'shareToken' = p_token
+  limit 1;
+$$;
+
+grant execute on function public.get_shared_tournament(text) to anon, authenticated;
