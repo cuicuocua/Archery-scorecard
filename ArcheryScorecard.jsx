@@ -2915,6 +2915,17 @@ function roundName(totalRounds, idx) {
   return `Turno ${idx + 1}`;
 }
 
+// tournament.rounds is truncated for threeway/lancaster finals (their last
+// 1-2 rounds move into finalStage instead of staying real bracket rounds —
+// see buildBracket) — round labels need the *true* bracket depth (round of
+// 32, ottavi, quarti, ecc.) computed from the bracket's size, not just how
+// many rounds happen to still be in the array, or the last kept round gets
+// mislabeled "Finale" even though the real final is the separate Lancaster
+// ladder (or 3-way final) shown below it.
+function trueRoundCount(tournament) {
+  return Math.log2(tournament.bracketSize);
+}
+
 function uidT() { return 't_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8); }
 
 function loadImageFromFile(file) {
@@ -2993,7 +3004,7 @@ function createTournament({ name, date, distanceM, faceCm, formatId, participant
 // any ref kind MatchScreen itself can play — everything except 'threeFinal',
 // which needs the dedicated ThreeWayFinalScreen instead.
 function resolveMatchRef(tournament, ref) {
-  if (ref.kind === 'round') return { match: tournament.rounds[ref.roundIdx][ref.matchIdx], title: roundName(tournament.rounds.length, ref.roundIdx) };
+  if (ref.kind === 'round') return { match: tournament.rounds[ref.roundIdx][ref.matchIdx], title: roundName(trueRoundCount(tournament), ref.roundIdx) };
   if (ref.kind === 'thirdPlace') return { match: tournament.thirdPlaceMatch, title: 'Finale 3°/4° posto' };
   if (ref.kind === 'prelim') return { match: tournament.finalStage.prelim, title: 'Preliminare 3°/4° posto' };
   if (ref.kind === 'lancasterPlayIn') return { match: tournament.finalStage.playIn, title: 'Ripescaggio (per la 4ª posizione)' };
@@ -3589,10 +3600,10 @@ function MatchCard({ match, onOpen, focused }) {
 // size. Horizontally scrollable since a bracket wider than 2 rounds won't
 // fit a phone screen.
 
-const BRACKET_CARD_W = 176;
+const BRACKET_CARD_W = 208;
 const BRACKET_CARD_H = 64;
 const BRACKET_ROW_GAP = 16;
-const BRACKET_COL_GAP = 40;
+const BRACKET_COL_GAP = 56;
 const BRACKET_UNIT = BRACKET_CARD_H + BRACKET_ROW_GAP;
 const BRACKET_Y_OFFSET = 28; // room for the round-name label above round 0
 
@@ -3633,11 +3644,16 @@ function BracketTree({ tournament, onOpenMatch, focusRef }) {
   const totalWidth = rounds.length * colWidth - BRACKET_COL_GAP;
 
   return (
-    <div className="overflow-auto -mx-4 px-4 pb-2" style={{ maxHeight: '70vh' }}>
-      {/* mx-auto centers the tree when it's narrower than the viewport (wide
-          desktop screens) — auto margins can't go negative, so on a narrow
-          screen where the tree is wider than its container this has no
-          effect and round 1 stays flush-left, exactly as the horizontal
+    <div className="overflow-x-auto -mx-4 px-4 pb-2">
+      {/* Horizontal scroll only — no maxHeight/vertical scroll here, so a
+          tall bracket just extends the page's own scroll instead of being
+          trapped in its own confined scroll box with content below it
+          (the podium, the Lancaster ladder, ecc.) unreachable without a
+          separate inner scroll. mx-auto centers the tree when it's narrower
+          than the viewport (wide desktop screens) — auto margins can't go
+          negative, so on a narrow screen where the tree is wider than its
+          container this has no effect and round 1 stays flush-left, exactly
+          as the horizontal
           scroll already relies on. */}
       <div className="relative mx-auto" style={{ width: totalWidth, height: totalHeight + BRACKET_Y_OFFSET }}>
         <svg className="absolute inset-0" width={totalWidth} height={totalHeight + BRACKET_Y_OFFSET} style={{ pointerEvents: 'none' }}>
@@ -3663,7 +3679,7 @@ function BracketTree({ tournament, onOpenMatch, focusRef }) {
         {rounds.map((round, r) => (
           <React.Fragment key={r}>
             <div className="absolute text-xs font-semibold truncate" style={{ left: r * colWidth, top: 0, width: BRACKET_CARD_W, color: T.textDim }}>
-              {roundName(rounds.length, r)}
+              {roundName(trueRoundCount(tournament), r)}
             </div>
             {round.map((m, i) => (
               <CompactMatchCard key={i} match={m} x={r * colWidth} y={centers[r][i] - BRACKET_CARD_H / 2 + BRACKET_Y_OFFSET}
@@ -3814,7 +3830,87 @@ function ShareTournamentControl({ tournament, onSetShareToken }) {
   );
 }
 
-function BracketScreen({ tournament, onBack, onOpenMatch, onOpenThreeFinal, onDelete, onEditParticipants, onReset, onSetShareToken, onSetLancasterWildcard, onClearLancasterWildcard, focusRef }) {
+// Same collapsed-button-expands-to-panel idiom as ShareTournamentControl
+// right above. Resizes and re-extracts the accent color client-side before
+// ever touching the network — the upload itself is always a small PNG,
+// regardless of what the organizer's phone camera originally produced.
+function LogoUpload({ tournament, userId, onSetLogo }) {
+  const inputRef = useRef(null);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  async function handleFile(e) {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+      setError('Formato non valido — usa PNG, JPG o WebP.');
+      return;
+    }
+    setError('');
+    setBusy(true);
+    try {
+      const img = await loadImageFromFile(file);
+      const canvas = resizeToCanvas(img, 512);
+      const extracted = extractAccentColor(canvas);
+      const accentColor = extracted && accentColorContrastOk(extracted) ? extracted : null;
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+      const path = `${userId}/${tournament.id}.png`;
+      const { error: uploadError } = await supabase.storage.from('tournament-logos').upload(path, blob, { upsert: true, contentType: 'image/png' });
+      if (uploadError) throw uploadError;
+      const { data: { publicUrl } } = supabase.storage.from('tournament-logos').getPublicUrl(path);
+      // Cache-bust: the path is fixed per tournament, so re-uploading at the
+      // same URL needs a changing query string or a stale cached image could
+      // keep being served after a real change.
+      onSetLogo({ logoUrl: `${publicUrl}?v=${Date.now()}`, accentColor });
+    } catch (err) {
+      console.error('Errore caricamento logo', err);
+      setError('Caricamento non riuscito. Riprova.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRemove() {
+    setBusy(true);
+    try {
+      await supabase.storage.from('tournament-logos').remove([`${userId}/${tournament.id}.png`]);
+    } catch (err) {
+      console.error('Errore rimozione logo', err);
+    }
+    onSetLogo({ logoUrl: null, accentColor: null });
+    setBusy(false);
+  }
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)}
+        className="rounded-2xl py-3 font-semibold flex items-center justify-center gap-2 min-h-11"
+        style={{ background: T.surface, color: T.textDim, border: `1px solid ${T.border}` }}>
+        <Target size={16} /> {tournament.logoUrl ? 'Cambia logo' : 'Carica logo'}
+      </button>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl p-3 flex flex-col gap-3" style={{ background: T.surfaceAlt, border: `1px dashed ${T.border}` }}>
+      <input ref={inputRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={handleFile} />
+      {error && <div className="text-xs" style={{ color: T.red }}>{error}</div>}
+      <button onClick={() => inputRef.current?.click()} disabled={busy}
+        className="rounded-xl py-2.5 font-semibold flex items-center justify-center gap-2 min-h-11 disabled:opacity-40"
+        style={{ background: T.gold, color: GOLD_TEXT }}>
+        <Target size={16} /> {busy ? 'Caricamento…' : (tournament.logoUrl ? 'Sostituisci logo' : 'Scegli immagine')}
+      </button>
+      {tournament.logoUrl && (
+        <button onClick={handleRemove} disabled={busy} className="text-xs self-center py-1 disabled:opacity-40" style={{ color: T.textFaint }}>Rimuovi logo</button>
+      )}
+      <button onClick={() => setOpen(false)} className="text-xs self-center py-1" style={{ color: T.textFaint }}>Chiudi</button>
+    </div>
+  );
+}
+
+function BracketScreen({ tournament, onBack, onOpenMatch, onOpenThreeFinal, onDelete, onEditParticipants, onReset, onSetShareToken, userId, onSetLogo, onSetLancasterWildcard, onClearLancasterWildcard, focusRef }) {
   const [viewMode, setViewMode] = useState('bracket');
   const started = tournamentHasStarted(tournament);
   const podium = tournamentPodium(tournament);
@@ -3835,6 +3931,11 @@ function BracketScreen({ tournament, onBack, onOpenMatch, onOpenThreeFinal, onDe
         {formatDateShort(tournament.date)} · {matchFormatDef(tournament.formatId).label} · {tournament.distanceM}m/{tournament.faceCm}cm · {finalFormatDef(tournament.finalFormat).label}
       </div>
 
+      {tournament.logoUrl && (
+        <img src={tournament.logoUrl} alt="Logo del torneo" className="h-16 w-auto self-start rounded-xl" style={{ background: T.surface }} />
+      )}
+      <LogoUpload tournament={tournament} userId={userId} onSetLogo={onSetLogo} />
+
       <ShareTournamentControl tournament={tournament} onSetShareToken={onSetShareToken} />
 
       <PodiumCard podium={podium} />
@@ -3848,7 +3949,7 @@ function BracketScreen({ tournament, onBack, onOpenMatch, onOpenThreeFinal, onDe
       ) : (
         tournament.rounds.map((round, ri) => (
           <div key={ri} className="flex flex-col gap-2">
-            <div className="text-sm font-semibold" style={{ color: T.textDim }}>{roundName(tournament.rounds.length, ri)}</div>
+            <div className="text-sm font-semibold" style={{ color: T.textDim }}>{roundName(trueRoundCount(tournament), ri)}</div>
             <div className="flex flex-col gap-2">
               {round.map((m, mi) => m.status !== 'bye' && (
                 <MatchCard key={mi} match={m} onOpen={() => onOpenMatch({ kind: 'round', roundIdx: ri, matchIdx: mi })}
@@ -4845,6 +4946,8 @@ export default function ArcheryScorecard() {
               onEditParticipants={() => setView('tornei-edit')}
               onReset={(finalFormat) => updateTournament(activeTournament.id, t => resetTournamentBracket(t, finalFormat))}
               onSetShareToken={(token) => updateTournament(activeTournament.id, t => ({ ...t, shareToken: token }))}
+              userId={userId}
+              onSetLogo={(logo) => updateTournament(activeTournament.id, t => ({ ...t, ...logo }))}
               onSetLancasterWildcard={(wildcard) => updateTournament(activeTournament.id, t => ({ ...t, finalStage: setLancasterWildcard(t.finalStage, wildcard) }))}
               onClearLancasterWildcard={() => updateTournament(activeTournament.id, t => ({ ...t, finalStage: clearLancasterWildcard(t.finalStage) }))} />
           );
