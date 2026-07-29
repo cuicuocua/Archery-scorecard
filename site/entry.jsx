@@ -1,5 +1,9 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import ArcheryScorecard from '../ArcheryScorecard.jsx';
+import ArcheryScorecard, { SharedTournamentScreen } from '../ArcheryScorecard.jsx';
 
-createRoot(document.getElementById('root')).render(<ArcheryScorecard />);
+const shareToken = new URLSearchParams(window.location.search).get('share');
+
+createRoot(document.getElementById('root')).render(
+  shareToken ? <SharedTournamentScreen token={shareToken} /> : <ArcheryScorecard />
+);

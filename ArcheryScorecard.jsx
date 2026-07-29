@@ -3839,6 +3839,117 @@ function BracketScreen({ tournament, onBack, onOpenMatch, onOpenThreeFinal, onDe
   );
 }
 
+// Public, no-login view of a tournament — mounted directly by entry.jsx
+// when the URL has ?share=<token>, bypassing AuthGate and every bit of
+// Supabase auth machinery entirely (a spectator's visit should never fire
+// an auth listener or session check). Polls get_shared_tournament() every
+// 45s but only touches state (and re-renders) when the row's updated_at
+// actually moved, so an unchanged bracket never visibly flickers.
+export function SharedTournamentScreen({ token }) {
+  const [tournament, setTournament] = useState(null);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState(null);
+  const [status, setStatus] = useState('loading'); // 'loading' | 'ready' | 'not-found'
+  // Tracks the last-seen updated_at outside React state so refresh() can
+  // compare against it without depending on (and thus staling on, or
+  // needing to nest a second setState inside a functional updater for)
+  // lastUpdatedAt itself — setTournament/setStatus/setLastUpdatedAt all
+  // fire together, in the same tick, whenever something actually changed.
+  const lastUpdatedRef = useRef(null);
+
+  const refresh = useCallback(async () => {
+    const { data, error } = await supabase.rpc('get_shared_tournament', { p_token: token });
+    // A transient network error leaves whatever's currently displayed
+    // alone and just retries next interval — only a successful call that
+    // genuinely finds no matching row means "not shared" (a failed
+    // request must never be treated the same as an invalid token).
+    if (error) return;
+    if (!data || data.length === 0) {
+      setStatus('not-found');
+      return;
+    }
+    const row = data[0];
+    setStatus('ready');
+    if (lastUpdatedRef.current !== row.updated_at) {
+      lastUpdatedRef.current = row.updated_at;
+      setTournament(normalizeTournament(row.data));
+      setLastUpdatedAt(row.updated_at);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    refresh();
+    const interval = setInterval(refresh, 45000);
+    return () => clearInterval(interval);
+  }, [refresh]);
+
+  if (status === 'loading') return <LoadingScreen />;
+  if (status === 'not-found') {
+    return (
+      <div className="min-h-screen flex items-center justify-center px-6 text-center" style={{ background: T.bg, color: T.textDim }}>
+        Questo torneo non è più condiviso, o il link non è valido.
+      </div>
+    );
+  }
+
+  const podium = tournamentPodium(tournament);
+  const fs = tournament.finalStage;
+
+  return (
+    <div className="min-h-screen w-full mx-auto px-4 pt-4 pb-12 flex flex-col gap-4" style={{ background: T.bg, color: T.text }}>
+      <div className="flex items-center gap-2">
+        <h1 className="text-xl font-bold flex-1 truncate">{tournament.name}</h1>
+        <button onClick={refresh} className="p-2 rounded-full min-w-11 min-h-11 flex items-center justify-center" style={{ background: T.surface, border: `1px solid ${T.border}` }} aria-label="Aggiorna">
+          <RefreshCw size={18} color={T.textDim} />
+        </button>
+      </div>
+      <div className="text-sm" style={{ color: T.textDim }}>
+        {formatDateShort(tournament.date)} · {matchFormatDef(tournament.formatId).label} · {tournament.distanceM}m/{tournament.faceCm}cm · {finalFormatDef(tournament.finalFormat).label}
+      </div>
+      {lastUpdatedAt && (
+        <div className="text-xs" style={{ color: T.textFaint }}>
+          Ultimo aggiornamento: {new Date(lastUpdatedAt).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}
+        </div>
+      )}
+
+      <PodiumCard podium={podium} />
+
+      {tournament.rounds.length > 0 && <BracketTree tournament={tournament} onOpenMatch={() => {}} focusRef={null} />}
+
+      {tournament.finalFormat === 'standard' && tournament.thirdPlaceMatch && (
+        <div className="flex flex-col gap-2">
+          <div className="text-sm font-semibold" style={{ color: T.textDim }}>Finale 3°/4° posto</div>
+          <MatchCard match={tournament.thirdPlaceMatch} onOpen={() => {}} focused={false} />
+        </div>
+      )}
+
+      {tournament.finalFormat === 'threeway' && fs && (
+        <>
+          <div className="flex flex-col gap-2">
+            <div className="text-sm font-semibold" style={{ color: T.textDim }}>Preliminare 3°/4° posto</div>
+            <MatchCard match={fs.prelim} onOpen={() => {}} focused={false} />
+          </div>
+          <div className="flex flex-col gap-2">
+            <div className="text-sm font-semibold" style={{ color: T.textDim }}>Finale a 3 — oro/argento/bronzo</div>
+            <ThreeWayFinalCard final={fs.final} onOpen={() => {}} focused={false} />
+          </div>
+        </>
+      )}
+
+      {tournament.finalFormat === 'lancaster' && fs && (
+        <div className="flex flex-col gap-2">
+          <div className="text-sm font-semibold" style={{ color: T.textDim }}>Finale Lancaster (per punteggio di qualifica)</div>
+          <div className="flex flex-col gap-2">
+            {fs.playIn && <MatchCard match={fs.playIn} onOpen={() => {}} focused={false} />}
+            <MatchCard match={fs.match1} onOpen={() => {}} focused={false} />
+            <MatchCard match={fs.match2} onOpen={() => {}} focused={false} />
+            <MatchCard match={fs.match3} onOpen={() => {}} focused={false} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Lets the scorer declare a walkover when one side withdraws or never
 // shows up, for a match that's already been fed (both sides assigned).
 // Collapsed by default and gated behind a per-side confirm tap so it can't
