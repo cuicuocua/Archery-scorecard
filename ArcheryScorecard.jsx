@@ -3557,14 +3557,14 @@ function TournamentEditParticipantsScreen({ tournament, onSave, onCancel }) {
 
 // ---------- tournament: bracket + match ----------
 
-function MatchCard({ match, onOpen, focused }) {
+function MatchCard({ match, onOpen, focused, accentColor = T.gold }) {
   const playable = match.status === 'pending' || match.status === 'in_progress' || match.status === 'shootoff';
   const statusLabel = match.status === 'bye' ? 'Bye' : match.status === 'waiting' ? 'In attesa' :
     match.status === 'completed' ? 'Conclusa' : match.status === 'shootoff' ? 'Spareggio' : 'Da giocare';
   return (
     <button onClick={() => playable && onOpen()} disabled={!playable}
       className="w-full text-left rounded-2xl px-4 py-3 flex flex-col gap-2"
-      style={{ background: T.surface, border: `1px solid ${playable ? T.gold : T.border}`, opacity: match.status === 'waiting' ? 0.6 : 1,
+      style={{ background: T.surface, border: `1px solid ${playable ? accentColor : T.border}`, opacity: match.status === 'waiting' ? 0.6 : 1,
         boxShadow: focused ? `0 0 0 2px ${T.blue}` : undefined }}>
       <div className="flex items-center justify-between text-xs" style={{ color: T.textDim }}>
         <span>{statusLabel}{match.forfeit ? ' · W.O.' : ''}</span>
@@ -3576,13 +3576,13 @@ function MatchCard({ match, onOpen, focused }) {
         <div className={`truncate ${match.winnerSlot === 'A' ? 'font-bold' : ''}`} style={{ color: match.winnerSlot === 'B' ? T.textDim : T.text }}>
           {match.slotA ? `${match.slotA.seed}. ${match.slotA.name}` : '—'}
         </div>
-        {match.winnerSlot === 'A' && <Check size={16} color={T.gold} />}
+        {match.winnerSlot === 'A' && <Check size={16} color={accentColor} />}
       </div>
       <div className="flex items-center justify-between gap-2">
         <div className={`truncate ${match.winnerSlot === 'B' ? 'font-bold' : ''}`} style={{ color: match.winnerSlot === 'A' ? T.textDim : T.text }}>
           {match.slotB ? `${match.slotB.seed}. ${match.slotB.name}` : '—'}
         </div>
-        {match.winnerSlot === 'B' && <Check size={16} color={T.gold} />}
+        {match.winnerSlot === 'B' && <Check size={16} color={accentColor} />}
       </div>
     </button>
   );
@@ -3617,14 +3617,14 @@ function computeBracketLayout(rounds) {
   return { centers, totalHeight: n0 * BRACKET_UNIT };
 }
 
-function CompactMatchCard({ match, x, y, onOpen, focused }) {
+function CompactMatchCard({ match, x, y, onOpen, focused, accentColor = T.gold }) {
   const playable = match.status === 'pending' || match.status === 'in_progress' || match.status === 'shootoff';
   const scored = match.status === 'completed' || match.status === 'in_progress' || match.status === 'shootoff';
   return (
     <button onClick={() => playable && onOpen()} disabled={!playable}
       className="absolute rounded-xl px-2.5 py-1.5 flex flex-col justify-center gap-0.5 text-left"
       style={{ left: x, top: y, width: BRACKET_CARD_W, height: BRACKET_CARD_H,
-        background: T.surface, border: `1px solid ${playable ? T.gold : T.border}`, opacity: match.status === 'waiting' ? 0.55 : 1,
+        background: T.surface, border: `1px solid ${playable ? accentColor : T.border}`, opacity: match.status === 'waiting' ? 0.55 : 1,
         boxShadow: focused ? `0 0 0 2px ${T.blue}` : undefined }}>
       <div className={`text-xs truncate ${match.winnerSlot === 'A' ? 'font-bold' : ''}`} style={{ color: match.winnerSlot === 'B' ? T.textDim : T.text }}>
         {match.slotA ? `${match.slotA.seed}. ${match.slotA.name}` : '—'}
@@ -3637,7 +3637,7 @@ function CompactMatchCard({ match, x, y, onOpen, focused }) {
   );
 }
 
-function BracketTree({ tournament, onOpenMatch, focusRef }) {
+function BracketTree({ tournament, onOpenMatch, focusRef, accentColor = T.gold }) {
   const { rounds } = tournament;
   const { centers, totalHeight } = useMemo(() => computeBracketLayout(rounds), [rounds]);
   const colWidth = BRACKET_CARD_W + BRACKET_COL_GAP;
@@ -3684,7 +3684,7 @@ function BracketTree({ tournament, onOpenMatch, focusRef }) {
             {round.map((m, i) => (
               <CompactMatchCard key={i} match={m} x={r * colWidth} y={centers[r][i] - BRACKET_CARD_H / 2 + BRACKET_Y_OFFSET}
                 onOpen={() => onOpenMatch({ kind: 'round', roundIdx: r, matchIdx: i })}
-                focused={refEquals(focusRef, { kind: 'round', roundIdx: r, matchIdx: i })} />
+                focused={refEquals(focusRef, { kind: 'round', roundIdx: r, matchIdx: i })} accentColor={accentColor} />
             ))}
           </React.Fragment>
         ))}
@@ -3696,7 +3696,7 @@ function BracketTree({ tournament, onOpenMatch, focusRef }) {
 // Compact summary of the 3-way final's live state — three names instead of
 // the usual two, with each side's running set-points and, once decided,
 // gold/silver markers (bronze is implied: whoever's left).
-function ThreeWayFinalCard({ final, onOpen, focused }) {
+function ThreeWayFinalCard({ final, onOpen, focused, accentColor = T.gold }) {
   const playable = final.status === 'pending' || final.status === 'in_progress' || final.status === 'shootoff3' || final.status === 'runoff';
   const statusLabel = final.status === 'waiting' ? 'In attesa' : final.status === 'pending' ? 'Da giocare'
     : final.status === 'shootoff3' ? 'Spareggio per l’oro' : final.status === 'runoff' ? 'Spareggio 2°/3° posto'
@@ -3704,7 +3704,7 @@ function ThreeWayFinalCard({ final, onOpen, focused }) {
   return (
     <button onClick={() => playable && onOpen()} disabled={!playable}
       className="w-full text-left rounded-2xl px-4 py-3 flex flex-col gap-2"
-      style={{ background: T.surface, border: `1px solid ${playable ? T.gold : T.border}`, opacity: final.status === 'waiting' ? 0.6 : 1,
+      style={{ background: T.surface, border: `1px solid ${playable ? accentColor : T.border}`, opacity: final.status === 'waiting' ? 0.6 : 1,
         boxShadow: focused ? `0 0 0 2px ${T.blue}` : undefined }}>
       <div className="text-xs" style={{ color: T.textDim }}>{statusLabel}</div>
       {[0, 1, 2].map(i => (
@@ -3714,7 +3714,7 @@ function ThreeWayFinalCard({ final, onOpen, focused }) {
           </div>
           <div className="flex items-center gap-1.5">
             <span className="text-xs" style={numeralStyle}>{final.cumSp ? final.cumSp[i] || 0 : 0}</span>
-            {final.goldSlot === i && <Trophy size={14} color={T.gold} />}
+            {final.goldSlot === i && <Trophy size={14} color={accentColor} />}
             {final.silverSlot === i && <Check size={14} color={T.textDim} />}
           </div>
         </div>
@@ -3723,14 +3723,14 @@ function ThreeWayFinalCard({ final, onOpen, focused }) {
   );
 }
 
-function PodiumCard({ podium }) {
+function PodiumCard({ podium, accentColor = T.gold }) {
   if (!podium || !podium.gold) return null;
   return (
-    <div className="rounded-2xl p-4 flex flex-col gap-2" style={{ background: T.surfaceAlt, border: `1px solid ${T.gold}` }}>
+    <div className="rounded-2xl p-4 flex flex-col gap-2" style={{ background: T.surfaceAlt, border: `1px solid ${accentColor}` }}>
       <div className="flex items-center gap-3">
-        <Trophy color={T.gold} size={28} />
+        <Trophy color={accentColor} size={28} />
         <div>
-          <div className="text-xs uppercase tracking-wide" style={{ color: T.gold }}>Campione</div>
+          <div className="text-xs uppercase tracking-wide" style={{ color: accentColor }}>Campione</div>
           <div className="text-lg font-bold">{podium.gold.name}</div>
         </div>
       </div>
@@ -4059,9 +4059,14 @@ export function SharedTournamentScreen({ token }) {
   const podium = tournamentPodium(tournament);
   const fs = tournament.finalStage;
 
+  const accentColor = tournament.accentColor || T.gold;
+
   return (
     <div className="min-h-screen w-full mx-auto px-4 pt-4 pb-12 flex flex-col gap-4" style={{ background: T.bg, color: T.text }}>
       <div className="flex items-center gap-2">
+        {tournament.logoUrl && (
+          <img src={tournament.logoUrl} alt="Logo del torneo" className="h-10 w-auto rounded-lg" style={{ background: T.surface }} />
+        )}
         <h1 className="text-xl font-bold flex-1 truncate">{tournament.name}</h1>
         <button onClick={refresh} className="p-2 rounded-full min-w-11 min-h-11 flex items-center justify-center" style={{ background: T.surface, border: `1px solid ${T.border}` }} aria-label="Aggiorna">
           <RefreshCw size={18} color={T.textDim} />
@@ -4076,14 +4081,14 @@ export function SharedTournamentScreen({ token }) {
         </div>
       )}
 
-      <PodiumCard podium={podium} />
+      <PodiumCard podium={podium} accentColor={accentColor} />
 
-      {tournament.rounds.length > 0 && <BracketTree tournament={tournament} onOpenMatch={() => {}} focusRef={null} />}
+      {tournament.rounds.length > 0 && <BracketTree tournament={tournament} onOpenMatch={() => {}} focusRef={null} accentColor={accentColor} />}
 
       {tournament.finalFormat === 'standard' && tournament.thirdPlaceMatch && (
         <div className="flex flex-col gap-2">
           <div className="text-sm font-semibold" style={{ color: T.textDim }}>Finale 3°/4° posto</div>
-          <MatchCard match={tournament.thirdPlaceMatch} onOpen={() => {}} focused={false} />
+          <MatchCard match={tournament.thirdPlaceMatch} onOpen={() => {}} focused={false} accentColor={accentColor} />
         </div>
       )}
 
@@ -4091,11 +4096,11 @@ export function SharedTournamentScreen({ token }) {
         <>
           <div className="flex flex-col gap-2">
             <div className="text-sm font-semibold" style={{ color: T.textDim }}>Preliminare 3°/4° posto</div>
-            <MatchCard match={fs.prelim} onOpen={() => {}} focused={false} />
+            <MatchCard match={fs.prelim} onOpen={() => {}} focused={false} accentColor={accentColor} />
           </div>
           <div className="flex flex-col gap-2">
             <div className="text-sm font-semibold" style={{ color: T.textDim }}>Finale a 3 — oro/argento/bronzo</div>
-            <ThreeWayFinalCard final={fs.final} onOpen={() => {}} focused={false} />
+            <ThreeWayFinalCard final={fs.final} onOpen={() => {}} focused={false} accentColor={accentColor} />
           </div>
         </>
       )}
@@ -4104,10 +4109,10 @@ export function SharedTournamentScreen({ token }) {
         <div className="flex flex-col gap-2">
           <div className="text-sm font-semibold" style={{ color: T.textDim }}>Finale Lancaster (per punteggio di qualifica)</div>
           <div className="flex flex-col gap-2">
-            {fs.playIn && <MatchCard match={fs.playIn} onOpen={() => {}} focused={false} />}
-            <MatchCard match={fs.match1} onOpen={() => {}} focused={false} />
-            <MatchCard match={fs.match2} onOpen={() => {}} focused={false} />
-            <MatchCard match={fs.match3} onOpen={() => {}} focused={false} />
+            {fs.playIn && <MatchCard match={fs.playIn} onOpen={() => {}} focused={false} accentColor={accentColor} />}
+            <MatchCard match={fs.match1} onOpen={() => {}} focused={false} accentColor={accentColor} />
+            <MatchCard match={fs.match2} onOpen={() => {}} focused={false} accentColor={accentColor} />
+            <MatchCard match={fs.match3} onOpen={() => {}} focused={false} accentColor={accentColor} />
           </div>
         </div>
       )}
