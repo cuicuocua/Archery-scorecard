@@ -4071,9 +4071,10 @@ function BracketScreen({ tournament, onBack, onOpenMatch, onOpenThreeFinal, onDe
 // when the URL has ?share=<token>, bypassing AuthGate and every bit of
 // Supabase auth machinery entirely (a spectator's visit should never fire
 // an auth listener or session check). Polls get_shared_tournament() every
-// 5min until the tournament's first result lands, then every 45s (see
-// `started` below) — and only touches state (and re-renders) when the
-// row's updated_at actually moved, so an unchanged bracket never visibly
+// 5min until the tournament's first result lands, then every 45s, then
+// stops entirely once the tournament is complete (see `started`/`finished`
+// below) — and only touches state (and re-renders) when the row's
+// updated_at actually moved, so an unchanged bracket never visibly
 // flickers.
 export function SharedTournamentScreen({ token }) {
   const [tournament, setTournament] = useState(null);
@@ -4109,16 +4110,20 @@ export function SharedTournamentScreen({ token }) {
   // Nothing changes on a bracket before its first result, so polling every
   // 45s from the moment the link is opened just burns requests on a page
   // that hasn't moved yet — poll every 5min until tournamentHasStarted()
-  // flips true, then switch to 45s for the rest of the live event. The
-  // effect re-arms (and immediately re-polls) whenever `started` flips.
+  // flips true, then switch to 45s for the rest of the live event, and
+  // stop polling entirely once tournamentIsComplete() — a finished
+  // tournament has nothing left to change. The manual refresh icon still
+  // works after polling stops, in case a score gets corrected post-final.
   const started = tournament ? tournamentHasStarted(tournament) : false;
+  const finished = tournament ? tournamentIsComplete(tournament) : false;
 
   useEffect(() => {
     refresh();
+    if (finished) return;
     const intervalMs = started ? 45 * 1000 : 5 * 60 * 1000;
     const interval = setInterval(refresh, intervalMs);
     return () => clearInterval(interval);
-  }, [refresh, started]);
+  }, [refresh, started, finished]);
 
   if (status === 'loading') return <LoadingScreen />;
   if (status === 'not-found') {
