@@ -611,6 +611,23 @@ function endRangeStats(completedList) {
   return rows;
 }
 
+// Population standard deviation of a session's individual arrow scores — a
+// "how steady, not just how good" measure. Two sessions can share the same
+// average and be very different achievements: one nervy with a wide score
+// spread, one tight and repeatable. Lower stddev = more consistent.
+function scoreStdDevBySession(completedList) {
+  return completedList
+    .slice()
+    .sort((a, b) => new Date(a.completedAt) - new Date(b.completedAt))
+    .map(e => {
+      const scores = flattenArrows(e).map(a => a.score);
+      if (scores.length < 2) return { label: formatDateShort(e.completedAt), stddev: null };
+      const mean = scores.reduce((s, v) => s + v, 0) / scores.length;
+      const variance = scores.reduce((s, v) => s + (v - mean) ** 2, 0) / scores.length;
+      return { label: formatDateShort(e.completedAt), stddev: Math.sqrt(variance) };
+    });
+}
+
 function dispersionTrend(completedList) {
   return completedList
     .slice()
