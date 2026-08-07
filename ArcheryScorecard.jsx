@@ -3127,6 +3127,24 @@ function matchRefHasParticipant(tournament, ref, participantId) {
   return resolved.match.slotA?.id === participantId || resolved.match.slotB?.id === participantId;
 }
 
+// Order-insensitive per-unit, per-side comparison: two participants
+// independently recalling the same end don't always list the arrows in
+// the same order (e.g. "10-9-8" vs "10-8-9" are the same end), so this
+// sorts each side's arrows numerically before comparing rather than
+// requiring the arrays to match element-for-element. totalA/totalB/spA/spB
+// are sums derived from the arrows, so they agree automatically whenever
+// the arrows do — no need to compare them separately.
+function unitsMatch(unitsA, unitsB) {
+  if (!Array.isArray(unitsA) || !Array.isArray(unitsB) || unitsA.length !== unitsB.length) return false;
+  const sortNums = arr => [...(arr || [])].sort((x, y) => x - y);
+  return unitsA.every((ua, i) => {
+    const ub = unitsB[i];
+    if (!ub) return false;
+    return JSON.stringify(sortNums(ua.arrowsA)) === JSON.stringify(sortNums(ub.arrowsA))
+        && JSON.stringify(sortNums(ua.arrowsB)) === JSON.stringify(sortNums(ub.arrowsB));
+  });
+}
+
 const PLAYABLE_MATCH_STATUSES = new Set(['pending', 'in_progress', 'shootoff']);
 function isRefPlayable(tournament, ref) {
   if (ref.kind === 'threeFinal') {
@@ -5142,6 +5160,50 @@ export default function ArcheryScorecard() {
     setTournaments(prev => prev.filter(t => t.id !== id));
     if (userId) deleteTournamentRemote(id).then(ok => flagSaveError(ok, 'Impossibile eliminare il torneo online: verrà ritentato da solo appena torna la connessione.'));
   }, [userId, flagSaveError]);
+
+  // Participants write their own match submissions directly via the
+  // submit_participant_match RPC — they have no Supabase Auth session of
+  // their own, so that write bypasses this app's local state entirely.
+  // While a tournament is open here, poll its own row every 30s for
+  // pendingSubmissions a participant may have added, and once both sides
+  // of a match agree (see unitsMatch above), apply the result through the
+  // exact same applyMatchResult() the organizer's own manual scoring uses
+  // — this is the only place bracket-shape knowledge lives, so it's
+  // reused rather than taught to SQL a second time.
+  const lastPendingJsonRef = useRef('{}');
+  useEffect(() => {
+    if (!activeTournament || !userId) return;
+    let cancelled = false;
+
+    async function reconcile() {
+      const { data, error } = await supabase.from('tournaments').select('data').eq('id', activeTournament.id).single();
+      if (cancelled || error) return;
+      const remotePending = data?.data?.pendingSubmissions || {};
+      const remoteJson = JSON.stringify(remotePending);
+      if (remoteJson === lastPendingJsonRef.current) return;
+      lastPendingJsonRef.current = remoteJson;
+      if (Object.keys(remotePending).length === 0) return;
+
+      updateTournament(activeTournament.id, t => {
+        let next = t;
+        const pending = { ...remotePending };
+        for (const [matchKey, submissions] of Object.entries(remotePending)) {
+          const ids = Object.keys(submissions);
+          if (ids.length < 2) continue; // only one side in so far — nothing to reconcile yet
+          const ref = parseRefKey(matchKey);
+          if (!isRefPlayable(next, ref)) { delete pending[matchKey]; continue; }
+          const [subA, subB] = ids.map(id => submissions[id].updatedMatch);
+          if (unitsMatch(subA.units, subB.units)) next = applyMatchResult(next, ref, subA);
+          delete pending[matchKey]; // resolved (applied) or mismatched (discarded) either way
+        }
+        return { ...next, pendingSubmissions: pending };
+      });
+    }
+
+    reconcile();
+    const interval = setInterval(reconcile, 30 * 1000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [activeTournament?.id, userId]);
 
   if (authSession === undefined) return <LoadingScreen />;
   if (passwordRecovery) return <SetNewPasswordScreen onDone={() => setPasswordRecovery(false)} />;
