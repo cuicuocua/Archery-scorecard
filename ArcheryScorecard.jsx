@@ -6,7 +6,7 @@ import {
 import {
   Target, Clock, ChevronLeft, ChevronRight, Plus, Trash2,
   Download, Upload, RotateCcw, Play, Check, StickyNote, LogOut, BarChart3,
-  Swords, Trophy, Users, UserPlus, Shuffle, Minus, RefreshCw, Unlock, Pencil, Share2,
+  Swords, Trophy, Users, UserPlus, Shuffle, Minus, RefreshCw, Unlock, Pencil, Share2, Mail,
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
@@ -3895,6 +3895,54 @@ function ShareTournamentControl({ tournament, onSetShareToken }) {
 }
 
 // Same collapsed-button-expands-to-panel idiom as ShareTournamentControl
+// right above. Unlike the edit-participants-and-rebuild-bracket flow, this
+// only ever sets an `email` field on each participant — it never touches
+// bracket structure, so it works identically before, during, or after the
+// tournament is live, with no tournamentHasStarted gate.
+function ManageParticipantEmailsControl({ tournament, onSetParticipantEmails }) {
+  const [open, setOpen] = useState(false);
+  const [emails, setEmails] = useState(() => Object.fromEntries(tournament.participants.map(p => [p.id, p.email || ''])));
+
+  function save() {
+    onSetParticipantEmails(tournament.participants.map(p => ({ ...p, email: emails[p.id]?.trim() || undefined })));
+    setOpen(false);
+  }
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)}
+        className="rounded-2xl py-3 font-semibold flex items-center justify-center gap-2 min-h-11"
+        style={{ background: T.surface, color: T.textDim, border: `1px solid ${T.border}` }}>
+        <Mail size={16} /> Gestisci email partecipanti
+      </button>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl p-3 flex flex-col gap-2" style={{ background: T.surfaceAlt, border: `1px dashed ${T.border}` }}>
+      <div className="text-xs" style={{ color: T.textDim }}>
+        Un partecipante con email può accedere dal link pubblico e inserire da solo il punteggio del proprio turno.
+      </div>
+      {tournament.participants.map(p => (
+        <div key={p.id} className="flex items-center gap-2">
+          <div className="flex-1 truncate text-sm">{p.name}</div>
+          <input type="email" inputMode="email" aria-label={`Email di ${p.name}`} value={emails[p.id] || ''}
+            onChange={e => setEmails(prev => ({ ...prev, [p.id]: e.target.value }))}
+            placeholder="email@esempio.it" className="w-40 rounded-xl px-3 py-2 text-sm"
+            style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.text }} />
+        </div>
+      ))}
+      <button onClick={save}
+        className="rounded-xl py-2.5 font-semibold flex items-center justify-center gap-2 min-h-11"
+        style={{ background: T.gold, color: GOLD_TEXT }}>
+        Salva
+      </button>
+      <button onClick={() => setOpen(false)} className="text-xs self-center py-1" style={{ color: T.textFaint }}>Chiudi</button>
+    </div>
+  );
+}
+
+// Same collapsed-button-expands-to-panel idiom as ShareTournamentControl
 // right above. Resizes and re-extracts the accent color client-side before
 // ever touching the network — the upload itself is always a small PNG,
 // regardless of what the organizer's phone camera originally produced.
@@ -3974,7 +4022,7 @@ function LogoUpload({ tournament, userId, onSetLogo }) {
   );
 }
 
-function BracketScreen({ tournament, onBack, onOpenMatch, onOpenThreeFinal, onDelete, onEditParticipants, onReset, onSetShareToken, userId, onSetLogo, onSetLancasterWildcard, onClearLancasterWildcard, focusRef }) {
+function BracketScreen({ tournament, onBack, onOpenMatch, onOpenThreeFinal, onDelete, onEditParticipants, onReset, onSetShareToken, onSetParticipantEmails, userId, onSetLogo, onSetLancasterWildcard, onClearLancasterWildcard, focusRef }) {
   const [viewMode, setViewMode] = useState('bracket');
   const started = tournamentHasStarted(tournament);
   const podium = tournamentPodium(tournament);
@@ -4001,6 +4049,7 @@ function BracketScreen({ tournament, onBack, onOpenMatch, onOpenThreeFinal, onDe
       <LogoUpload tournament={tournament} userId={userId} onSetLogo={onSetLogo} />
 
       <ShareTournamentControl tournament={tournament} onSetShareToken={onSetShareToken} />
+      <ManageParticipantEmailsControl tournament={tournament} onSetParticipantEmails={onSetParticipantEmails} />
 
       <PodiumCard podium={podium} />
 
@@ -5049,6 +5098,7 @@ export default function ArcheryScorecard() {
               onEditParticipants={() => setView('tornei-edit')}
               onReset={(finalFormat) => updateTournament(activeTournament.id, t => resetTournamentBracket(t, finalFormat))}
               onSetShareToken={(token) => updateTournament(activeTournament.id, t => ({ ...t, shareToken: token }))}
+              onSetParticipantEmails={(participants) => updateTournament(activeTournament.id, t => ({ ...t, participants }))}
               userId={userId}
               onSetLogo={(logo) => updateTournament(activeTournament.id, t => ({ ...t, ...logo }))}
               onSetLancasterWildcard={(wildcard) => updateTournament(activeTournament.id, t => ({ ...t, finalStage: setLancasterWildcard(t.finalStage, wildcard) }))}
