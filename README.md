@@ -653,3 +653,34 @@ despite correct data reaching them.
   rounds (Finale/Semifinale/Quarti/Ottavi), so a round of 32 fell through
   to the generic "Turno 1" instead of its real name. Added "Sedicesimi di
   finale" (round of 32) and "Trentaduesimi di finale" (round of 64).
+
+## v1.15 additions — Participant self-scoring
+
+Lets a tournament organizer attach an email to any participant (a new
+"Gestisci email partecipanti" panel on the bracket screen — works whether
+or not the tournament has started). That participant can then open the
+existing public share link, tap "Sei un partecipante?", and identify
+themselves with that email + their name to score their own current match
+from their phone — the same arrow-by-arrow entry screen the organizer
+uses, tap-only (no keyboard-scoring mode, which stays an organizer-only
+convenience).
+
+A match only ever updates once **both** participants have independently
+submitted it, and their arrows are compared per unit as a sorted set
+rather than requiring the same entry order (so "10-9-8" and "10-8-9" count
+as the same end). A mismatch clears both submissions silently — the next
+time either participant reopens their link, they just see the entry form
+again. Everything is stored in a new `pendingSubmissions` field alongside
+the tournament's existing data (no schema migration), written by two new
+`security definer` SQL functions (`identify_participant`,
+`submit_participant_match`) that re-derive identity from email+name on
+every call and never touch bracket structure directly — only the
+organizer's own app, which polls for pending submissions every 30s while a
+tournament is open, ever calls `applyMatchResult()` to actually advance
+the bracket. No email is ever sent by the app; the organizer shares the
+link themselves.
+
+The 3-way final (`{ kind: 'threeFinal' }`) is deliberately excluded from
+self-scoring — it renders through a structurally different 3-sided
+component (`ThreeWayFinalScreen`, not `MatchScreen`) and a gold/silver/
+bronze final is realistically always run live by the organizer anyway.
