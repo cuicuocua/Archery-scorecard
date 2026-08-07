@@ -122,11 +122,22 @@ begin
     raise exception 'not a recognized participant';
   end if;
 
+  -- jsonb_set can only auto-create ONE missing key, and only if it's the
+  -- last element of the path — a 3-element path like
+  -- {pendingSubmissions, matchKey, participantId} silently no-ops when
+  -- BOTH pendingSubmissions and matchKey are still missing (a tournament's
+  -- very first submission always hits this). Building the nested object
+  -- explicitly with || and jsonb_build_object means jsonb_set below only
+  -- ever has to create a single top-level key, which it always can.
   update public.tournaments
   set data = jsonb_set(
         coalesce(data, '{}'),
-        array['pendingSubmissions', p_match_key, v_participant_id],
-        p_submission,
+        array['pendingSubmissions'],
+        coalesce(data -> 'pendingSubmissions', '{}'::jsonb) ||
+          jsonb_build_object(p_match_key,
+            coalesce(data -> 'pendingSubmissions' -> p_match_key, '{}'::jsonb) ||
+              jsonb_build_object(v_participant_id, p_submission)
+          ),
         true
       ),
       updated_at = now()

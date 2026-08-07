@@ -3098,6 +3098,35 @@ function flatMatchRefs(tournament) {
   return refs;
 }
 
+// Stable string key for a match ref, used as the pendingSubmissions map
+// key (see participant self-scoring below). Every non-'round' kind is
+// already a unique singleton string, so this is injective across every
+// ref a tournament can produce. Opaque bookkeeping — nothing server-side
+// ever parses or interprets it, only this file's own reconciliation logic
+// does, via parseRefKey below.
+function refKey(ref) {
+  return ref.kind === 'round' ? `round:${ref.roundIdx}:${ref.matchIdx}` : ref.kind;
+}
+
+function parseRefKey(key) {
+  if (key.startsWith('round:')) {
+    const [, roundIdx, matchIdx] = key.split(':');
+    return { kind: 'round', roundIdx: Number(roundIdx), matchIdx: Number(matchIdx) };
+  }
+  return { kind: key };
+}
+
+// threeFinal is deliberately excluded everywhere this is used — its
+// 3-sided ThreeWayFinalScreen doesn't share MatchScreen's slotA/slotB
+// shape, and a gold/silver/bronze final is realistically always run live
+// by the organizer anyway.
+function matchRefHasParticipant(tournament, ref, participantId) {
+  if (ref.kind === 'threeFinal') return false;
+  const resolved = resolveMatchRef(tournament, ref);
+  if (!resolved) return false;
+  return resolved.match.slotA?.id === participantId || resolved.match.slotB?.id === participantId;
+}
+
 const PLAYABLE_MATCH_STATUSES = new Set(['pending', 'in_progress', 'shootoff']);
 function isRefPlayable(tournament, ref) {
   if (ref.kind === 'threeFinal') {
@@ -4116,6 +4145,116 @@ function BracketScreen({ tournament, onBack, onOpenMatch, onOpenThreeFinal, onDe
   );
 }
 
+// Lets a participant the organizer has given an email to identify
+// themselves on the public share page and score their own current match.
+// Reuses the exact MatchScreen the organizer's own app scores with —
+// keyboardScoring is always off here (that's a superuser convenience for
+// the organizer's own device). The only thing that differs from the
+// organizer's own scoring flow is where onComplete's result goes: instead
+// of applying directly to the bracket via applyMatchResult, it's stored as
+// a pending submission via submit_participant_match, and only actually
+// applied once the opponent's own submission is present and matches (see
+// the reconciliation effect in the root component).
+function ParticipantAccess({ tournament, token, onSubmitted }) {
+  const [open, setOpen] = useState(false);
+  const [email, setEmail] = useState('');
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [session, setSession] = useState(null); // { participantId, email, name }
+  const [submitted, setSubmitted] = useState(false);
+  // MatchScreen's onComplete fires after EVERY set, not just the final
+  // one (same as it does for the organizer's own scoring, where each call
+  // round-trips through applyMatchResult and re-renders with the updated
+  // match). There's no server-side bracket write to round-trip through
+  // here, so this local state plays that role instead — fed back into
+  // MatchScreen as `match` so unit-by-unit progress keeps advancing until
+  // the match actually reaches 'completed'.
+  const [liveMatch, setLiveMatch] = useState(null);
+
+  async function identify() {
+    setBusy(true);
+    setError('');
+    const { data, error: rpcError } = await supabase.rpc('identify_participant', {
+      p_token: token, p_email: email.trim(), p_name: name.trim(),
+    });
+    setBusy(false);
+    if (rpcError || !data || data.length === 0) {
+      setError('Email o nome non riconosciuti. Controlla con l’organizzatore.');
+      return;
+    }
+    setSession({ participantId: data[0].participant_id, email: email.trim(), name: name.trim() });
+  }
+
+  async function handleComplete(updatedMatch, matchKey) {
+    setLiveMatch(updatedMatch);
+    if (updatedMatch.status !== 'completed') return; // more sets to go
+    await supabase.rpc('submit_participant_match', {
+      p_token: token, p_email: session.email, p_name: session.name,
+      p_match_key: matchKey, p_submission: { updatedMatch, submittedAt: new Date().toISOString() },
+    });
+    setSubmitted(true);
+    onSubmitted?.();
+  }
+
+  if (!session) {
+    if (!open) {
+      return (
+        <button onClick={() => setOpen(true)}
+          className="rounded-2xl py-3 font-semibold flex items-center justify-center gap-2 min-h-11"
+          style={{ background: T.surface, color: T.textDim, border: `1px solid ${T.border}` }}>
+          <Mail size={16} /> Sei un partecipante?
+        </button>
+      );
+    }
+    return (
+      <div className="rounded-2xl p-3 flex flex-col gap-2" style={{ background: T.surfaceAlt, border: `1px dashed ${T.border}` }}>
+        <div className="text-xs" style={{ color: T.textDim }}>
+          Inserisci la tua email e il tuo nome per inserire il punteggio del tuo turno.
+        </div>
+        <input type="email" inputMode="email" autoComplete="email" aria-label="Email" value={email} onChange={e => setEmail(e.target.value)}
+          placeholder="La tua email" className="rounded-xl px-3 py-2.5"
+          style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.text }} />
+        <input aria-label="Nome" value={name} onChange={e => setName(e.target.value)}
+          placeholder="Il tuo nome" className="rounded-xl px-3 py-2.5"
+          style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.text }} />
+        {error && <div className="text-xs" style={{ color: T.red }}>{error}</div>}
+        <button onClick={identify} disabled={!email.trim() || !name.trim() || busy}
+          className="rounded-xl py-2.5 font-semibold flex items-center justify-center gap-2 min-h-11 disabled:opacity-40"
+          style={{ background: T.gold, color: GOLD_TEXT }}>
+          Accedi
+        </button>
+        <button onClick={() => setOpen(false)} className="text-xs self-center py-1" style={{ color: T.textFaint }}>Chiudi</button>
+      </div>
+    );
+  }
+
+  const candidateRefs = flatMatchRefs(tournament).filter(r => r.kind !== 'threeFinal');
+  const ref = candidateRefs.find(r => isRefPlayable(tournament, r) && matchRefHasParticipant(tournament, r, session.participantId));
+  const matchKey = ref ? refKey(ref) : null;
+  const alreadyPending = matchKey && tournament.pendingSubmissions?.[matchKey]?.[session.participantId];
+
+  if (ref && !alreadyPending && !submitted) {
+    const resolved = resolveMatchRef(tournament, ref);
+    return (
+      <MatchScreen match={liveMatch || resolved.match} title={resolved.title} formatId={tournament.formatId} keyboardScoring={false}
+        onBack={() => { setSession(null); setLiveMatch(null); }}
+        onComplete={(updatedMatch) => handleComplete(updatedMatch, matchKey)} />
+    );
+  }
+
+  return (
+    <div className="rounded-2xl p-3 flex flex-col gap-2 items-center text-center" style={{ background: T.surfaceAlt, border: `1px dashed ${T.border}` }}>
+      <div className="text-sm" style={{ color: T.textDim }}>
+        {(alreadyPending || submitted)
+          ? 'Punteggio inviato. In attesa che anche l’avversario invii il proprio.'
+          : 'Nessun turno da giocare al momento.'}
+      </div>
+      <button onClick={() => setSession(null)} className="text-xs py-1" style={{ color: T.textFaint }}>Torna al tabellone</button>
+    </div>
+  );
+}
+
 // Public, no-login view of a tournament — mounted directly by entry.jsx
 // when the URL has ?share=<token>, bypassing AuthGate and every bit of
 // Supabase auth machinery entirely (a spectator's visit should never fire
@@ -4207,6 +4346,8 @@ export function SharedTournamentScreen({ token }) {
           Ultimo aggiornamento: {new Date(lastUpdatedAt).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}
         </div>
       )}
+
+      <ParticipantAccess tournament={tournament} token={token} onSubmitted={refresh} />
 
       <PodiumCard podium={podium} accentColor={accentColor} />
 
