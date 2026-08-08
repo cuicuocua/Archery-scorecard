@@ -149,5 +149,28 @@ check('lancaster n=3 leaves no ladder slot that reads as a competitor',
   })(),
   'expected sides[3] to be absent so the wildcard control can bail out');
 
+// A participant submission is replayed onto the bracket's own match, so the
+// only thing taken from it is the arrow scores. Two participants agreeing
+// on every arrow while claiming the wrong winner must not decide the match.
+{
+  const participants = Array.from({ length: 2 }, (_, i) => ({ id: `p${i}`, name: `P${i}`, seedScore: 600 - i }));
+  const t = E.createTournament({ name: 'T', date: '2026-01-01', distanceM: 70, faceCm: 122, formatId: 'individual', participants, finalFormat: 'standard' });
+  const real = t.rounds[0][0];
+  const honest = playMatch(real);            // A outscores B every set
+  const forged = { ...honest, winnerSlot: 'B', slotA: { id: 'x', name: 'Impostor' } };
+
+  check('a forged verdict does not survive replay',
+    (() => {
+      if (!E.unitsMatch(honest.units, forged.units)) return false;  // arrows agree, as they would
+      const rebuilt = E.rebuildMatchFromUnits(real, fd, forged.units);
+      return rebuilt.winnerSlot === 'A' && rebuilt.slotA.id === real.slotA.id;
+    })(),
+    'the submitted winnerSlot/slots leaked into the bracket');
+
+  check('a submission with out-of-range arrows is rejected outright',
+    E.rebuildMatchFromUnits(real, fd, [{ arrowsA: [10, 10, 99], arrowsB: [9, 9, 9] }]) === null,
+    'a 99-point arrow was accepted');
+}
+
 assert.equal(failures, 0, `${failures} engine check(s) failed`);
 console.log('\nall engine checks passed');

@@ -31,6 +31,11 @@ import { createClient } from '@supabase/supabase-js';
  *    red, blue, blue, black, black, white, white (as specified). Compound's
  *    WA rule of only scoring the inner 5-10 ("compound face") is NOT
  *    modelled — all bow types score the full 10-zone face here.
+ *  - Tapping the target face scores the arrow as a POINT at the tap
+ *    position (see scoreFromRadiusUnits). Real scoring gives a line-cutting
+ *    arrow the higher ring, so a tapped arrow sitting on a boundary can
+ *    score one lower than the same arrow would on paper. Enter the called
+ *    score on the keypad when it matters; the face is for group shape.
  */
 
 // Every round definition is a list of "stages" — most rounds are a single
@@ -141,7 +146,18 @@ function emptyConditions() { return { wind: null, timeOfDay: null, sun: null, ta
 // Personal-best / pace comparisons and the deeper analysis charts are scoped
 // per round + arco + tipo — a gara score and an allenamento score aren't the
 // same achievement, and neither are a recurve group and a compound group.
+
+// How many completed sessions a round+arco+tipo combination needs before the
+// "Analisi avanzata" block appears at all.
 const MIN_SESSIONS_FOR_DEEP_ANALYSIS = 5;
+
+// ...and how many a SINGLE condition bucket needs before it gets a bar of
+// its own. These answer different questions and the first can't stand in for
+// the second: at the 5-session minimum, spread across four wind levels,
+// buckets of one are normal — and a one-session bar looks exactly as
+// authoritative as a ten-session one. Sub-threshold buckets are withheld
+// and counted, rather than charted with a caveat nobody reads.
+const MIN_SESSIONS_PER_CONDITION = 3;
 
 const T = {
   bg: '#14161A',
@@ -548,6 +564,10 @@ function describeBias(cxCm, cyCm) {
 // Sentence 2 ("detail"): whichever signal is most notable, in priority
 // order — group bias, in-session fatigue (first half vs second half),
 // misses, then gold rate. Omitted if nothing stands out.
+//
+// Everything here reports what happened; nothing attributes a cause. The
+// archer knows what they changed today and this function doesn't, so a
+// confident wrong explanation is worse for them than a bare observation.
 function sessionInsight(session, allSessions) {
   const entries = stageEntries(allSessions);
   let baselineSum = 0, baselineArrows = 0;
@@ -602,16 +622,39 @@ function sessionInsight(session, allSessions) {
   const secondAvg = secondHalfArrows.length ? secondHalfArrows.reduce((s, a) => s + a.score, 0) / secondHalfArrows.length : null;
   const fatigueDelta = firstAvg != null && secondAvg != null ? secondAvg - firstAvg : null;
 
+  // A half-to-half difference has to clear this session's OWN noise before
+  // it means anything. The old test was a flat 0.4 points with no dispersion
+  // term: for a typical per-arrow spread that sits barely over one standard
+  // error of the difference, so a perfectly steady archer tripped the
+  // "affaticamento" or "buona ripresa" line a large fraction of the time.
+  // Two standard errors, with a 0.4 floor so a freakishly tight session
+  // can't call a trivial wobble significant either.
+  const stageArrows = flattenArrows(mainStage).map(a => a.score);
+  const stageMean = stageArrows.length ? stageArrows.reduce((s, v) => s + v, 0) / stageArrows.length : 0;
+  const stageSd = stageArrows.length > 1
+    ? Math.sqrt(stageArrows.reduce((s, v) => s + (v - stageMean) ** 2, 0) / stageArrows.length)
+    : 0;
+  const halfSe = (firstHalfArrows.length && secondHalfArrows.length)
+    ? stageSd * Math.sqrt(1 / firstHalfArrows.length + 1 / secondHalfArrows.length)
+    : Infinity;
+  const fatigueThreshold = Math.max(0.4, 2 * halfSe);
+
   const arrows = sessionFlattenArrows(session);
   const misses = arrows.filter(a => a.score === 0).length;
   const golds = arrows.filter(a => a.score === 10).length;
   const goldRate = arrows.length ? golds / arrows.length : 0;
 
   if (group && Math.sqrt(group.cxCm ** 2 + group.cyCm ** 2) >= 1.5) {
-    sentences.push(`Gruppo spostato ${describeBias(group.cxCm, group.cyCm)} — attenzione al rilascio.`);
-  } else if (fatigueDelta != null && fatigueDelta <= -0.4) {
+    // Reports the offset and stops there. It used to add "attenzione al
+    // rilascio", which is a diagnosis the data cannot support — a group
+    // that sits consistently off centre is more often a sight setting than
+    // a release fault, and stance, anchor, spine and wind all move it too.
+    // This is the only line in the app that tells the archer what to change
+    // about their technique, so it is the last one that should guess.
+    sentences.push(`Gruppo spostato ${describeBias(group.cxCm, group.cyCm)} rispetto al centro del bersaglio.`);
+  } else if (fatigueDelta != null && fatigueDelta <= -fatigueThreshold) {
     sentences.push('Punteggio in calo nella seconda parte: possibile affaticamento.');
-  } else if (fatigueDelta != null && fatigueDelta >= 0.4) {
+  } else if (fatigueDelta != null && fatigueDelta >= fatigueThreshold) {
     sentences.push('Partenza più lenta ma buona ripresa nella seconda parte.');
   } else if (misses > 0) {
     sentences.push(`${misses} frecc${misses === 1 ? 'ia' : 'e'} a vuoto da recuperare.`);
@@ -720,7 +763,7 @@ function scoreByCondition(completedList, dimension) {
   });
   return dim.options
     .map(o => ({ key: o.label, avg: buckets[o.id].arrows ? buckets[o.id].sum / buckets[o.id].arrows : 0, count: buckets[o.id].sessions }))
-    .filter(r => r.count > 0);
+    .filter(r => r.count >= MIN_SESSIONS_PER_CONDITION);
 }
 
 function bowLabel(bowType) {
@@ -986,9 +1029,17 @@ function LoadingScreen() {
   return <div className="min-h-screen flex items-center justify-center" style={{ background: T.bg, color: T.textDim }}>Caricamento…</div>;
 }
 
-// Email + password. Avoids relying on Supabase's email delivery (unreliable
-// on the free tier without custom SMTP) — nothing gets sent, so nothing
-// can fail to send.
+// Email + password. Sign-in and sign-up deliberately send nothing: no
+// confirmation mail, no magic link, so neither can be blocked by Supabase's
+// free-tier email delivery (unreliable without custom SMTP).
+//
+// Password recovery is the one exception and it does depend on that
+// channel — it was added later, and inherited exactly the dependency the
+// rest of this screen is built to avoid. resetPasswordForEmail resolves
+// once Supabase has ACCEPTED the request, not once the mail arrives, so
+// there is nothing to check here and the confirmation below has to say so
+// rather than promise delivery. If recovery turns out to matter on a
+// competition morning, custom SMTP is the fix, not more code here.
 function AuthGate() {
   const [mode, setMode] = useState('signin'); // 'signin' | 'signup' | 'reset'
   const [email, setEmail] = useState('');
@@ -1036,7 +1087,9 @@ function AuthGate() {
           <Target size={40} color={T.gold} />
           <h1 className="text-xl font-bold">Recupera password</h1>
           <div className="text-sm max-w-xs" style={{ color: T.textDim }}>
-            {resetSent ? 'Controlla la tua email per il link di reimpostazione.' : 'Ti mandiamo un link per reimpostare la password'}
+            {resetSent
+              ? 'Richiesta inviata. Se non trovi il link entro qualche minuto, controlla lo spam: la consegna delle email non è garantita. In quel caso scrivi all’organizzatore.'
+              : 'Ti mandiamo un link per reimpostare la password'}
           </div>
         </div>
 
@@ -2104,6 +2157,18 @@ const RING_GROUP_ORDER = ['gold', 'red', 'blue', 'black', 'white', 'miss'];
 // Percentage of every arrow ever shot landing in each ring-colour group —
 // derived straight from score via ringGroupForScore, so it works for
 // keypad-entered arrows too (no x/y position needed).
+//
+// That makes the chart WORK for both input methods; it does not make the
+// two methods equivalent, and this pools them. A keypad arrow carries the
+// score that was called on the target face, line-cutters rounded up as
+// FITARCO/WA require. A face-tapped arrow is scored by scoreFromRadiusUnits
+// from the tap alone, which models the arrow as a dimensionless point and
+// so can only ever round DOWN at a ring boundary. Face-tapped rounds
+// therefore read very slightly low against keypad rounds, and a trend line
+// here can move because the input method changed rather than the shooting.
+// Not corrected on purpose: applying a shaft width now would silently
+// rescore future sessions against every past one, which is the same
+// discontinuity by another route.
 function hitRateByColor(entries) {
   const counts = {};
   RING_GROUP_ORDER.forEach(k => (counts[k] = 0));
@@ -2143,9 +2208,19 @@ function colorTrendByShape(completedList) {
 // One row per distinct round shape ever shot: personal best, average, and
 // how many times — the cumulative counterpart to Storico's per-round PB tile.
 // Both best and avg are per-arrow (not raw totals): roundShapeKey() groups
-// by distance+face only now, so a group can mix sessions with different
-// arrow counts (e.g. a 72-arrow Targa 70m and a 36-arrow WA1440 stage) —
-// comparing raw totals would unfairly favor whichever had more arrows.
+// by distance+face only, so a group can mix sessions with different arrow
+// counts (e.g. a 72-arrow Targa 70m and a 36-arrow WA1440 stage), and
+// comparing raw totals would simply reward whichever had more arrows.
+//
+// Per-arrow removes that, but it does NOT make the two lengths equivalent,
+// and this used to claim it did. Points per arrow is only length-independent
+// if fatigue isn't real — and this app charts fatigue as a feature
+// (endRangeStats, and sessionInsight's "calo nella seconda parte"), so by
+// its own account a 72-arrow average has more of its arrows in the tired
+// half. `mixedLengths` marks a group where that caveat is live, so the
+// number is read with it rather than instead of it. findPersonalBest takes
+// the stricter line and won't cross lengths at all, because pace compares
+// the two cumulative curves arrow by arrow.
 function bestByShape(entries) {
   const map = new Map();
   entries.forEach(e => {
@@ -2162,6 +2237,7 @@ function bestByShape(entries) {
         count: es.length,
         best: Math.max(...es.map(e => totalScore(e) / arrowsShotCount(e))),
         avg: totalArrows ? totalPoints / totalArrows : 0,
+        mixedLengths: new Set(es.map(e => e.round.arrowsPerEnd * e.round.ends)).size > 1,
       };
     })
     .sort((a, b) => b.round.distanceM - a.round.distanceM || b.round.faceCm - a.round.faceCm);
@@ -2269,7 +2345,14 @@ function StatisticheScreen({ sessions }) {
                 style={{ background: active ? T.surfaceAlt : T.surface, border: `1px solid ${active ? T.gold : T.border}` }}>
                 <div className="min-w-0">
                   <div className="font-semibold truncate">{roundShapeLabel(row.round)}</div>
-                  <div className="text-xs" style={{ color: T.textDim }}>media {row.avg.toFixed(2)}/freccia · {row.count} sessioni</div>
+                  <div className="text-xs" style={{ color: T.textDim }}>
+                    media {row.avg.toFixed(2)}/freccia · {row.count} sessioni
+                    {/* Same distance and face, different round lengths — the
+                        per-arrow average pools them, which is fair on volume
+                        but not on fatigue. Said out loud rather than hidden
+                        behind the arithmetic. */}
+                    {row.mixedLengths && <span style={{ color: T.textFaint }}> · lunghezze diverse</span>}
+                  </div>
                 </div>
                 <div className="text-right shrink-0">
                   <div className="text-lg font-bold" style={numeralStyle}>{row.best.toFixed(2)}</div>
@@ -2456,7 +2539,9 @@ function StatisticheScreen({ sessions }) {
                 <div className="rounded-2xl p-3 flex flex-col gap-2" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
                   <div>
                     <div className="text-sm font-semibold" style={{ color: T.textDim }}>Media per condizioni</div>
-                    <div className="text-xs" style={{ color: T.textFaint }}>Media punti/freccia per ogni condizione registrata</div>
+                    <div className="text-xs" style={{ color: T.textFaint }}>
+                      Media punti/freccia per ogni condizione con almeno {MIN_SESSIONS_PER_CONDITION} sessioni
+                    </div>
                   </div>
                   <div className="overflow-x-auto pb-1">
                     <SegmentedControl options={CONDITION_DIMENSIONS} value={conditionDim} onChange={setConditionDim} small />
@@ -2473,7 +2558,7 @@ function StatisticheScreen({ sessions }) {
                           <Bar dataKey="avg" fill={T.blue} radius={[3, 3, 0, 0]} isAnimationActive={false} />
                         </BarChart>
                       </ResponsiveContainer>
-                    ) : <EmptyChart text="Nessuna condizione registrata per queste sessioni ancora" />}
+                    ) : <EmptyChart text={`Nessuna condizione ha ancora ${MIN_SESSIONS_PER_CONDITION} sessioni registrate: continua a segnare vento, sole e momento della giornata.`} />}
                   </div>
                 </div>
               </>
@@ -3277,14 +3362,25 @@ function resizeToCanvas(img, maxEdge) {
   return canvas;
 }
 
-// Averages only the "colorful" pixels — filters out near-white, near-black,
-// and low-saturation ones a plain average would get dragged toward (usually
-// a logo's background, not its actual mark) — so the result reads as
-// roughly "the logo's color" instead of a washed-out gray.
+// Picks the logo's dominant colour: keep only the "colorful" pixels (drop
+// near-white, near-black and low-saturation ones, which are usually
+// background rather than the mark), bucket those by hue, and average within
+// the single most populous bucket.
+//
+// Averaging ALL the colourful pixels together — what this did originally —
+// only works for a single-hue logo. Given a two-colour club crest, red and
+// blue average to a muddy purple that appears nowhere in the image, and
+// the saturation filter makes that worse rather than better by removing the
+// neutrals that would at least have kept the result plausible. Taking the
+// most common hue instead guarantees the accent is a colour the logo
+// actually contains.
+const ACCENT_HUE_BUCKETS = 24; // 15° each
+
 function extractAccentColor(canvas) {
   const { width, height } = canvas;
   const { data } = canvas.getContext('2d').getImageData(0, 0, width, height);
-  let rSum = 0, gSum = 0, bSum = 0, count = 0;
+  const bins = Array.from({ length: ACCENT_HUE_BUCKETS }, () => ({ r: 0, g: 0, b: 0, n: 0 }));
+
   for (let i = 0; i < data.length; i += 4) {
     const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
     if (a < 128) continue;
@@ -3294,11 +3390,19 @@ function extractAccentColor(canvas) {
     const delta = max - min;
     const saturation = delta === 0 ? 0 : delta / (1 - Math.abs(2 * lightness - 1));
     if (saturation < 0.15 || lightness < 0.12 || lightness > 0.9) continue;
-    rSum += r; gSum += g; bSum += b; count++;
+    // delta > 0 here, since saturation 0 was filtered out just above.
+    let hue = max === rn ? ((gn - bn) / delta) % 6
+      : max === gn ? (bn - rn) / delta + 2
+        : (rn - gn) / delta + 4;
+    hue = ((hue * 60) + 360) % 360;
+    const bin = bins[Math.min(ACCENT_HUE_BUCKETS - 1, Math.floor(hue / (360 / ACCENT_HUE_BUCKETS)))];
+    bin.r += r; bin.g += g; bin.b += b; bin.n++;
   }
-  if (count === 0) return null;
-  const toHex = v => Math.round(v / count).toString(16).padStart(2, '0');
-  return `#${toHex(rSum)}${toHex(gSum)}${toHex(bSum)}`;
+
+  const best = bins.reduce((a, b) => (b.n > a.n ? b : a));
+  if (!best.n) return null;
+  const toHex = v => Math.round(v / best.n).toString(16).padStart(2, '0');
+  return `#${toHex(best.r)}${toHex(best.g)}${toHex(best.b)}`;
 }
 
 function relativeLuminance(hex) {
@@ -3405,6 +3509,34 @@ function matchRefHasParticipant(tournament, ref, participantId) {
 // requiring the arrays to match element-for-element. totalA/totalB/spA/spB
 // are sums derived from the arrows, so they agree automatically whenever
 // the arrows do — no need to compare them separately.
+// Replays an agreed set of unit scores onto the bracket's OWN match object.
+//
+// unitsMatch below establishes that two submissions agree on the arrows —
+// and that totals and set points, being sums of those arrows, therefore
+// agree too. That is true, and it used to be taken as licence to apply one
+// participant's whole match object to the bracket. It isn't: winnerSlot,
+// status, slotA/slotB, shootOff and forfeit are not derived from the
+// arrows, so two people could agree on every arrow while submitting
+// different verdicts on who won — and the first one in would stand.
+//
+// Re-deriving from the real match means nothing a participant sends is
+// trusted except the arrow scores themselves, and those are range-checked
+// here. Returns null if the submission isn't replayable, in which case the
+// caller discards it rather than guessing.
+function rebuildMatchFromUnits(match, formatDef, units) {
+  if (!Array.isArray(units) || units.length === 0) return null;
+  const valid = arr => Array.isArray(arr) && arr.length > 0 &&
+    arr.every(v => Number.isFinite(v) && v >= 0 && v <= 10);
+  let m = match;
+  for (let i = 0; i < units.length; i++) {
+    const u = units[i];
+    if (!u || !valid(u.arrowsA) || !valid(u.arrowsB)) return null;
+    m = recordUnit(m, formatDef, i, 'A', u.arrowsA);
+    m = recordUnit(m, formatDef, i, 'B', u.arrowsB);
+  }
+  return m;
+}
+
 function unitsMatch(unitsA, unitsB) {
   if (!Array.isArray(unitsA) || !Array.isArray(unitsB) || unitsA.length !== unitsB.length) return false;
   const sortNums = arr => [...(arr || [])].sort((x, y) => x - y);
@@ -5179,6 +5311,7 @@ export const __engine = {
   createTournament, buildBracket, flatMatchRefs, isRefPlayable, resolveMatchRef,
   applyMatchResult, recordUnit, record3WayUnit, applyThreeWayRunoffUpdate,
   matchFormatDef, arrowsPerUnit, tournamentIsComplete, tournamentPodium, winnerOf, loserOf,
+  rebuildMatchFromUnits, unitsMatch,
 };
 
 // ---------- root ----------
@@ -5414,7 +5547,14 @@ export default function ArcheryScorecard() {
           const ref = parseRefKey(matchKey);
           if (!isRefPlayable(next, ref)) { delete pending[matchKey]; continue; }
           const [subA, subB] = ids.map(id => submissions[id].updatedMatch);
-          if (unitsMatch(subA.units, subB.units)) next = applyMatchResult(next, ref, subA);
+          if (unitsMatch(subA?.units, subB?.units)) {
+            // Replay the agreed arrows onto the bracket's own match rather
+            // than applying the object a participant sent — see
+            // rebuildMatchFromUnits. A submission that won't replay is
+            // dropped along with the mismatched ones below.
+            const rebuilt = rebuildMatchFromUnits(resolveMatchRef(next, ref).match, matchFormatDef(next.formatId), subA.units);
+            if (rebuilt) next = applyMatchResult(next, ref, rebuilt);
+          }
           delete pending[matchKey]; // resolved (applied) or mismatched (discarded) either way
         }
         return { ...next, pendingSubmissions: pending };

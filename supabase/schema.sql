@@ -56,6 +56,15 @@ create policy "delete own tournaments" on public.tournaments
 -- a table-level policy, a parameterized function can never be used to
 -- enumerate every shared tournament: it only ever returns the one row
 -- whose token exactly matches what the caller already has.
+-- The function below reasons about "the one row whose token matches". That
+-- was an assumption, not a guarantee: nothing stopped two rows carrying the
+-- same token, and `limit 1` with no ordering would then return an arbitrary
+-- one. crypto.randomUUID() makes a collision vanishingly unlikely, but an
+-- invariant a comment relies on should be enforced by the schema.
+create unique index if not exists tournaments_share_token_idx
+  on public.tournaments ((data ->> 'shareToken'))
+  where data ->> 'shareToken' is not null;
+
 create or replace function public.get_shared_tournament(p_token text)
 returns table(data jsonb, updated_at timestamptz)
 language sql

@@ -15,9 +15,13 @@ email + password and your sessions follow you to any device. Schema in
 `supabase/schema.sql`; the project URL and publishable ("anon") key are
 inlined near the top of `ArcheryScorecard.jsx` — that key is meant to be
 public, security comes from the RLS policies in the schema, not from
-hiding it. Every write also goes through a localStorage outbox first (see
-"Offline-resilient saves" below), so Supabase stays the source of truth
-but a save made without connectivity isn't lost.
+hiding it. Every write you make while signed in also goes through a
+per-account localStorage outbox first (see "Offline-resilient saves"
+below), so Supabase stays the source of truth but a save made without
+connectivity isn't lost. The one write that doesn't is a participant
+submitting their own match score from a public share link — they have no
+account and no outbox, so that one needs connectivity at the moment they
+send it.
 
 The app installs as an offline-capable PWA (`site/sw.js` — see v1.18 below):
 the app shell still opens with no connectivity, and cross-device sync is
