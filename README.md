@@ -83,10 +83,10 @@ as JSON, meant to seed the future offline app.
 
 ## v1.1 additions
 
-- **Zoom recentring**: at 2×/4× on the shooting face, the crop follows the
-  centroid of the last 3 volée instead of always centring on the
-  bullseye, so a group that's drifted off-centre stays visible and
-  tappable at high zoom.
+- **Zoom recentring**: at 2×/4× on the shooting face, the crop followed the
+  centroid of the last 3 volée instead of always centring on the bullseye,
+  so a group that's drifted off-centre stayed visible and tappable at high
+  zoom. Reverted in v1.17 — see below.
 - **Group-size trace**: the live crosshair now draws a dashed circle at
   the group's actual radius (furthest arrow from centroid), not just a
   centre point. It renders behind the arrow marks so a tight group is
@@ -706,3 +706,33 @@ bronze final is realistically always run live by the organizer anyway.
   face size entirely — now takes `faceCm` and returns a miss instead of a
   1-4 score for a tap landing in that band. 40/60/122cm faces are
   unaffected; nothing changes for existing recorded arrows, only new taps.
+
+## v1.17 additions
+
+- **Zoom always crops around the target's true center**: reverts the v1.1
+  "zoom recentring" behavior, which followed the last-3-volée group's
+  centroid at 2×/4× instead of the bullseye. A scorer zooming in expects
+  "the middle of the target" to mean the actual center, not wherever their
+  group happens to be — `TargetFace`'s `focus` prop is gone; the viewBox is
+  now always `[-half, -half, half*2, half*2]` regardless of zoom or group
+  position. The group-centroid crosshair/dashed-radius indicator (driven
+  separately by the `centroid` prop) is unchanged — only the zoom crop
+  itself stopped following it.
+- **Confirm a full volée before it locks in**: `ShootingScreen` used to
+  write each arrow straight into session state (and sync it to Supabase)
+  the instant it was tapped, so the moment the last arrow of an end landed,
+  the screen had already silently advanced to the next (empty) one — there
+  was no way to tell what that last arrow actually scored without digging
+  back through history. Arrows for the end in progress are now buffered
+  locally (`pending`) and only committed via a new "Conferma volée" button
+  (disabled until the end has its full arrow count, mirroring the
+  tournament match screen's "Conferma set"), so the full end — sorted
+  chips, running total — stays on screen for review before it's locked in
+  and saved. `EndChips`, `TargetFace`'s points, and every live stat
+  (total/media/proiezione/ritmo PB/gruppo) read off a `displayStage` that
+  overlays `pending` on the real stage, so they still update live as you
+  score, exactly as before — only the actual write to session state (and
+  the advance to the next end) now waits for the explicit confirm tap.
+  "Annulla" pops the still-unconfirmed end first (a free local edit, since
+  nothing's saved yet) before falling through to reopening the last
+  *confirmed* end, same as it already did.

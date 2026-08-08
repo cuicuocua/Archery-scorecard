@@ -1100,16 +1100,16 @@ function SetNewPasswordScreen({ onDone }) {
 
 // ---------- target face ----------
 
-function TargetFace({ faceCm, zoom = 1, interactive = false, onTap, points = [], centroid = null, dense = false, focus = null }) {
+function TargetFace({ faceCm, zoom = 1, interactive = false, onTap, points = [], centroid = null, dense = false }) {
   const svgRef = useRef(null);
   const margin = interactive && zoom === 1 ? 15 : 0;
   const half = FACE_R / zoom + margin;
-  // When zoomed in, recenter the crop on where the group actually is (not
-  // always the bullseye) so a group that has drifted off-centre stays
-  // visible and tappable at high zoom instead of being cropped out.
-  const focusX = zoom > 1 && focus ? focus.x * FACE_R : 0;
-  const focusY = zoom > 1 && focus ? focus.y * FACE_R : 0;
-  const vb = `${focusX - half} ${focusY - half} ${half * 2} ${half * 2}`;
+  // Zoom always crops around the target's true center (the bullseye), not
+  // wherever the current group happens to be — a zoomed-in view should show
+  // "the middle of the target," which is what a scorer expects the crop to
+  // mean, even if that means a group that's drifted off-center runs closer
+  // to the edge of the zoomed crop.
+  const vb = `${-half} ${-half} ${half * 2} ${half * 2}`;
   const groupRadius = centroid && centroid.maxRadiusCm != null && centroid.maxRadiusCm > 0
     ? (centroid.maxRadiusCm / (faceCm / 2)) * FACE_R
     : null;
@@ -1396,6 +1396,12 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
   const [mode, setMode] = useState('face');
   const [zoom, setZoom] = useState(1);
   const [noteOpen, setNoteOpen] = useState(false);
+  // The end currently being shot is buffered locally, not written into
+  // session state arrow-by-arrow — there's no telling what the last arrow
+  // of an end actually was from the target face alone (colors are close,
+  // chips are small), so the whole end needs a confirm step before it
+  // locks in and the screen moves on to the next one. See confirmEnd().
+  const [pending, setPending] = useState([]);
 
   const isComplete = session.status === 'completed';
   const stageIdx = activeStageIndex(session);
@@ -1403,34 +1409,47 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
   const round = stage.round;
   const multiStage = session.stages.length > 1;
   const endIdx = currentEndIndex(stage);
-  const currentEnd = stage.ends[endIdx];
-  const ghostArrows = useMemo(() => stage.ends.slice(0, endIdx).flatMap(e => e.arrows), [stage, endIdx]);
+  // stage.ends[endIdx] only gains arrows once confirmEnd() commits them —
+  // except when it's been reopened by undoing back into an already-scored
+  // end (see handleUndo), in which case it can already hold some confirmed
+  // arrows. Either way, `pending` is what's still unconfirmed on top of
+  // whatever's already there, so the display view is the two concatenated.
+  const currentEnd = useMemo(
+    () => ({ ...stage.ends[endIdx], arrows: [...stage.ends[endIdx].arrows, ...pending] }),
+    [stage, endIdx, pending]);
+  const displayStage = useMemo(
+    () => ({ ...stage, ends: stage.ends.map((e, i) => (i === endIdx ? currentEnd : e)) }),
+    [stage, endIdx, currentEnd]);
+  const ghostArrows = useMemo(() => displayStage.ends.slice(0, endIdx).flatMap(e => e.arrows), [displayStage, endIdx]);
+  const endReady = currentEnd.arrows.length >= round.arrowsPerEnd;
 
   // Stats are scoped to the stage currently being shot, since that's what a
   // personal best is scoped to — the session-wide total (shown separately
   // for multi-stage rounds) would mix distances into a meaningless number.
-  const total = totalScore(stage);
-  const shot = arrowsShotCount(stage);
+  // Computed off displayStage so they update live as arrows are entered,
+  // even though nothing is actually saved until the end is confirmed.
+  const total = totalScore(displayStage);
+  const shot = arrowsShotCount(displayStage);
   const avg = shot ? total / shot : 0;
-  const projected = shot ? Math.round(avg * totalArrowsInRound(stage)) : null;
-  const sessionTotalSoFar = sessionTotalScore(session);
+  const projected = shot ? Math.round(avg * totalArrowsInRound(displayStage)) : null;
+  const sessionTotalSoFar = sessionTotalScore(session) + total - totalScore(stage);
 
   const entries = useMemo(() => stageEntries(sessions), [sessions]);
   const pb = useMemo(
     () => findPersonalBest(entries, { round, bowType: session.bowType, sessionType: session.sessionType }, session.id),
     [entries, round, session.bowType, session.sessionType, session.id]);
-  const pace = shot ? paceVsPB(stage, pb) : null;
+  const pace = shot ? paceVsPB(displayStage, pb) : null;
 
   const last3 = useMemo(() => {
-    const withArrows = stage.ends.filter(e => e.arrows.length > 0);
+    const withArrows = displayStage.ends.filter(e => e.arrows.length > 0);
     return withArrows.slice(-3).flatMap(e => e.arrows);
-  }, [stage]);
-  const stats3 = groupStats(stage, last3);
-  const endsShotCount = stage.ends.filter(e => e.arrows.length > 0).length;
+  }, [displayStage]);
+  const stats3 = groupStats(displayStage, last3);
+  const endsShotCount = displayStage.ends.filter(e => e.arrows.length > 0).length;
 
   function handleAddArrow(score, isX, x, y) {
-    if (isComplete) return;
-    onUpdate(s => sessionAddArrow(s, { score, isX, x: x ?? null, y: y ?? null }));
+    if (isComplete || endReady) return;
+    setPending(p => [...p, { score, isX, x: x ?? null, y: y ?? null }]);
   }
 
   function handleFaceTap(x, y) {
@@ -1439,8 +1458,18 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
     handleAddArrow(r.score, r.isX, x, y);
   }
 
+  // Undo pops the still-unconfirmed end first — nothing saved yet, so
+  // that's a free local edit. Once there's nothing pending, it falls
+  // through to reopening the last *confirmed* end, same as before.
   function handleUndo() {
+    if (pending.length > 0) { setPending(p => p.slice(0, -1)); return; }
     onUpdate(s => sessionUndoLastArrow(s));
+  }
+
+  function confirmEnd() {
+    if (!endReady) return;
+    onUpdate(s => pending.reduce((acc, arrow) => sessionAddArrow(acc, arrow), s));
+    setPending([]);
   }
 
   return (
@@ -1490,7 +1519,6 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
                 onTap={handleFaceTap}
                 points={[...ghostArrows.map(a => ({ ...a, ghost: true })), ...currentEnd.arrows.map(a => ({ ...a, ghost: false }))]}
                 centroid={stats3}
-                focus={stats3}
               />
             ) : (
               <Keypad onScore={(score, isX) => handleAddArrow(score, isX, null, null)} />
@@ -1499,8 +1527,8 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
 
           {mode === 'face' && (
             <div className="px-4 pt-3">
-              <button onClick={() => handleAddArrow(0, false, null, null)}
-                className="w-full rounded-xl py-2.5 text-sm font-bold"
+              <button onClick={() => handleAddArrow(0, false, null, null)} disabled={endReady}
+                className="w-full rounded-xl py-2.5 text-sm font-bold disabled:opacity-40"
                 style={{ background: SCORE_COLORS.miss.fill, color: SCORE_COLORS.miss.text }}>
                 Freccia a vuoto (M)
               </button>
@@ -1523,6 +1551,11 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
               </button>
             </div>
             <EndChips end={currentEnd} arrowsPerEnd={round.arrowsPerEnd} />
+            <button onClick={confirmEnd} disabled={!endReady}
+              className="w-full mt-3 rounded-2xl py-3.5 font-bold disabled:opacity-40"
+              style={{ background: T.gold, color: GOLD_TEXT }}>
+              Conferma volée
+            </button>
           </div>
         </>
       )}
