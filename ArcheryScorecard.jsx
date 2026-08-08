@@ -240,12 +240,20 @@ function ringGroupForScore(score) {
 
 function scoreRank(a) { return a.isX ? 11 : a.score; }
 
-function scoreFromRadiusUnits(d) {
+// The 80cm face is a 6-ring face (scoring rings 5-10 only) — rings 1-4
+// aren't printed on the real target, so a tap that would land in that band
+// is a miss, not a low score. Every other face size (40/60/122cm) is the
+// full 10-ring face.
+function minScoringRing(faceCm) { return faceCm === 80 ? 5 : 1; }
+
+function scoreFromRadiusUnits(d, faceCm) {
   if (d > FACE_R) return { score: 0, isX: false };
   if (d <= X_OUTER) return { score: 10, isX: true };
   const ring10Outer = FACE_R / 10;
   const ringFromOuter = Math.max(1, Math.ceil(d / ring10Outer));
-  return { score: Math.max(1, 11 - ringFromOuter), isX: false };
+  const score = Math.max(1, 11 - ringFromOuter);
+  if (score < minScoringRing(faceCm)) return { score: 0, isX: false };
+  return { score, isX: false };
 }
 
 function uid() {
@@ -1125,7 +1133,9 @@ function TargetFace({ faceCm, zoom = 1, interactive = false, onTap, points = [],
     <div className="w-full max-w-2xl mx-auto aspect-square rounded-2xl overflow-hidden" style={{ background: T.bgElevated }}>
       <svg ref={svgRef} viewBox={vb} className="w-full h-full touch-none" onPointerDown={handlePointerDown}>
         <circle cx={0} cy={0} r={FACE_R + 3} fill="none" stroke={T.borderStrong} strokeWidth={1.5} />
-        {RING_SPECS.map(spec => {
+        {/* The 80cm face only prints rings 5-10 — the rest of its diameter is a
+            blank, unscored margin, not rings 1-4 at a smaller physical size. */}
+        {RING_SPECS.filter(spec => spec.score >= minScoringRing(faceCm)).map(spec => {
           const c = SCORE_COLORS[spec.group];
           const strokeColor = spec.group === 'black' ? 'rgba(230,225,215,0.45)' : 'rgba(15,13,8,0.35)';
           return <circle key={spec.score} cx={0} cy={0} r={spec.outer} fill={c.fill} stroke={strokeColor} strokeWidth={0.6} />;
@@ -1425,7 +1435,7 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
 
   function handleFaceTap(x, y) {
     const d = Math.sqrt(x * x + y * y) * FACE_R;
-    const r = scoreFromRadiusUnits(d);
+    const r = scoreFromRadiusUnits(d, round.faceCm);
     handleAddArrow(r.score, r.isX, x, y);
   }
 
@@ -1486,6 +1496,16 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
               <Keypad onScore={(score, isX) => handleAddArrow(score, isX, null, null)} />
             )}
           </div>
+
+          {mode === 'face' && (
+            <div className="px-4 pt-3">
+              <button onClick={() => handleAddArrow(0, false, null, null)}
+                className="w-full rounded-xl py-2.5 text-sm font-bold"
+                style={{ background: SCORE_COLORS.miss.fill, color: SCORE_COLORS.miss.text }}>
+                Freccia a vuoto (M)
+              </button>
+            </div>
+          )}
 
           {mode === 'face' && stats3 && (
             <div className="px-4 pt-2 text-sm text-center" style={{ color: T.textDim }}>

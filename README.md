@@ -47,9 +47,9 @@ Assumptions made, to check against FITARCO/World Archery rules:
   distance combinations), WA Combined, or any club-invented multi-distance
   round get logged, since there's no single fixed distance list that
   covers every WA1440 variant. Available for both allenamento and gara.
-- Compound's WA rule of only scoring the inner 5-10 zone ("compound
-  face") is **not** modelled — every bow type scores the full 10-zone
-  face here.
+- The 80cm face (Targa 50m/40m/30m) is modelled as a 6-ring face — see
+  `minScoringRing()` in v1.16 below. 40/60/122cm faces are the full
+  10-zone face, for every bow type.
 
 Scoring: 10 zones, X is the inner half of the 10 ring (worth 10, counted
 separately). Ring colours centre-out: gold, gold, red, red, blue, blue,
@@ -684,3 +684,25 @@ The 3-way final (`{ kind: 'threeFinal' }`) is deliberately excluded from
 self-scoring — it renders through a structurally different 3-sided
 component (`ThreeWayFinalScreen`, not `MatchScreen`) and a gold/silver/
 bronze final is realistically always run live by the organizer anyway.
+
+## v1.16 additions
+
+- **Miss button in target-tap mode**: the tap-on-target-face input had no
+  direct way to log a miss — the only options were switching to
+  "Tastierino" (which has an M key) or tapping the thin margin just outside
+  the face (easy to miss on a touchscreen, not an obvious affordance). A
+  "Freccia a vuoto (M)" button now sits right under `TargetFace` whenever
+  `mode === 'face'`, calling the same `handleAddArrow(0, false, null,
+  null)` path a keypad miss already uses — no position recorded, exactly
+  like any other keypad-entered arrow.
+- **80cm target face is now a 6-ring face**: the real 80cm competition face
+  (Targa 50m/40m/30m) only prints scoring rings 5-10 — rings 1-4 don't
+  exist on it, they're blank margin. `TargetFace` previously drew the same
+  full 10-ring layout at every face size, so scoring showed rings that
+  don't exist on the real target. Fixed in both directions: `TargetFace`
+  now filters `RING_SPECS` down to score ≥ `minScoringRing(faceCm)` before
+  rendering (blank outer margin for an 80cm face, unchanged for every other
+  size), and `scoreFromRadiusUnits(d, faceCm)` — previously ignorant of
+  face size entirely — now takes `faceCm` and returns a miss instead of a
+  1-4 score for a tap landing in that band. 40/60/122cm faces are
+  unaffected; nothing changes for existing recorded arrows, only new taps.
