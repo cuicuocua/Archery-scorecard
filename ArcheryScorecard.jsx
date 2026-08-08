@@ -6,7 +6,7 @@ import {
 import {
   Target, Clock, ChevronLeft, ChevronRight, Plus, Trash2,
   Download, Upload, RotateCcw, Play, Check, StickyNote, LogOut, BarChart3,
-  Swords, Trophy, Users, UserPlus, Shuffle, Minus, RefreshCw, Unlock, Pencil, Share2, Mail,
+  Swords, Trophy, Users, UserPlus, Shuffle, RefreshCw, Unlock, Pencil, Share2, Mail,
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
@@ -357,8 +357,11 @@ function paceVsPB(stage, pbEntry) {
 
 // ---------- session helpers ----------
 //
-// A session is `{ id, roundId, roundLabel, stages: [stage, ...], sessionType,
-// bowType, conditions, status, startedAt, completedAt, location, note }`.
+// A session is `{ id, stages: [stage, ...], sessionType, bowType,
+// conditions, status, startedAt, completedAt, location, note }`.
+// (Sessions saved before v1.16 also carry `roundId`/`roundLabel`; nothing
+// reads them — the display name is derived from the stage shape instead,
+// see sessionDisplayName.)
 // status/completedAt are session-wide: a multi-stage session only becomes
 // 'completed' once every stage is full, so a partially-shot WA1440 never
 // counts toward anyone's personal best (matches how a partially-shot single
@@ -371,7 +374,6 @@ function createSession(roundDef, meta) {
   }));
   return {
     id: uid(),
-    roundId: roundDef.id,
     stages,
     sessionType: meta.sessionType || 'allenamento',
     bowType: meta.bowType || null,
@@ -388,7 +390,6 @@ function sessionFlattenArrows(session) { return session.stages.flatMap(flattenAr
 function sessionTotalScore(session) { return session.stages.reduce((s, st) => s + totalScore(st), 0); }
 function sessionXCount(session) { return session.stages.reduce((s, st) => s + xCount(st), 0); }
 function sessionArrowsShot(session) { return session.stages.reduce((s, st) => s + arrowsShotCount(st), 0); }
-function sessionTotalArrows(session) { return session.stages.reduce((s, st) => s + totalArrowsInRound(st), 0); }
 
 // Index of the first not-yet-full stage, or the last stage if all are full.
 function activeStageIndex(session) {
@@ -490,7 +491,6 @@ function normalizeSession(session) {
   if (session.stages) return session;
   return {
     ...session,
-    roundLabel: session.round?.label || 'Sessione',
     stages: [{ round: session.round, ends: session.ends }],
   };
 }
@@ -2595,8 +2595,11 @@ function BottomNav({ view, setView }) {
 //    archers' arrows are recorded as one combined list per end/side rather
 //    than attributed to a specific team member — a deliberate simplification.
 //  - Compound elimination is technically cumulative-score, not set play,
-//    under WA rules; the "custom" match format below covers that too by
-//    setting arrowsPerUnit to the full match and units to 1.
+//    under WA rules. That is NOT modelled: MATCH_FORMATS below has three
+//    fixed entries and no way to add one, so a compound bracket scored here
+//    is scored as set play. Adding it means a format whose units array is a
+//    single unit spanning the whole match — the engine already handles that
+//    shape, there is just no entry for it.
 
 const MATCH_FORMATS = [
   { id: 'individual', label: 'Individuale', archersPerSide: 1, arrowsPerArcherPerUnit: 3, units: 5, setPointsToWin: 6, unitLabel: 'Set' },
@@ -2661,10 +2664,11 @@ function finalFormatDef(id) { return FINAL_FORMATS.find(f => f.id === id) || FIN
 // finalStage, thirdPlaceMatch }. rounds[0] is the first round (byes already
 // resolved into empty slotB); later rounds start with null slots, filled in
 // as earlier rounds complete. For 'threeway'/'lancaster' with at least 4
-// competitors, `rounds` stops short of a normal bracket (see dropCount
-// below) and whatever it would have produced next is handled instead by
-// `finalStage`. Below 4 competitors there's no "last 4" to speak of, so it
-// silently behaves like a plain single match regardless of finalFormat.
+// competitors, `rounds` is truncated below (threeway drops the final round,
+// lancaster the last two) and whatever those rounds would have produced is
+// handled by `finalStage` instead. Below 4 competitors there's no "last 4"
+// to speak of, so it silently behaves like a plain single match regardless
+// of finalFormat.
 function buildBracket(participants, finalFormat = 'standard') {
   const n = participants.length;
   const size = n <= 1 ? 1 : Math.pow(2, Math.ceil(Math.log2(n)));
@@ -4607,7 +4611,7 @@ function UnitHistory({ units, formatDef, editingUnitIndex, onEdit }) {
   );
 }
 
-function ArrowsInputColumn({ label, needed, pending, onAdd, onUndo, disabled }) {
+function ArrowsInputColumn({ label, needed, pending, onUndo }) {
   return (
     <div className="flex-1 flex flex-col gap-2">
       <div className="text-sm font-semibold text-center">{label}</div>
@@ -4618,7 +4622,7 @@ function ArrowsInputColumn({ label, needed, pending, onAdd, onUndo, disabled }) 
         ))}
       </div>
       <div className="text-center text-xs" style={{ color: T.textDim }}>{sumArrows(pending.map(a => a.score))} punti</div>
-      <button onClick={onUndo} disabled={disabled || pending.length === 0} className="text-xs py-1 rounded-full disabled:opacity-30" style={{ color: T.textDim }}>
+      <button onClick={onUndo} disabled={pending.length === 0} className="text-xs py-1 rounded-full disabled:opacity-30" style={{ color: T.textDim }}>
         Annulla ultima
       </button>
     </div>
@@ -4795,10 +4799,8 @@ function MatchScreen({ match, title, formatId, onBack, onDone, onComplete, keybo
         <div className="flex flex-col gap-4">
           <div className="text-center text-sm font-semibold" style={{ color: T.gold }}>Spareggio — chi ha piazzato la freccia più vicina al centro?</div>
           <div className="flex gap-3">
-            <ArrowsInputColumn label={sideLabel(match.slotA)} needed={formatDef.archersPerSide} pending={shootA}
-              onAdd={(s, x) => setShootA(l => [...l, { score: s, isX: x }])} onUndo={() => setShootA(l => l.slice(0, -1))} />
-            <ArrowsInputColumn label={sideLabel(match.slotB)} needed={formatDef.archersPerSide} pending={shootB}
-              onAdd={(s, x) => setShootB(l => [...l, { score: s, isX: x }])} onUndo={() => setShootB(l => l.slice(0, -1))} />
+            <ArrowsInputColumn label={sideLabel(match.slotA)} needed={formatDef.archersPerSide} pending={shootA} onUndo={() => setShootA(l => l.slice(0, -1))} />
+            <ArrowsInputColumn label={sideLabel(match.slotB)} needed={formatDef.archersPerSide} pending={shootB} onUndo={() => setShootB(l => l.slice(0, -1))} />
           </div>
           <SegmentedControl options={[{ id: 'A', label: sideLabel(match.slotA) }, { id: 'B', label: sideLabel(match.slotB) }]} value={activeSide} onChange={setActiveSide} />
           <Keypad onScore={(score, isX) => (activeSide === 'A' ? setShootA(l => [...l, { score, isX }]) : setShootB(l => [...l, { score, isX }]))} />
@@ -4952,7 +4954,6 @@ function ThreeWayFinalScreen({ tournament, onBack, onDone, onComplete, keyboardS
         <div className="flex gap-3">
           {contenders.map(i => (
             <ArrowsInputColumn key={i} label={final.sides[i].name} needed={formatDef.archersPerSide} pending={shootPending[i]}
-              onAdd={(s, x) => setShootPending(p => p.map((arr, j) => (j === i ? [...arr, { score: s, isX: x }] : arr)))}
               onUndo={() => setShootPending(p => p.map((arr, j) => (j === i ? arr.slice(0, -1) : arr)))} />
           ))}
         </div>
