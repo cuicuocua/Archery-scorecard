@@ -758,9 +758,10 @@ function clearPending(kind, id) {
 // Overlays any writes still stuck in the outbox onto freshly-loaded remote
 // data, so a device that's still offline at boot shows the last edit made
 // on it instead of quietly reverting to stale server state.
-function applyPending(loaded, kind, normalize) {
+function applyPending(loaded, kind) {
   const entries = Object.values(readPending()).filter(e => e.kind === kind);
   if (entries.length === 0) return loaded;
+  const { normalize } = STORES[kind];
   let list = [...loaded];
   entries.forEach(e => {
     if (e.op === 'delete') {
@@ -774,55 +775,61 @@ function applyPending(loaded, kind, normalize) {
   return list;
 }
 async function flushPending(userId) {
-  const entries = Object.values(readPending());
-  for (const e of entries) {
-    if (e.kind === 'session') {
-      if (e.op === 'delete') await deleteSessionRemote(e.id);
-      else await upsertSessionRemote(userId, e.data);
-    } else {
-      if (e.op === 'delete') await deleteTournamentRemote(e.id);
-      else await upsertTournamentRemote(userId, e.data);
-    }
+  for (const e of Object.values(readPending())) {
+    const store = STORES[e.kind];
+    if (e.op === 'delete') await store.remove(e.id);
+    else await store.upsert(userId, e.data);
   }
 }
 
-async function loadSessionsRemote(userId) {
-  try {
-    const { data, error } = await supabase.from('sessions').select('data').eq('user_id', userId);
-    if (error) throw error;
-    return (data || []).map(row => normalizeSession(row.data));
-  } catch (err) {
-    console.error('Errore nel caricamento dei dati', err);
-    return [];
-  }
-}
-
-async function upsertSessionRemote(userId, session) {
-  setPending('session', session.id, 'upsert', session);
-  try {
-    const { error } = await supabase.from('sessions').upsert({
-      id: session.id, user_id: userId, data: session, updated_at: new Date().toISOString(),
-    });
-    if (error) throw error;
-    clearPending('session', session.id);
-    return true;
-  } catch (err) {
-    console.error('Errore nel salvataggio dei dati', err);
-    return false;
-  }
-}
-
-async function deleteSessionRemote(sessionId) {
-  setPending('session', sessionId, 'delete', null);
-  try {
-    const { error } = await supabase.from('sessions').delete().eq('id', sessionId);
-    if (error) throw error;
-    clearPending('session', sessionId);
-    return true;
-  } catch (err) {
-    console.error('Errore nella eliminazione', err);
-    return false;
-  }
+// Sessions and tournaments are the same row shape in two tables (id, user_id,
+// data jsonb, updated_at) and were originally written as two identical sets of
+// load/upsert/delete functions, which is also why flushPending/applyPending
+// above needed a kind-dispatch and a normalize parameter. One factory for the
+// two real implementations collapses all of that: `kind` is the outbox key,
+// `normalize` the on-read migration for that entity, `msg` its console strings.
+function makeStore(kind, table, normalize, msg) {
+  return {
+    kind, normalize,
+    async load(userId) {
+      try {
+        const { data, error } = await supabase.from(table).select('data').eq('user_id', userId);
+        if (error) throw error;
+        return (data || []).map(row => normalize(row.data));
+      } catch (err) {
+        console.error(msg.load, err);
+        return [];
+      }
+    },
+    // Records itself in the outbox BEFORE the network call and only clears on
+    // confirmed success — see the PENDING_KEY comment above.
+    async upsert(userId, item) {
+      setPending(kind, item.id, 'upsert', item);
+      try {
+        const { error } = await supabase.from(table).upsert({
+          id: item.id, user_id: userId, data: item, updated_at: new Date().toISOString(),
+        });
+        if (error) throw error;
+        clearPending(kind, item.id);
+        return true;
+      } catch (err) {
+        console.error(msg.save, err);
+        return false;
+      }
+    },
+    async remove(id) {
+      setPending(kind, id, 'delete', null);
+      try {
+        const { error } = await supabase.from(table).delete().eq('id', id);
+        if (error) throw error;
+        clearPending(kind, id);
+        return true;
+      } catch (err) {
+        console.error(msg.remove, err);
+        return false;
+      }
+    },
+  };
 }
 
 // Tournaments live in their own table (same pattern as sessions) so a
@@ -837,44 +844,20 @@ function normalizeTournament(t) {
   return { ...t, finalFormat: 'standard', finalStage: t.finalStage || null, thirdPlaceMatch: t.thirdPlaceMatch || null };
 }
 
-async function loadTournamentsRemote(userId) {
-  try {
-    const { data, error } = await supabase.from('tournaments').select('data').eq('user_id', userId);
-    if (error) throw error;
-    return (data || []).map(row => normalizeTournament(row.data));
-  } catch (err) {
-    console.error('Errore nel caricamento dei tornei', err);
-    return [];
-  }
-}
-
-async function upsertTournamentRemote(userId, tournament) {
-  setPending('tournament', tournament.id, 'upsert', tournament);
-  try {
-    const { error } = await supabase.from('tournaments').upsert({
-      id: tournament.id, user_id: userId, data: tournament, updated_at: new Date().toISOString(),
-    });
-    if (error) throw error;
-    clearPending('tournament', tournament.id);
-    return true;
-  } catch (err) {
-    console.error('Errore nel salvataggio del torneo', err);
-    return false;
-  }
-}
-
-async function deleteTournamentRemote(tournamentId) {
-  setPending('tournament', tournamentId, 'delete', null);
-  try {
-    const { error } = await supabase.from('tournaments').delete().eq('id', tournamentId);
-    if (error) throw error;
-    clearPending('tournament', tournamentId);
-    return true;
-  } catch (err) {
-    console.error('Errore nella eliminazione del torneo', err);
-    return false;
-  }
-}
+// The only two stores. Keys here are the outbox `kind` values, so adding a
+// third entity needs nothing else: flushPending/applyPending both look it up.
+const STORES = {
+  session: makeStore('session', 'sessions', normalizeSession, {
+    load: 'Errore nel caricamento dei dati',
+    save: 'Errore nel salvataggio dei dati',
+    remove: 'Errore nella eliminazione',
+  }),
+  tournament: makeStore('tournament', 'tournaments', normalizeTournament, {
+    load: 'Errore nel caricamento dei tornei',
+    save: 'Errore nel salvataggio del torneo',
+    remove: 'Errore nella eliminazione del torneo',
+  }),
+};
 
 // One-time offer to pull in data saved by the old browser-local demo, if any.
 const LEGACY_STORAGE_KEY = 'archery-scorecard-v1';
@@ -2724,7 +2707,11 @@ function buildBracket(participants, finalFormat = 'standard') {
       final: { sides: [null, null, null], status: 'waiting', units: [], cumSp: [0, 0, 0], goldSlot: null, runoff: null },
       standings: {},
     };
-    return { size, rounds: keptRounds, finalFormat, finalStage, thirdPlaceMatch: null };
+    // Seed straight away from the semifinal round: with a non-power-of-2
+    // field it can already contain byes, and a bye is never "played", so
+    // this is the only chance it gets to claim its side of the final.
+    const seeded = relinkThreeWayFinalStage(finalStage, keptRounds[keptRounds.length - 1]);
+    return { size, rounds: keptRounds, finalFormat, finalStage: seeded, thirdPlaceMatch: null };
   }
 
   // lancaster: both semifinal and final rounds are dropped. The last kept
@@ -2768,29 +2755,67 @@ function propagateWinner(rounds, roundIdx, matchIdx, winnerSlot) {
   const winner = winnerSlot === 'A' ? match.slotA : match.slotB;
   const nextMatchIdx = Math.floor(matchIdx / 2);
   const nextSlotKey = matchIdx % 2 === 0 ? 'slotA' : 'slotB';
-  const next = nextRound[nextMatchIdx];
-  next[nextSlotKey] = winner;
-  if (next.slotA && next.slotB) {
-    next.status = 'pending';
-  } else if (next.slotA || next.slotB) {
-    // The other slot is still waiting on an earlier match — leave as
-    // 'waiting' until it's filled too (byes only ever happen in round 0,
-    // since a real bracket never produces a lone empty slot past that).
-  }
+  // Replaces the match object rather than mutating it: the same object is
+  // still referenced by the previous tournament state. fillMatchSlot below
+  // handles both the 'pending' transition and invalidating a result that
+  // belonged to whoever this winner displaces.
+  nextRound[nextMatchIdx] = fillMatchSlot(nextRound[nextMatchIdx], nextSlotKey, winner);
 }
 
-// Fills one slot of a standalone match (bronze match / threeway prelim /
-// a Lancaster ladder match) fed from outside the normal round-to-round
-// propagation. Marks it 'pending' once both slots are present — does NOT
-// auto-resolve a lone slot as a bye, since a slot can legitimately still be
-// waiting on a future feed (e.g. a Lancaster match's slot fed by an earlier
-// match in the ladder). Use resolveByeIfLonely() for a slot that's truly
-// never getting a second competitor.
+// Strips a match back to "not played yet" while keeping its slots and
+// bracket position. Used when an upstream correction changes who is
+// actually in a match: the arrows, set points and winner recorded on it
+// were earned by somebody who is no longer here, and reattributing them to
+// their replacement is worse than losing them.
+function clearMatchResult(match) {
+  return {
+    ...match,
+    units: [], cumSpA: 0, cumSpB: 0, shootOff: null, forfeit: false, winnerSlot: null,
+    status: (match.slotA && match.slotB) ? 'pending' : 'waiting',
+  };
+}
+
+// Fills one slot of a match fed from outside the normal round-to-round
+// propagation (bronze match / threeway prelim / a Lancaster ladder match),
+// and is also what propagateWinner uses for the ordinary case. Marks it
+// 'pending' once both slots are present — does NOT auto-resolve a lone slot
+// as a bye, since a slot can legitimately still be waiting on a future feed
+// (e.g. a Lancaster match's slot fed by an earlier match in the ladder).
+// Use resolveByeIfLonely() for a slot that's truly never getting a second
+// competitor.
+//
+// Displacing an existing occupant of the slot discards whatever was recorded
+// on the match (see clearMatchResult) — that only ever happens when an
+// earlier result was corrected, and the old score cannot survive the change.
 function fillMatchSlot(match, key, participant) {
+  const displaced = match[key] && (!participant || match[key].id !== participant.id);
   const next = { ...match, [key]: participant || null };
-  if (next.slotA && next.slotB) next.status = 'pending';
+  if (displaced && matchHasResult(match)) return clearMatchResult(next);
+  // Only promote a match nobody has touched yet. The relink helpers re-feed
+  // every slot in a chain on every change, including already-played ones,
+  // so an unconditional 'pending' here would reset a finished match to
+  // unplayed and the tournament would never finish.
+  if (next.slotA && next.slotB && next.status === 'waiting') next.status = 'pending';
   return next;
 }
+
+// Everything downstream of a match whose result just changed is invalid too:
+// empty the slot it fed in the next round, drop that match's own recorded
+// arrows with it, and repeat to the end of the bracket. Without this,
+// correcting a semifinal leaves a final that reads "Da giocare" while still
+// carrying the previous winner, their set points, and their arrows.
+function invalidateDownstream(rounds, roundIdx, matchIdx) {
+  const nextRound = rounds[roundIdx + 1];
+  if (!nextRound) return;
+  const nextMatchIdx = Math.floor(matchIdx / 2);
+  const slotKey = matchIdx % 2 === 0 ? 'slotA' : 'slotB';
+  const prev = nextRound[nextMatchIdx];
+  if (!prev[slotKey] && !matchHasResult(prev)) return; // nothing was ever fed here
+  nextRound[nextMatchIdx] = clearMatchResult({ ...prev, [slotKey]: null });
+  invalidateDownstream(rounds, roundIdx + 1, nextMatchIdx);
+}
+
+function matchIsDecided(m) { return !!m && (m.status === 'completed' || m.status === 'bye'); }
 
 // Only for a slot where the other side is genuinely never coming — mirrors
 // makeMatch()'s bye handling. Only reachable when a small, non-power-of-2
@@ -2814,17 +2839,86 @@ function seedLancasterSides(people) {
   });
 }
 
+// Re-derives the ladder's internal wiring from its own current state: each
+// match's winner becomes the challenger in the next one, and the standings
+// fall out of who lost where. Derived rather than updated incrementally,
+// which buys three things a "push the winner forward when a match is
+// played" approach kept getting wrong:
+//  - a BYE chains. With 3 competitors the 4th slot is empty, so match1
+//    resolves as a bye that nobody ever plays — and therefore never fed
+//    match2, leaving the whole ladder deadlocked with no playable match.
+//  - a CORRECTION propagates. Re-running this after any ladder match
+//    changes re-feeds every downstream slot, and fillMatchSlot discards a
+//    result whose competitor got displaced, so the chain self-cleans.
+//  - the standings can't drift out of step with the matches they describe.
+function relinkLancasterLadder(finalStage) {
+  const fs = { ...finalStage };
+  // The optional wildcard play-in is one extra link at the front of the
+  // same chain — its winner takes the 4th-seed's spot in match1.
+  if (fs.playIn) {
+    fs.match1 = fillMatchSlot(fs.match1, 'slotA', matchIsDecided(fs.playIn) ? winnerOf(fs.playIn) : null);
+  }
+  fs.match2 = fillMatchSlot(fs.match2, 'slotB', matchIsDecided(fs.match1) ? winnerOf(fs.match1) : null);
+  fs.match3 = fillMatchSlot(fs.match3, 'slotB', matchIsDecided(fs.match2) ? winnerOf(fs.match2) : null);
+
+  // A bye has no loser, so it awards no placing — with 3 competitors there
+  // simply is no 4th. The play-in's loser keeps whatever placing their
+  // earlier bracket exit already gave them (this app doesn't track 5th+).
+  const standings = {};
+  if (fs.match1.status === 'completed') standings.fourth = loserOf(fs.match1);
+  if (fs.match2.status === 'completed') standings.third = loserOf(fs.match2);
+  if (fs.match3.status === 'completed') {
+    standings.first = winnerOf(fs.match3);
+    standings.second = loserOf(fs.match3);
+  }
+  fs.standings = standings;
+  return fs;
+}
+
 // Wires the 3-match Lancaster ladder once the 4 semifinalists are known:
 // match1 = 4th-seed vs 3rd-seed; match2 and match3 already have their
 // "bye" side (2nd-seed, 1st-seed) pre-filled — only the side fed by the
-// previous match in the chain is still to come. Mutates finalStage in
-// place since it's only ever called on a freshly-built object nothing else
-// references yet.
+// previous match in the chain is still to come, which relinkLancasterLadder
+// then resolves. Mutates finalStage in place since it's only ever called on
+// a freshly-built object nothing else references yet.
 function seedLancasterLadder(finalStage) {
   const [s1, s2, s3, s4] = finalStage.sides;
   finalStage.match1 = resolveByeIfLonely(fillMatchSlot(fillMatchSlot(emptyMatch(), 'slotA', s4), 'slotB', s3));
   finalStage.match2 = fillMatchSlot(emptyMatch(), 'slotA', s2);
   finalStage.match3 = fillMatchSlot(emptyMatch(), 'slotA', s1);
+  Object.assign(finalStage, relinkLancasterLadder(finalStage));
+}
+
+// Re-derives the whole 3-way final stage from the semifinal round plus the
+// 3rd/4th prelim's own state: the two semifinal winners take sides 0 and 1,
+// their losers meet in the prelim, and the prelim's winner takes side 2.
+// State-driven for the same reasons as relinkLancasterLadder above — most
+// importantly because a BYE never runs through applyMatchResult at all, so
+// an event-driven version left its side of the final permanently empty and
+// the tournament unfinishable (3 competitors in a 4-slot bracket).
+function relinkThreeWayFinalStage(finalStage, semis) {
+  const sides = [null, null, null];
+  let prelim = finalStage.prelim;
+
+  semis.forEach((m, i) => {
+    if (!matchIsDecided(m)) return;
+    sides[i] = winnerOf(m);
+    // A bye produced no loser, so it sends nobody to the prelim.
+    prelim = fillMatchSlot(prelim, i === 0 ? 'slotA' : 'slotB', m.status === 'completed' ? loserOf(m) : null);
+  });
+  // Only once every semifinal is settled can a lone prelim entrant be
+  // declared a bye — before that the second slot is still coming.
+  if (semis.every(matchIsDecided)) prelim = resolveByeIfLonely(prelim);
+  if (matchIsDecided(prelim)) sides[2] = winnerOf(prelim);
+
+  const sameSides = sides.every((s, i) => (s?.id ?? null) === (finalStage.final.sides[i]?.id ?? null));
+  const final = (!sameSides && finalStage.final.units.length)
+    ? { ...finalStage.final, sides, units: [], cumSp: [0, 0, 0], goldSlot: null, silverSlot: null,
+        bronzeSlot: null, runoff: null, shootoffContenders: null, status: 'waiting' }
+    : { ...finalStage.final, sides };
+  if (sides.every(Boolean) && final.status === 'waiting') final.status = 'pending';
+
+  return { ...finalStage, prelim, final, standings: prelim.status === 'completed' ? { fourth: loserOf(prelim) } : {} };
 }
 
 // Anyone not currently one of the 4 Lancaster semifinalists has necessarily
@@ -2855,6 +2949,13 @@ function clearLancasterWildcard(finalStage) {
 // ---------- match engine ----------
 
 function sumArrows(scores) { return scores.reduce((s, v) => s + v, 0); }
+
+// The winner/loser of a decided 2-way match. Worth naming: applyMatchResult
+// below derives both back-to-back in five separate branches, and a
+// transposed slotA/slotB in one of those ternaries is invisible on review
+// and fatal to a bracket. Only meaningful once winnerSlot is set.
+function winnerOf(m) { return m.winnerSlot === 'A' ? m.slotA : m.slotB; }
+function loserOf(m) { return m.winnerSlot === 'A' ? m.slotB : m.slotA; }
 
 // Records one unit's (set/end) arrows for one side. Once both sides have
 // this unit recorded, set-points are awarded and the match's cumulative
@@ -3011,7 +3112,7 @@ function applyThreeWayRunoffUpdate(final, updatedRunoff) {
 }
 
 function matchHasResult(m) {
-  return !!m && (m.status === 'completed' || m.status === 'in_progress' || m.status === 'shootoff');
+  return !!m && isScored(m);
 }
 
 function currentUnitIndex(match) {
@@ -3198,14 +3299,22 @@ function unitsMatch(unitsA, unitsB) {
   });
 }
 
+// The three status sets every card, bracket cell and playability check reads.
+// These used to be re-inlined as boolean chains at five call sites, which
+// meant adding a match status was a find-all-the-copies exercise.
+// 'playable' = a scorer can open it now; 'scored' = it has a score worth
+// showing (a running one counts, a bye doesn't).
 const PLAYABLE_MATCH_STATUSES = new Set(['pending', 'in_progress', 'shootoff']);
+const SCORED_MATCH_STATUSES = new Set(['completed', 'in_progress', 'shootoff']);
+const PLAYABLE_3WAY_STATUSES = new Set(['pending', 'in_progress', 'shootoff3', 'runoff']);
+
+const isPlayable = m => PLAYABLE_MATCH_STATUSES.has(m.status);
+const isScored = m => SCORED_MATCH_STATUSES.has(m.status);
+
 function isRefPlayable(tournament, ref) {
-  if (ref.kind === 'threeFinal') {
-    const s = tournament.finalStage.final.status;
-    return s === 'pending' || s === 'in_progress' || s === 'shootoff3' || s === 'runoff';
-  }
+  if (ref.kind === 'threeFinal') return PLAYABLE_3WAY_STATUSES.has(tournament.finalStage.final.status);
   const resolved = resolveMatchRef(tournament, ref);
-  return !!resolved && PLAYABLE_MATCH_STATUSES.has(resolved.match.status);
+  return !!resolved && isPlayable(resolved.match);
 }
 
 // Superuser auto-advance: given the match/final that was just completed,
@@ -3235,43 +3344,49 @@ function nextPlayableRef(tournament, justCompletedRef) {
 // for what each one feeds into).
 function applyMatchResult(tournament, ref, updatedMatch) {
   if (ref.kind === 'round') {
+    const prevMatch = tournament.rounds[ref.roundIdx][ref.matchIdx];
     const rounds = tournament.rounds.map(r => r.slice());
     rounds[ref.roundIdx][ref.matchIdx] = updatedMatch;
     const next = { ...tournament, rounds };
-    if (updatedMatch.status !== 'completed') return next;
+
+    // Correcting a confirmed set can flip (or un-decide) a result that has
+    // already been propagated. Everything it fed was earned by a competitor
+    // who may no longer be in those matches, so it has to be torn down
+    // BEFORE the new winner is pushed forward — otherwise the old winner's
+    // arrows stay attached to whoever replaced them, and the bracket ends up
+    // showing a match that is at once "Da giocare" and already won.
+    if (prevMatch.status === 'completed' &&
+        (updatedMatch.status !== 'completed' || winnerOf(prevMatch)?.id !== winnerOf(updatedMatch)?.id)) {
+      invalidateDownstream(rounds, ref.roundIdx, ref.matchIdx);
+    }
 
     const isLastRound = ref.roundIdx === rounds.length - 1;
     if (!isLastRound) {
-      propagateWinner(rounds, ref.roundIdx, ref.matchIdx, updatedMatch.winnerSlot);
+      if (updatedMatch.status === 'completed') propagateWinner(rounds, ref.roundIdx, ref.matchIdx, updatedMatch.winnerSlot);
 
       if (tournament.finalFormat === 'standard' && tournament.thirdPlaceMatch && ref.roundIdx === rounds.length - 2) {
-        const loser = updatedMatch.winnerSlot === 'A' ? updatedMatch.slotB : updatedMatch.slotA;
-        const key = ref.matchIdx % 2 === 0 ? 'slotA' : 'slotB';
-        let tp = fillMatchSlot(tournament.thirdPlaceMatch, key, loser);
-        if (rounds[ref.roundIdx].every(m => m.status === 'completed' || m.status === 'bye')) tp = resolveByeIfLonely(tp);
+        const semis = rounds[ref.roundIdx];
+        let tp = tournament.thirdPlaceMatch;
+        semis.forEach((m, i) => {
+          tp = fillMatchSlot(tp, i % 2 === 0 ? 'slotA' : 'slotB', m.status === 'completed' ? loserOf(m) : null);
+        });
+        if (semis.every(matchIsDecided)) tp = resolveByeIfLonely(tp);
         next.thirdPlaceMatch = tp;
       }
       return next;
     }
 
-    // This round produces the semifinalists for a custom final stage —
-    // threeway plays it as real matches (winners feed the 3-way final,
-    // losers feed the prelim); lancaster just needs its 4 winners to rank
-    // by seed score once all of them are in.
+    // This round produces the semifinalists for a custom final stage. Both
+    // branches re-derive from the round as a whole rather than from the one
+    // match just played, so byes — which never reach this function — seed
+    // their side too.
     if (tournament.finalFormat === 'threeway' && tournament.finalStage) {
-      const winner = updatedMatch.winnerSlot === 'A' ? updatedMatch.slotA : updatedMatch.slotB;
-      const loser = updatedMatch.winnerSlot === 'A' ? updatedMatch.slotB : updatedMatch.slotA;
-      const sides = tournament.finalStage.final.sides.slice();
-      sides[ref.matchIdx] = winner;
-      let prelim = fillMatchSlot(tournament.finalStage.prelim, ref.matchIdx === 0 ? 'slotA' : 'slotB', loser);
-      if (rounds[ref.roundIdx].every(m => m.status === 'completed' || m.status === 'bye')) prelim = resolveByeIfLonely(prelim);
-      const final = { ...tournament.finalStage.final, sides, status: (sides[0] && sides[1] && sides[2]) ? 'pending' : tournament.finalStage.final.status };
-      next.finalStage = { ...tournament.finalStage, prelim, final };
+      next.finalStage = relinkThreeWayFinalStage(tournament.finalStage, rounds[ref.roundIdx]);
       return next;
     }
 
     if (tournament.finalFormat === 'lancaster' && tournament.finalStage) {
-      const winners = rounds[ref.roundIdx].map(m => ((m.status === 'completed' || m.status === 'bye') ? (m.winnerSlot === 'A' ? m.slotA : m.slotB) : null));
+      const winners = rounds[ref.roundIdx].map(m => (matchIsDecided(m) ? winnerOf(m) : null));
       const finalStage = { ...tournament.finalStage };
       if (winners.every(Boolean)) {
         finalStage.sides = seedLancasterSides(winners);
@@ -3289,62 +3404,18 @@ function applyMatchResult(tournament, ref, updatedMatch) {
   }
 
   if (ref.kind === 'prelim') {
-    const finalStage = { ...tournament.finalStage, prelim: updatedMatch };
-    if (updatedMatch.status === 'completed') {
-      const winner = updatedMatch.winnerSlot === 'A' ? updatedMatch.slotA : updatedMatch.slotB;
-      const loser = updatedMatch.winnerSlot === 'A' ? updatedMatch.slotB : updatedMatch.slotA;
-      const sides = finalStage.final.sides.slice();
-      sides[2] = winner;
-      finalStage.final = { ...finalStage.final, sides, status: (sides[0] && sides[1]) ? 'pending' : finalStage.final.status };
-      finalStage.standings = { ...finalStage.standings, fourth: loser };
-    }
-    return { ...tournament, finalStage };
+    const semis = tournament.rounds[tournament.rounds.length - 1] || [];
+    return { ...tournament, finalStage: relinkThreeWayFinalStage({ ...tournament.finalStage, prelim: updatedMatch }, semis) };
   }
 
-  // The wildcard play-in feeds match1.slotA with its winner, exactly like
-  // match1 feeds match2 and match2 feeds match3 below — same chain, one
-  // extra optional link at the front. Its loser needs no standings entry:
-  // they simply keep whatever placement their earlier bracket loss already
-  // gave them (this app doesn't track 5th-and-below).
-  if (ref.kind === 'lancasterPlayIn') {
-    const finalStage = { ...tournament.finalStage, playIn: updatedMatch };
-    if (updatedMatch.status === 'completed') {
-      const winner = updatedMatch.winnerSlot === 'A' ? updatedMatch.slotA : updatedMatch.slotB;
-      finalStage.match1 = fillMatchSlot(finalStage.match1, 'slotA', winner);
-    }
-    return { ...tournament, finalStage };
-  }
-
-  if (ref.kind === 'lancaster1') {
-    const finalStage = { ...tournament.finalStage, match1: updatedMatch };
-    if (updatedMatch.status === 'completed') {
-      const winner = updatedMatch.winnerSlot === 'A' ? updatedMatch.slotA : updatedMatch.slotB;
-      const loser = updatedMatch.winnerSlot === 'A' ? updatedMatch.slotB : updatedMatch.slotA;
-      finalStage.match2 = fillMatchSlot(finalStage.match2, 'slotB', winner);
-      finalStage.standings = { ...finalStage.standings, fourth: loser };
-    }
-    return { ...tournament, finalStage };
-  }
-
-  if (ref.kind === 'lancaster2') {
-    const finalStage = { ...tournament.finalStage, match2: updatedMatch };
-    if (updatedMatch.status === 'completed') {
-      const winner = updatedMatch.winnerSlot === 'A' ? updatedMatch.slotA : updatedMatch.slotB;
-      const loser = updatedMatch.winnerSlot === 'A' ? updatedMatch.slotB : updatedMatch.slotA;
-      finalStage.match3 = fillMatchSlot(finalStage.match3, 'slotB', winner);
-      finalStage.standings = { ...finalStage.standings, third: loser };
-    }
-    return { ...tournament, finalStage };
-  }
-
-  if (ref.kind === 'lancaster3') {
-    const finalStage = { ...tournament.finalStage, match3: updatedMatch };
-    if (updatedMatch.status === 'completed') {
-      const winner = updatedMatch.winnerSlot === 'A' ? updatedMatch.slotA : updatedMatch.slotB;
-      const loser = updatedMatch.winnerSlot === 'A' ? updatedMatch.slotB : updatedMatch.slotA;
-      finalStage.standings = { ...finalStage.standings, first: winner, second: loser };
-    }
-    return { ...tournament, finalStage };
+  // Every Lancaster ladder slot is fed by the match before it — the optional
+  // wildcard play-in into match1, match1 into match2, match2 into match3 —
+  // so whichever link just changed, relinking the whole chain re-feeds the
+  // rest and re-derives the standings from it.
+  const LANCASTER_REFS = { lancasterPlayIn: 'playIn', lancaster1: 'match1', lancaster2: 'match2', lancaster3: 'match3' };
+  if (LANCASTER_REFS[ref.kind]) {
+    const finalStage = { ...tournament.finalStage, [LANCASTER_REFS[ref.kind]]: updatedMatch };
+    return { ...tournament, finalStage: relinkLancasterLadder(finalStage) };
   }
 
   if (ref.kind === 'threeFinal') {
@@ -3383,13 +3454,13 @@ function tournamentPodium(tournament) {
   const last = tournament.rounds[tournament.rounds.length - 1];
   if (!last || last.length !== 1 || last[0].status !== 'completed') return null;
   const f = last[0];
-  const gold = f.winnerSlot === 'A' ? f.slotA : f.slotB;
-  const silver = f.winnerSlot === 'A' ? f.slotB : f.slotA;
+  const gold = winnerOf(f);
+  const silver = loserOf(f);
   let bronze = null, fourth = null;
   const tp = tournament.thirdPlaceMatch;
   if (tp && (tp.status === 'completed' || tp.status === 'bye')) {
-    bronze = tp.winnerSlot === 'A' ? tp.slotA : tp.slotB;
-    fourth = tp.status === 'completed' ? (tp.winnerSlot === 'A' ? tp.slotB : tp.slotA) : null;
+    bronze = winnerOf(tp);
+    fourth = tp.status === 'completed' ? loserOf(tp) : null;
   }
   return { gold, silver, bronze, fourth };
 }
@@ -3722,7 +3793,7 @@ function TournamentEditParticipantsScreen({ tournament, onSave, onCancel }) {
 // ---------- tournament: bracket + match ----------
 
 function MatchCard({ match, onOpen, focused, accentColor = T.gold }) {
-  const playable = match.status === 'pending' || match.status === 'in_progress' || match.status === 'shootoff';
+  const playable = isPlayable(match);
   const statusLabel = match.status === 'bye' ? 'Bye' : match.status === 'waiting' ? 'In attesa' :
     match.status === 'completed' ? 'Conclusa' : match.status === 'shootoff' ? 'Spareggio' : 'Da giocare';
   return (
@@ -3732,7 +3803,7 @@ function MatchCard({ match, onOpen, focused, accentColor = T.gold }) {
         boxShadow: focused ? `0 0 0 2px ${T.blue}` : undefined }}>
       <div className="flex items-center justify-between text-xs" style={{ color: T.textDim }}>
         <span>{statusLabel}{match.forfeit ? ' · W.O.' : ''}</span>
-        {(match.status === 'completed' || match.status === 'in_progress' || match.status === 'shootoff') && (
+        {isScored(match) && (
           <span style={numeralStyle}>{match.cumSpA} - {match.cumSpB}</span>
         )}
       </div>
@@ -3782,8 +3853,8 @@ function computeBracketLayout(rounds) {
 }
 
 function CompactMatchCard({ match, x, y, onOpen, focused, accentColor = T.gold }) {
-  const playable = match.status === 'pending' || match.status === 'in_progress' || match.status === 'shootoff';
-  const scored = match.status === 'completed' || match.status === 'in_progress' || match.status === 'shootoff';
+  const playable = isPlayable(match);
+  const scored = isScored(match);
   return (
     <button onClick={() => playable && onOpen()} disabled={!playable}
       className="absolute rounded-xl px-2.5 py-1.5 flex flex-col justify-center gap-0.5 text-left"
@@ -3861,7 +3932,7 @@ function BracketTree({ tournament, onOpenMatch, focusRef, accentColor = T.gold }
 // the usual two, with each side's running set-points and, once decided,
 // gold/silver markers (bronze is implied: whoever's left).
 function ThreeWayFinalCard({ final, onOpen, focused, accentColor = T.gold }) {
-  const playable = final.status === 'pending' || final.status === 'in_progress' || final.status === 'shootoff3' || final.status === 'runoff';
+  const playable = PLAYABLE_3WAY_STATUSES.has(final.status);
   const statusLabel = final.status === 'waiting' ? 'In attesa' : final.status === 'pending' ? 'Da giocare'
     : final.status === 'shootoff3' ? 'Spareggio per l’oro' : final.status === 'runoff' ? 'Spareggio 2°/3° posto'
     : final.status === 'completed' ? 'Conclusa' : 'In corso';
@@ -3909,29 +3980,51 @@ function PodiumCard({ podium, accentColor = T.gold }) {
   );
 }
 
-// Two-tap confirm, same pattern as DeleteSessionButton — resets the whole
-// bracket back to "just seeded", discarding every match result played so
-// far. Shown only once the tournament has actually started (nothing to
-// reset before that).
-// Wipes every result and, while at it, optionally lets the final format be
-// changed too — a reset already discards finalStage entirely, so swapping
-// the format at the same time costs nothing extra (see resetTournamentBracket).
-function ResetTournamentButton({ tournament, onReset }) {
+// Collapsed trigger that expands into a dashed panel — the idiom every
+// tournament-level control below uses (reset, share, emails, logo,
+// withdrawal, Lancaster wildcard). It was copy-pasted six times, and the
+// copies had drifted: some closed with "Chiudi", some with "Annulla", some
+// offered both. One component, one "Chiudi".
+//
+// `variant` is the only real difference between them: a destructive or
+// primary action gets the full card trigger, an in-context aside gets a
+// small text link. `children` may be a function taking a `close` callback,
+// for panels whose own primary action should also collapse them.
+function Disclosure({ label, icon: Icon, variant = 'button', onOpen, onClose, children }) {
   const [open, setOpen] = useState(false);
-  const [finalFormat, setFinalFormat] = useState(tournament.finalFormat);
+  const close = () => { setOpen(false); onClose?.(); };
 
   if (!open) {
-    return (
-      <button onClick={() => { setFinalFormat(tournament.finalFormat); setOpen(true); }}
-        className="rounded-2xl py-3 font-semibold flex items-center justify-center gap-2"
+    const start = () => { onOpen?.(); setOpen(true); };
+    return variant === 'link' ? (
+      <button onClick={start} className="text-xs self-center py-1" style={{ color: T.textFaint }}>{label}</button>
+    ) : (
+      <button onClick={start}
+        className="rounded-2xl py-3 font-semibold flex items-center justify-center gap-2 min-h-11"
         style={{ background: T.surface, color: T.textDim, border: `1px solid ${T.border}` }}>
-        <RotateCcw size={16} /> Reset torneo
+        {Icon && <Icon size={16} />} {label}
       </button>
     );
   }
 
   return (
     <div className="rounded-2xl p-3 flex flex-col gap-3" style={{ background: T.surfaceAlt, border: `1px dashed ${T.border}` }}>
+      {typeof children === 'function' ? children(close) : children}
+      <button onClick={close} className="text-xs self-center py-1" style={{ color: T.textFaint }}>Chiudi</button>
+    </div>
+  );
+}
+
+// Resets the whole bracket back to "just seeded", discarding every match
+// result played so far. Shown only once the tournament has actually started
+// (nothing to reset before that). While at it, the final format can be
+// changed too — a reset already discards finalStage entirely, so swapping
+// the format at the same time costs nothing extra (see resetTournamentBracket).
+function ResetTournamentButton({ tournament, onReset }) {
+  const [finalFormat, setFinalFormat] = useState(tournament.finalFormat);
+
+  return (
+    <Disclosure label="Reset torneo" icon={RotateCcw} onOpen={() => setFinalFormat(tournament.finalFormat)}>
       <div className="text-xs" style={{ color: T.textDim }}>Cancella tutti i risultati e rigenera il tabellone. Puoi anche cambiare il formato della finale.</div>
       <FinalFormatPicker value={finalFormat} onChange={setFinalFormat} />
       <button onClick={() => onReset(finalFormat)}
@@ -3939,17 +4032,14 @@ function ResetTournamentButton({ tournament, onReset }) {
         style={{ background: T.red, color: T.onRed }}>
         <RotateCcw size={16} /> Conferma: cancella tutti i risultati
       </button>
-      <button onClick={() => setOpen(false)} className="text-xs self-center" style={{ color: T.textFaint }}>Annulla</button>
-    </div>
+    </Disclosure>
   );
 }
 
-// Same collapsed-button-expands-to-panel idiom as ResetTournamentButton
-// right above. Minting a token is idempotent (re-tapping "Condividi
-// torneo" after a link already exists just re-copies it) so an already-
-// sent link never silently breaks.
+// Minting a token is idempotent (re-tapping "Condividi torneo" after a link
+// already exists just re-copies it) so an already-sent link never silently
+// breaks.
 function ShareTournamentControl({ tournament, onSetShareToken }) {
-  const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -3966,18 +4056,8 @@ function ShareTournamentControl({ tournament, onSetShareToken }) {
     setCopied(true);
   };
 
-  if (!open) {
-    return (
-      <button onClick={() => setOpen(true)}
-        className="rounded-2xl py-3 font-semibold flex items-center justify-center gap-2 min-h-11"
-        style={{ background: T.surface, color: T.textDim, border: `1px solid ${T.border}` }}>
-        <Share2 size={16} /> Condividi torneo
-      </button>
-    );
-  }
-
   return (
-    <div className="rounded-2xl p-3 flex flex-col gap-3" style={{ background: T.surfaceAlt, border: `1px dashed ${T.border}` }}>
+    <Disclosure label="Condividi torneo" icon={Share2}>
       <div className="text-xs" style={{ color: T.textDim }}>
         Chiunque abbia questo link può seguire il tabellone in tempo reale, senza bisogno di accedere.
       </div>
@@ -3989,66 +4069,52 @@ function ShareTournamentControl({ tournament, onSetShareToken }) {
       {tournament.shareToken && (
         <button onClick={() => onSetShareToken(null)} className="text-xs self-center py-1" style={{ color: T.textFaint }}>Disattiva condivisione</button>
       )}
-      <button onClick={() => setOpen(false)} className="text-xs self-center py-1" style={{ color: T.textFaint }}>Chiudi</button>
-    </div>
+    </Disclosure>
   );
 }
 
-// Same collapsed-button-expands-to-panel idiom as ShareTournamentControl
-// right above. Unlike the edit-participants-and-rebuild-bracket flow, this
-// only ever sets an `email` field on each participant — it never touches
-// bracket structure, so it works identically before, during, or after the
-// tournament is live, with no tournamentHasStarted gate.
+// Unlike the edit-participants-and-rebuild-bracket flow, this only ever sets
+// an `email` field on each participant — it never touches bracket structure,
+// so it works identically before, during, or after the tournament is live,
+// with no tournamentHasStarted gate.
 function ManageParticipantEmailsControl({ tournament, onSetParticipantEmails }) {
-  const [open, setOpen] = useState(false);
   const [emails, setEmails] = useState(() => Object.fromEntries(tournament.participants.map(p => [p.id, p.email || ''])));
 
-  function save() {
-    onSetParticipantEmails(tournament.participants.map(p => ({ ...p, email: emails[p.id]?.trim() || undefined })));
-    setOpen(false);
-  }
-
-  if (!open) {
-    return (
-      <button onClick={() => setOpen(true)}
-        className="rounded-2xl py-3 font-semibold flex items-center justify-center gap-2 min-h-11"
-        style={{ background: T.surface, color: T.textDim, border: `1px solid ${T.border}` }}>
-        <Mail size={16} /> Gestisci email partecipanti
-      </button>
-    );
-  }
-
   return (
-    <div className="rounded-2xl p-3 flex flex-col gap-2" style={{ background: T.surfaceAlt, border: `1px dashed ${T.border}` }}>
-      <div className="text-xs" style={{ color: T.textDim }}>
-        Un partecipante con email può accedere dal link pubblico e inserire da solo il punteggio del proprio turno.
-      </div>
-      {tournament.participants.map(p => (
-        <div key={p.id} className="flex items-center gap-2">
-          <div className="flex-1 truncate text-sm">{p.name}</div>
-          <input type="email" inputMode="email" aria-label={`Email di ${p.name}`} value={emails[p.id] || ''}
-            onChange={e => setEmails(prev => ({ ...prev, [p.id]: e.target.value }))}
-            placeholder="email@esempio.it" className="w-40 rounded-xl px-3 py-2 text-sm"
-            style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.text }} />
-        </div>
-      ))}
-      <button onClick={save}
-        className="rounded-xl py-2.5 font-semibold flex items-center justify-center gap-2 min-h-11"
-        style={{ background: T.gold, color: GOLD_TEXT }}>
-        Salva
-      </button>
-      <button onClick={() => setOpen(false)} className="text-xs self-center py-1" style={{ color: T.textFaint }}>Chiudi</button>
-    </div>
+    <Disclosure label="Gestisci email partecipanti" icon={Mail}>
+      {(close) => (
+        <>
+          <div className="text-xs" style={{ color: T.textDim }}>
+            Un partecipante con email può accedere dal link pubblico e inserire da solo il punteggio del proprio turno.
+          </div>
+          {tournament.participants.map(p => (
+            <div key={p.id} className="flex items-center gap-2">
+              <div className="flex-1 truncate text-sm">{p.name}</div>
+              <input type="email" inputMode="email" aria-label={`Email di ${p.name}`} value={emails[p.id] || ''}
+                onChange={e => setEmails(prev => ({ ...prev, [p.id]: e.target.value }))}
+                placeholder="email@esempio.it" className="w-40 rounded-xl px-3 py-2 text-sm"
+                style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.text }} />
+            </div>
+          ))}
+          <button onClick={() => {
+            onSetParticipantEmails(tournament.participants.map(p => ({ ...p, email: emails[p.id]?.trim() || undefined })));
+            close();
+          }}
+            className="rounded-xl py-2.5 font-semibold flex items-center justify-center gap-2 min-h-11"
+            style={{ background: T.gold, color: GOLD_TEXT }}>
+            Salva
+          </button>
+        </>
+      )}
+    </Disclosure>
   );
 }
 
-// Same collapsed-button-expands-to-panel idiom as ShareTournamentControl
-// right above. Resizes and re-extracts the accent color client-side before
-// ever touching the network — the upload itself is always a small PNG,
-// regardless of what the organizer's phone camera originally produced.
+// Resizes and re-extracts the accent color client-side before ever touching
+// the network — the upload itself is always a small PNG, regardless of what
+// the organizer's phone camera originally produced.
 function LogoUpload({ tournament, userId, onSetLogo }) {
   const inputRef = useRef(null);
-  const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -4095,18 +4161,8 @@ function LogoUpload({ tournament, userId, onSetLogo }) {
     setBusy(false);
   }
 
-  if (!open) {
-    return (
-      <button onClick={() => setOpen(true)}
-        className="rounded-2xl py-3 font-semibold flex items-center justify-center gap-2 min-h-11"
-        style={{ background: T.surface, color: T.textDim, border: `1px solid ${T.border}` }}>
-        <Target size={16} /> {tournament.logoUrl ? 'Cambia logo' : 'Carica logo'}
-      </button>
-    );
-  }
-
   return (
-    <div className="rounded-2xl p-3 flex flex-col gap-3" style={{ background: T.surfaceAlt, border: `1px dashed ${T.border}` }}>
+    <Disclosure label={tournament.logoUrl ? 'Cambia logo' : 'Carica logo'} icon={Target}>
       <input ref={inputRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={handleFile} />
       {error && <div className="text-xs" style={{ color: T.red }}>{error}</div>}
       <button onClick={() => inputRef.current?.click()} disabled={busy}
@@ -4117,8 +4173,80 @@ function LogoUpload({ tournament, userId, onSetLogo }) {
       {tournament.logoUrl && (
         <button onClick={handleRemove} disabled={busy} className="text-xs self-center py-1 disabled:opacity-40" style={{ color: T.textFaint }}>Rimuovi logo</button>
       )}
-      <button onClick={() => setOpen(false)} className="text-xs self-center py-1" style={{ color: T.textFaint }}>Chiudi</button>
+    </Disclosure>
+  );
+}
+
+// A labelled stack of match cards — the section idiom every final-stage
+// block below uses.
+function Section({ title, children }) {
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="text-sm font-semibold" style={{ color: T.textDim }}>{title}</div>
+      <div className="flex flex-col gap-2">{children}</div>
     </div>
+  );
+}
+
+// The bracket itself plus whichever final-stage blocks the format calls for
+// — shared verbatim by the organizer's BracketScreen and the public
+// SharedTournamentScreen. Those two were near-identical copies, which is why
+// threading accentColor through the public page took two commits (8b67bcc
+// then 02cca67) and why the copies had already drifted on how the Lancaster
+// play-in renders. A spectator passes none of the handlers: they default to
+// no-ops, which is exactly what read-only means here.
+//
+// wildcardControl is the one genuine asymmetry — only the organizer can pick
+// a Lancaster wildcard; a spectator just sees the resulting play-in match.
+// Passing it as a node rather than a boolean keeps this component ignorant
+// of who's looking at it.
+function TournamentBody({
+  tournament, accentColor = T.gold, focusRef = null, viewMode = 'bracket',
+  onOpenMatch = () => {}, onOpenThreeFinal = () => {}, wildcardControl = null,
+}) {
+  const fs = tournament.finalStage;
+  const card = (match, ref) => (
+    <MatchCard match={match} accentColor={accentColor}
+      onOpen={() => onOpenMatch(ref)} focused={refEquals(focusRef, ref)} />
+  );
+
+  return (
+    <>
+      {tournament.rounds.length > 0 && (viewMode === 'bracket' ? (
+        <BracketTree tournament={tournament} onOpenMatch={onOpenMatch} focusRef={focusRef} accentColor={accentColor} />
+      ) : (
+        tournament.rounds.map((round, ri) => (
+          <Section key={ri} title={roundName(trueRoundCount(tournament), ri)}>
+            {round.map((m, mi) => m.status !== 'bye' && (
+              <React.Fragment key={mi}>{card(m, { kind: 'round', roundIdx: ri, matchIdx: mi })}</React.Fragment>
+            ))}
+          </Section>
+        ))
+      ))}
+
+      {tournament.finalFormat === 'standard' && tournament.thirdPlaceMatch && (
+        <Section title="Finale 3°/4° posto">{card(tournament.thirdPlaceMatch, { kind: 'thirdPlace' })}</Section>
+      )}
+
+      {tournament.finalFormat === 'threeway' && fs && (
+        <>
+          <Section title="Preliminare 3°/4° posto">{card(fs.prelim, { kind: 'prelim' })}</Section>
+          <Section title="Finale a 3 — oro/argento/bronzo">
+            <ThreeWayFinalCard final={fs.final} accentColor={accentColor}
+              onOpen={onOpenThreeFinal} focused={refEquals(focusRef, { kind: 'threeFinal' })} />
+          </Section>
+        </>
+      )}
+
+      {tournament.finalFormat === 'lancaster' && fs && (
+        <Section title="Finale Lancaster (per punteggio di qualifica)">
+          {wildcardControl ?? (fs.playIn && card(fs.playIn, { kind: 'lancasterPlayIn' }))}
+          {card(fs.match1, { kind: 'lancaster1' })}
+          {card(fs.match2, { kind: 'lancaster2' })}
+          {card(fs.match3, { kind: 'lancaster3' })}
+        </Section>
+      )}
+    </>
   );
 }
 
@@ -4157,58 +4285,13 @@ function BracketScreen({ tournament, onBack, onOpenMatch, onOpenThreeFinal, onDe
         <SegmentedControl options={[{ id: 'list', label: 'Elenco' }, { id: 'bracket', label: 'Tabellone' }]} value={viewMode} onChange={setViewMode} />
       )}
 
-      {viewMode === 'bracket' && tournament.rounds.length > 0 ? (
-        <BracketTree tournament={tournament} onOpenMatch={onOpenMatch} focusRef={focusRef} />
-      ) : (
-        tournament.rounds.map((round, ri) => (
-          <div key={ri} className="flex flex-col gap-2">
-            <div className="text-sm font-semibold" style={{ color: T.textDim }}>{roundName(trueRoundCount(tournament), ri)}</div>
-            <div className="flex flex-col gap-2">
-              {round.map((m, mi) => m.status !== 'bye' && (
-                <MatchCard key={mi} match={m} onOpen={() => onOpenMatch({ kind: 'round', roundIdx: ri, matchIdx: mi })}
-                  focused={refEquals(focusRef, { kind: 'round', roundIdx: ri, matchIdx: mi })} />
-              ))}
-            </div>
-          </div>
-        ))
-      )}
-
-      {tournament.finalFormat === 'standard' && tournament.thirdPlaceMatch && (
-        <div className="flex flex-col gap-2">
-          <div className="text-sm font-semibold" style={{ color: T.textDim }}>Finale 3°/4° posto</div>
-          <MatchCard match={tournament.thirdPlaceMatch} onOpen={() => onOpenMatch({ kind: 'thirdPlace' })}
-            focused={refEquals(focusRef, { kind: 'thirdPlace' })} />
-        </div>
-      )}
-
-      {tournament.finalFormat === 'threeway' && fs && (
-        <>
-          <div className="flex flex-col gap-2">
-            <div className="text-sm font-semibold" style={{ color: T.textDim }}>Preliminare 3°/4° posto</div>
-            <MatchCard match={fs.prelim} onOpen={() => onOpenMatch({ kind: 'prelim' })}
-              focused={refEquals(focusRef, { kind: 'prelim' })} />
-          </div>
-          <div className="flex flex-col gap-2">
-            <div className="text-sm font-semibold" style={{ color: T.textDim }}>Finale a 3 — oro/argento/bronzo</div>
-            <ThreeWayFinalCard final={fs.final} onOpen={onOpenThreeFinal}
-              focused={refEquals(focusRef, { kind: 'threeFinal' })} />
-          </div>
-        </>
-      )}
-
-      {tournament.finalFormat === 'lancaster' && fs && (
-        <div className="flex flex-col gap-2">
-          <div className="text-sm font-semibold" style={{ color: T.textDim }}>Finale Lancaster (per punteggio di qualifica)</div>
-          <div className="flex flex-col gap-2">
-            <LancasterWildcardControl tournament={tournament} finalStage={fs} focusRef={focusRef}
-              onOpenPlayIn={() => onOpenMatch({ kind: 'lancasterPlayIn' })}
-              onSetWildcard={onSetLancasterWildcard} onClearWildcard={onClearLancasterWildcard} />
-            <MatchCard match={fs.match1} onOpen={() => onOpenMatch({ kind: 'lancaster1' })} focused={refEquals(focusRef, { kind: 'lancaster1' })} />
-            <MatchCard match={fs.match2} onOpen={() => onOpenMatch({ kind: 'lancaster2' })} focused={refEquals(focusRef, { kind: 'lancaster2' })} />
-            <MatchCard match={fs.match3} onOpen={() => onOpenMatch({ kind: 'lancaster3' })} focused={refEquals(focusRef, { kind: 'lancaster3' })} />
-          </div>
-        </div>
-      )}
+      <TournamentBody tournament={tournament} viewMode={viewMode} focusRef={focusRef}
+        onOpenMatch={onOpenMatch} onOpenThreeFinal={onOpenThreeFinal}
+        wildcardControl={fs && tournament.finalFormat === 'lancaster' ? (
+          <LancasterWildcardControl tournament={tournament} finalStage={fs} focusRef={focusRef}
+            onOpenPlayIn={() => onOpenMatch({ kind: 'lancasterPlayIn' })}
+            onSetWildcard={onSetLancasterWildcard} onClearWildcard={onClearLancasterWildcard} />
+        ) : null} />
 
       {started && <ResetTournamentButton tournament={tournament} onReset={onReset} />}
       <DeleteSessionButton onDelete={onDelete} label="Elimina torneo" />
@@ -4394,8 +4477,6 @@ export function SharedTournamentScreen({ token }) {
   }
 
   const podium = tournamentPodium(tournament);
-  const fs = tournament.finalStage;
-
   const accentColor = tournament.accentColor || T.gold;
 
   return (
@@ -4422,39 +4503,7 @@ export function SharedTournamentScreen({ token }) {
 
       <PodiumCard podium={podium} accentColor={accentColor} />
 
-      {tournament.rounds.length > 0 && <BracketTree tournament={tournament} onOpenMatch={() => {}} focusRef={null} accentColor={accentColor} />}
-
-      {tournament.finalFormat === 'standard' && tournament.thirdPlaceMatch && (
-        <div className="flex flex-col gap-2">
-          <div className="text-sm font-semibold" style={{ color: T.textDim }}>Finale 3°/4° posto</div>
-          <MatchCard match={tournament.thirdPlaceMatch} onOpen={() => {}} focused={false} accentColor={accentColor} />
-        </div>
-      )}
-
-      {tournament.finalFormat === 'threeway' && fs && (
-        <>
-          <div className="flex flex-col gap-2">
-            <div className="text-sm font-semibold" style={{ color: T.textDim }}>Preliminare 3°/4° posto</div>
-            <MatchCard match={fs.prelim} onOpen={() => {}} focused={false} accentColor={accentColor} />
-          </div>
-          <div className="flex flex-col gap-2">
-            <div className="text-sm font-semibold" style={{ color: T.textDim }}>Finale a 3 — oro/argento/bronzo</div>
-            <ThreeWayFinalCard final={fs.final} onOpen={() => {}} focused={false} accentColor={accentColor} />
-          </div>
-        </>
-      )}
-
-      {tournament.finalFormat === 'lancaster' && fs && (
-        <div className="flex flex-col gap-2">
-          <div className="text-sm font-semibold" style={{ color: T.textDim }}>Finale Lancaster (per punteggio di qualifica)</div>
-          <div className="flex flex-col gap-2">
-            {fs.playIn && <MatchCard match={fs.playIn} onOpen={() => {}} focused={false} accentColor={accentColor} />}
-            <MatchCard match={fs.match1} onOpen={() => {}} focused={false} accentColor={accentColor} />
-            <MatchCard match={fs.match2} onOpen={() => {}} focused={false} accentColor={accentColor} />
-            <MatchCard match={fs.match3} onOpen={() => {}} focused={false} accentColor={accentColor} />
-          </div>
-        </div>
-      )}
+      <TournamentBody tournament={tournament} accentColor={accentColor} />
     </div>
   );
 }
@@ -4464,19 +4513,10 @@ export function SharedTournamentScreen({ token }) {
 // Collapsed by default and gated behind a per-side confirm tap so it can't
 // be triggered by accident during normal scoring.
 function WithdrawalControl({ match, onForfeit }) {
-  const [open, setOpen] = useState(false);
   const [confirmSlot, setConfirmSlot] = useState(null);
 
-  if (!open) {
-    return (
-      <button onClick={() => setOpen(true)} className="text-xs self-center py-1" style={{ color: T.textFaint }}>
-        Un arciere si ritira o non si presenta →
-      </button>
-    );
-  }
-
   return (
-    <div className="rounded-2xl p-3 flex flex-col gap-2" style={{ background: T.surfaceAlt, border: `1px dashed ${T.border}` }}>
+    <Disclosure variant="link" label="Un arciere si ritira o non si presenta →" onClose={() => setConfirmSlot(null)}>
       <div className="text-xs" style={{ color: T.textDim }}>Chi si ritira? L'avversario vince a tavolino.</div>
       <div className="flex gap-2">
         <button onClick={() => (confirmSlot === 'A' ? onForfeit('B') : setConfirmSlot('A'))}
@@ -4490,8 +4530,7 @@ function WithdrawalControl({ match, onForfeit }) {
           {confirmSlot === 'B' ? 'Conferma ritiro' : sideLabel(match.slotB)}
         </button>
       </div>
-      <button onClick={() => { setOpen(false); setConfirmSlot(null); }} className="text-xs self-center" style={{ color: T.textFaint }}>Annulla</button>
-    </div>
+    </Disclosure>
   );
 }
 
@@ -4501,8 +4540,6 @@ function WithdrawalControl({ match, onForfeit }) {
 // default, same pattern as WithdrawalControl. Once picked, the play-in
 // itself is just a normal MatchCard — undo stays offered until it's scored.
 function LancasterWildcardControl({ tournament, finalStage, focusRef, onOpenPlayIn, onSetWildcard, onClearWildcard }) {
-  const [open, setOpen] = useState(false);
-
   if (finalStage.playIn) {
     return (
       <div className="flex flex-col gap-1.5">
@@ -4516,32 +4553,29 @@ function LancasterWildcardControl({ tournament, finalStage, focusRef, onOpenPlay
 
   if (finalStage.match1.status === 'completed') return null;
 
-  if (!open) {
-    return (
-      <button onClick={() => setOpen(true)} className="text-xs self-center py-1" style={{ color: T.textFaint }}>
-        Ripescaggio: fai rientrare un'eliminata →
-      </button>
-    );
-  }
-
-  const eligible = eligibleLancasterWildcards(tournament);
   return (
-    <div className="rounded-2xl p-3 flex flex-col gap-2" style={{ background: T.surfaceAlt, border: `1px dashed ${T.border}` }}>
-      <div className="text-xs" style={{ color: T.textDim }}>Chi rientra a sfidare {finalStage.sides[3].name} per la 4ª posizione?</div>
-      {eligible.length === 0 ? (
-        <div className="text-xs" style={{ color: T.textFaint }}>Nessuna eliminata disponibile.</div>
-      ) : (
-        <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto">
-          {eligible.map(p => (
-            <button key={p.id} onClick={() => { onSetWildcard(p); setOpen(false); }}
-              className="text-left rounded-xl px-3 py-2 text-sm" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
-              {p.seed}. {p.name}
-            </button>
-          ))}
-        </div>
-      )}
-      <button onClick={() => setOpen(false)} className="text-xs self-center" style={{ color: T.textFaint }}>Annulla</button>
-    </div>
+    <Disclosure variant="link" label="Ripescaggio: fai rientrare un'eliminata →">
+      {(close) => {
+        const eligible = eligibleLancasterWildcards(tournament);
+        return (
+          <>
+            <div className="text-xs" style={{ color: T.textDim }}>Chi rientra a sfidare {finalStage.sides[3].name} per la 4ª posizione?</div>
+            {eligible.length === 0 ? (
+              <div className="text-xs" style={{ color: T.textFaint }}>Nessuna eliminata disponibile.</div>
+            ) : (
+              <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto">
+                {eligible.map(p => (
+                  <button key={p.id} onClick={() => { onSetWildcard(p); close(); }}
+                    className="text-left rounded-xl px-3 py-2 text-sm" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+                    {p.seed}. {p.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        );
+      }}
+    </Disclosure>
   );
 }
 
@@ -4712,9 +4746,9 @@ function MatchScreen({ match, title, formatId, onBack, onDone, onComplete, keybo
           <h1 className="text-xl font-bold">{title}</h1>
         </div>
         <Trophy color={T.gold} size={32} />
-        <div className="text-2xl font-bold">{match.winnerSlot === 'A' ? sideLabel(match.slotA) : sideLabel(match.slotB)}</div>
+        <div className="text-2xl font-bold">{sideLabel(winnerOf(match))}</div>
         <div className="text-sm" style={{ color: T.textDim }}>
-          {match.forfeit ? `vince a tavolino (ritiro di ${match.winnerSlot === 'A' ? sideLabel(match.slotB) : sideLabel(match.slotA)})` : `vince ${match.cumSpA} - ${match.cumSpB}`}
+          {match.forfeit ? `vince a tavolino (ritiro di ${sideLabel(loserOf(match))})` : `vince ${match.cumSpA} - ${match.cumSpB}`}
         </div>
         {!match.forfeit && (
           <div className="w-full flex flex-col gap-1.5 self-stretch">
@@ -5020,6 +5054,14 @@ function TorneiScreen({ tournaments, onNew, onOpen, onDelete }) {
   );
 }
 
+// Exported solely so test_bracket.mjs can drive the bracket/match engine
+// headlessly — nothing in the app imports this, and the bundler drops it.
+export const __engine = {
+  createTournament, buildBracket, flatMatchRefs, isRefPlayable, resolveMatchRef,
+  applyMatchResult, recordUnit, record3WayUnit, applyThreeWayRunoffUpdate,
+  matchFormatDef, arrowsPerUnit, tournamentIsComplete, tournamentPodium, winnerOf, loserOf,
+};
+
 // ---------- root ----------
 
 export default function ArcheryScorecard() {
@@ -5128,15 +5170,15 @@ export default function ArcheryScorecard() {
     // below still overlays those edits onto what we loaded, so nothing appears
     // to have reverted.
     flushPending(userId).then(() => {
-      loadSessionsRemote(userId).then(s => {
+      STORES.session.load(userId).then(s => {
         if (!mounted) return;
-        const merged = applyPending(s, 'session', normalizeSession);
+        const merged = applyPending(s, 'session');
         setSessions(merged);
         setLoaded(true);
         if (merged.length === 0) setLegacyData(findLegacyLocalSessions());
       });
-      loadTournamentsRemote(userId).then(t => {
-        if (mounted) setTournaments(applyPending(t, 'tournament', normalizeTournament));
+      STORES.tournament.load(userId).then(t => {
+        if (mounted) setTournaments(applyPending(t, 'tournament'));
       });
     });
     return () => { mounted = false; };
@@ -5157,19 +5199,19 @@ export default function ArcheryScorecard() {
     setSessions(prev => {
       const next = prev.map(s => (s.id === id ? updater(s) : s));
       const changed = next.find(s => s.id === id);
-      if (changed && userId) upsertSessionRemote(userId, changed).then(ok => flagSaveError(ok, 'Impossibile salvare la sessione online: la modifica resta su questo dispositivo e verrà sincronizzata da sola appena torna la connessione.'));
+      if (changed && userId) STORES.session.upsert(userId, changed).then(ok => flagSaveError(ok, 'Impossibile salvare la sessione online: la modifica resta su questo dispositivo e verrà sincronizzata da sola appena torna la connessione.'));
       return next;
     });
   }, [userId, flagSaveError]);
 
   const addSession = useCallback((session) => {
     setSessions(prev => [...prev, session]);
-    if (userId) upsertSessionRemote(userId, session).then(ok => flagSaveError(ok, 'Impossibile salvare la sessione online: resta su questo dispositivo e verrà sincronizzata da sola appena torna la connessione.'));
+    if (userId) STORES.session.upsert(userId, session).then(ok => flagSaveError(ok, 'Impossibile salvare la sessione online: resta su questo dispositivo e verrà sincronizzata da sola appena torna la connessione.'));
   }, [userId, flagSaveError]);
 
   const deleteSession = useCallback((id) => {
     setSessions(prev => prev.filter(s => s.id !== id));
-    if (userId) deleteSessionRemote(id).then(ok => flagSaveError(ok, 'Impossibile eliminare la sessione online: verrà ritentato da solo appena torna la connessione.'));
+    if (userId) STORES.session.remove(id).then(ok => flagSaveError(ok, 'Impossibile eliminare la sessione online: verrà ritentato da solo appena torna la connessione.'));
   }, [userId, flagSaveError]);
 
   const importSessions = useCallback((imported) => {
@@ -5178,7 +5220,7 @@ export default function ArcheryScorecard() {
       const byId = new Map(prev.map(s => [s.id, s]));
       normalized.forEach(s => byId.set(s.id, s));
       const next = Array.from(byId.values());
-      if (userId) Promise.all(normalized.map(s => upsertSessionRemote(userId, s)))
+      if (userId) Promise.all(normalized.map(s => STORES.session.upsert(userId, s)))
         .then(results => flagSaveError(results.every(Boolean), 'Alcune sessioni importate non sono state salvate online: verranno sincronizzate da sole appena torna la connessione.'));
       return next;
     });
@@ -5197,21 +5239,21 @@ export default function ArcheryScorecard() {
 
   const addTournament = useCallback((tournament) => {
     setTournaments(prev => [...prev, tournament]);
-    if (userId) upsertTournamentRemote(userId, tournament).then(ok => flagSaveError(ok, 'Impossibile salvare il torneo online: resta su questo dispositivo e verrà sincronizzato da solo appena torna la connessione. Se il problema persiste, controlla che la tabella "tournaments" esista su Supabase.'));
+    if (userId) STORES.tournament.upsert(userId, tournament).then(ok => flagSaveError(ok, 'Impossibile salvare il torneo online: resta su questo dispositivo e verrà sincronizzato da solo appena torna la connessione. Se il problema persiste, controlla che la tabella "tournaments" esista su Supabase.'));
   }, [userId, flagSaveError]);
 
   const updateTournament = useCallback((id, updater) => {
     setTournaments(prev => {
       const next = prev.map(t => (t.id === id ? updater(t) : t));
       const changed = next.find(t => t.id === id);
-      if (changed && userId) upsertTournamentRemote(userId, changed).then(ok => flagSaveError(ok, 'Impossibile salvare gli aggiornamenti del torneo online: restano su questo dispositivo e verranno sincronizzati da soli appena torna la connessione. Se il problema persiste, controlla che la tabella "tournaments" esista su Supabase.'));
+      if (changed && userId) STORES.tournament.upsert(userId, changed).then(ok => flagSaveError(ok, 'Impossibile salvare gli aggiornamenti del torneo online: restano su questo dispositivo e verranno sincronizzati da soli appena torna la connessione. Se il problema persiste, controlla che la tabella "tournaments" esista su Supabase.'));
       return next;
     });
   }, [userId, flagSaveError]);
 
   const deleteTournament = useCallback((id) => {
     setTournaments(prev => prev.filter(t => t.id !== id));
-    if (userId) deleteTournamentRemote(id).then(ok => flagSaveError(ok, 'Impossibile eliminare il torneo online: verrà ritentato da solo appena torna la connessione.'));
+    if (userId) STORES.tournament.remove(id).then(ok => flagSaveError(ok, 'Impossibile eliminare il torneo online: verrà ritentato da solo appena torna la connessione.'));
   }, [userId, flagSaveError]);
 
   // Participants write their own match submissions directly via the
