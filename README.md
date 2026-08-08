@@ -19,10 +19,9 @@ hiding it. Every write also goes through a localStorage outbox first (see
 "Offline-resilient saves" below), so Supabase stays the source of truth
 but a save made without connectivity isn't lost.
 
-This is v1: data model and export are the focus, no service worker /
-full offline install yet — that's a deliberate follow-up (though sync
-across devices, the main reason you'd want that, is already solved via
-Supabase).
+The app installs as an offline-capable PWA (`site/sw.js` — see v1.18 below):
+the app shell still opens with no connectivity, and cross-device sync is
+handled by Supabase as above.
 
 ## Round definitions
 
@@ -736,3 +735,47 @@ bronze final is realistically always run live by the organizer anyway.
   "Annulla" pops the still-unconfirmed end first (a free local edit, since
   nothing's saved yet) before falling through to reopening the last
   *confirmed* end, same as it already did.
+
+## v1.18 additions — Automated tests + installable offline PWA
+
+- **Automated test suite** (`test/`, `npm test`): the app had grown a lot of
+  intricate pure logic — bracket seeding/propagation, the 3-way final's
+  point-allocation engine, Lancaster's wildcard play-in, the offline
+  outbox's overlay/reconciliation, personal-best/pace comparisons — with
+  only manual click-through verification before every change. `test/load.cjs`
+  compiles `ArcheryScorecard.jsx` (JSX + ESM) to CJS in memory via esbuild
+  (already a devDependency for the site build — no new dependency) and
+  requires it directly, so tests call the same functions the app runs
+  without a browser, a bundler config, or any Supabase network access. A
+  single `export { ... }` block at the bottom of the component file (test
+  code never runs in the shipped bundle) is the only source change; adding
+  a function to the tested surface is a one-line addition there. Runs on
+  Node's built-in test runner (`node --test`, stable since Node 18 — no new
+  dependency there either) — 68 tests across bracket generation, match/
+  3-way/Lancaster scoring, personal scorecard core, the offline outbox, and
+  a couple of full-tournament integration tests that play a bracket
+  end-to-end through `applyMatchResult` and check the final podium. One
+  test is a direct regression guard for a real bug caught earlier this
+  project (the 3-way runoff carrying over the wrong starting score) and
+  another for the 80cm-face 6-ring fix — the two most fiddly pieces of
+  logic in the file. `npm test` now also runs in CI (`deploy-pages.yml`)
+  before the build step, so a broken change fails the workflow instead of
+  reaching production.
+- **Installable, offline-capable PWA**: the whole app was already a single
+  self-contained `index.html` (see the top of this file), which makes this
+  almost free — `site/sw.js` is a service worker that caches that one
+  document and serves it back (network-first, falling back to the cached
+  copy only once actually offline) so the app still opens at a
+  connectivity-dead range instead of failing to load at all. It never
+  touches cross-origin requests, so Supabase calls always hit the network
+  directly and the existing offline-outbox logic (see "Offline-resilient
+  saves" above) keeps handling writes made while offline exactly as
+  before — this only covers the app *shell* loading, not data. `site/build.js`
+  now also inlines a web app manifest (`data:application/manifest+json,...`,
+  reusing the existing target-face SVG as its icon — installable and
+  correctly iconed on desktop/Android, though iOS Safari's home-screen icon
+  specifically ignores SVG manifest icons and falls back to a screenshot) and
+  bakes a fresh cache-version stamp into `sw.js` on every build, so
+  `activate` always purges the previous deploy's cached shell rather than
+  serving a stale version forever — an online scorer always gets whatever
+  was just deployed.

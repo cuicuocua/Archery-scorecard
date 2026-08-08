@@ -6,6 +6,7 @@ on:
     paths:
       - 'ArcheryScorecard.jsx'
       - 'site/**'
+      - 'test/**'
       - 'package.json'
       - '.github/workflows/deploy-pages.yml'
   workflow_dispatch: {}
@@ -29,6 +30,8 @@ jobs:
           node-version: 22
       - name: Install build tooling
         run: npm install
+      - name: Test
+        run: npm test
       - name: Build
         run: npm run build
       - uses: actions/configure-pages@v5

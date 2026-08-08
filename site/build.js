@@ -22,13 +22,38 @@ execSync(
 const css = fs.readFileSync(path.join(dist, 'tailwind-output.css'), 'utf8');
 const js = fs.readFileSync(path.join(dist, 'bundle.js'), 'utf8');
 
+// Same target-face glyph used for the favicon, reused as the PWA icon too
+// so the installed app matches the browser tab. SVG-only, no rasterized
+// PNGs — installability and the icon itself work fine on Android/desktop
+// this way, but iOS Safari's home-screen icon specifically ignores SVG web
+// manifest icons, so an iPhone/iPad "Add to Home Screen" will fall back to
+// a plain screenshot-based icon rather than this glyph. A real PNG would
+// need a rasterizer dependency this project doesn't otherwise need.
+const iconSvg = '<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><circle cx=%2250%22 cy=%2250%22 r=%2248%22 fill=%22%23ECE8DF%22/><circle cx=%2250%22 cy=%2250%22 r=%2238%22 fill=%22%233B3F46%22/><circle cx=%2250%22 cy=%2250%22 r=%2228%22 fill=%22%233373B0%22/><circle cx=%2250%22 cy=%2250%22 r=%2218%22 fill=%22%23D8434A%22/><circle cx=%2250%22 cy=%2250%22 r=%228%22 fill=%22%23E7B933%22/></svg>';
+
+const manifest = {
+  name: 'Arcieri Senesi — Scorecard',
+  short_name: 'Scorecard',
+  start_url: './',
+  scope: './',
+  display: 'standalone',
+  background_color: '#14161A',
+  theme_color: '#14161A',
+  icons: [{ src: `data:image/svg+xml,${iconSvg}`, sizes: 'any', type: 'image/svg+xml', purpose: 'any' }],
+};
+const manifestHref = `data:application/manifest+json,${encodeURIComponent(JSON.stringify(manifest))}`;
+
 const html = `<!doctype html>
 <html lang="it">
 <head>
 <meta charset="utf-8">
 <title>Arcieri Senesi — Scorecard</title>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><circle cx=%2250%22 cy=%2250%22 r=%2248%22 fill=%22%23ECE8DF%22/><circle cx=%2250%22 cy=%2250%22 r=%2238%22 fill=%22%233B3F46%22/><circle cx=%2250%22 cy=%2250%22 r=%2228%22 fill=%22%233373B0%22/><circle cx=%2250%22 cy=%2250%22 r=%2218%22 fill=%22%23D8434A%22/><circle cx=%2250%22 cy=%2250%22 r=%228%22 fill=%22%23E7B933%22/></svg>">
+<meta name="theme-color" content="#14161A">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="${manifestHref}">
+<link rel="icon" href="data:image/svg+xml,${iconSvg}">
 <style>${css}
 html,body{margin:0;padding:0;background:#14161A;}</style>
 </head>
@@ -42,5 +67,12 @@ html,body{margin:0;padding:0;background:#14161A;}</style>
 fs.writeFileSync(path.join(dist, 'index.html'), html);
 fs.rmSync(path.join(dist, 'tailwind-output.css'));
 fs.rmSync(path.join(dist, 'bundle.js'));
+
+// Cache name gets a fresh version stamp on every build, so the service
+// worker's `activate` handler always purges the previous deploy's cached
+// shell instead of an old copy lingering forever (see site/sw.js).
+const swSource = fs.readFileSync(path.join(__dirname, 'sw.js'), 'utf8')
+  .replace('__CACHE_VERSION__', `shell-${Date.now()}`);
+fs.writeFileSync(path.join(dist, 'sw.js'), swSource);
 
 console.log('Built site/dist/index.html (' + (html.length / 1024).toFixed(0) + ' KB)');

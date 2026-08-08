@@ -5420,3 +5420,47 @@ export default function ArcheryScorecard() {
     </div>
   );
 }
+
+// ---------- test-only exports ----------
+//
+// Named exports purely so `test/` can import the pure logic functions
+// directly (see test/load.cjs) without needing a browser, Supabase, or
+// React rendering — none of this is consumed by the app itself, which only
+// ever imports the default export (and SharedTournamentScreen) from
+// site/entry.jsx. Grouped here in one place, rather than scattered `export`
+// keywords throughout, so the tested surface is visible at a glance and
+// adding a function to it is a one-line change.
+export {
+  // personal scorecard: scoring + arrows
+  ringGroupForScore, scoreRank, minScoringRing, scoreFromRadiusUnits,
+  flattenArrows, totalScore, xCount, arrowsShotCount, totalArrowsInRound,
+  cumulativeScores, currentEndIndex, addArrow, undoLastArrow,
+  computeGroupStats, groupStats,
+  // personal scorecard: sessions + personal bests
+  sameRound, findPersonalBest, paceVsPB, createSession, sessionFlattenArrows,
+  sessionTotalScore, sessionXCount, sessionArrowsShot, sessionTotalArrows,
+  activeStageIndex, sessionAddArrow, sessionUndoLastArrow, sessionProgressLabel,
+  sessionDisplayName, stageEntries, normalizeSession, withSessionDate,
+  roundShapeKey, matchedPreset, roundShapeLabel,
+  // personal scorecard: analysis
+  describeBias, endRangeStats, scoreStdDevBySession, dispersionTrend,
+  scoreDistribution, scoreByCondition, hitRateByColor, colorTrendByShape,
+  bestByShape,
+  // offline outbox
+  readPending, writePending, setPending, clearPending, applyPending,
+  // tournaments: bracket engine
+  matchFormatDef, arrowsPerUnit, standardSeedOrder, emptyMatch, finalFormatDef,
+  buildBracket, makeMatch, propagateWinner, fillMatchSlot, resolveByeIfLonely,
+  seedLancasterSides, seedLancasterLadder, eligibleLancasterWildcards,
+  setLancasterWildcard, clearLancasterWildcard, createTournament,
+  normalizeTournament, rebuildTournamentBracket, resetTournamentBracket,
+  // tournaments: match scoring
+  sumArrows, recordUnit, recordShootOff, forfeitMatch, sumThreeWayPoints,
+  record3WayUnit, record3WayShootOff, startThreeWayRunoff,
+  applyThreeWayRunoffUpdate, matchHasResult, currentUnitIndex, sideLabel,
+  roundName, trueRoundCount,
+  // tournaments: refs + state derivation
+  resolveMatchRef, refEquals, refKey, flatMatchRefs, isRefPlayable,
+  nextPlayableRef, applyMatchResult, tournamentIsComplete, tournamentPodium,
+  tournamentHasStarted,
+};

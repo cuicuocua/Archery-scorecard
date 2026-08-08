@@ -4,7 +4,8 @@
   "version": "1.0.0",
   "description": "Build tooling for the GitHub Pages deployment of ArcheryScorecard.jsx. ArcheryScorecard.jsx itself is the artifact — this package.json only exists to bundle it as a standalone site.",
   "scripts": {
-    "build": "node site/build.js"
+    "build": "node site/build.js",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
