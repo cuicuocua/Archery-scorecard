@@ -115,5 +115,39 @@ for (const finalFormat of ['threeway', 'lancaster']) {
     `final became '${t2.rounds[1][0].status}'`);
 }
 
+// The 3-way final's silver/bronze runoff starts at the set points the two
+// archers already earned against each other. recordUnit rebuilds cumSp from
+// the units array, so the carry-over has to survive the first end recorded.
+{
+  const participants = Array.from({ length: 4 }, (_, i) => ({ id: `p${i}`, name: `P${i}`, seedScore: 600 - i }));
+  let t = E.createTournament({ name: 'T', date: '2026-01-01', distanceM: 70, faceCm: 122, formatId: 'individual', participants, finalFormat: 'threeway' });
+  for (let pass = 0; pass < 2; pass++) {
+    for (const r of E.flatMatchRefs(t).filter(r => E.isRefPlayable(t, r) && r.kind !== 'threeFinal')) {
+      t = E.applyMatchResult(t, r, playMatch(E.resolveMatchRef(t, r).match));
+    }
+  }
+  // Let each archer take different ends so the two non-winners carry points.
+  const endWinner = [0, 1, 2, 0, 0];
+  let f = t.finalStage.final;
+  for (let u = 0; u < 5 && ['pending', 'in_progress'].includes(f.status); u++) {
+    [0, 1, 2].forEach(i => { f = E.record3WayUnit(f, fd, u, i, Array(arrows).fill(i === endWinner[u] ? 10 : 5)); });
+  }
+  const seededA = f.runoff.cumSpA, seededB = f.runoff.cumSpB;
+  const afterOneEnd = E.recordUnit(E.recordUnit(f.runoff, fd, 0, 'A', Array(arrows).fill(10)), fd, 0, 'B', Array(arrows).fill(5));
+  check('3-way runoff carries its set points into the first end',
+    seededA > 0 && afterOneEnd.cumSpA === seededA + 2 && afterOneEnd.cumSpB === seededB,
+    `seeded ${seededA}-${seededB}, after one end ${afterOneEnd.cumSpA}-${afterOneEnd.cumSpB}, expected ${seededA + 2}-${seededB}`);
+}
+
+// A 3-competitor Lancaster ladder has an empty 4th slot; anything reading a
+// name off it crashes the page.
+check('lancaster n=3 leaves no ladder slot that reads as a competitor',
+  (() => {
+    const participants = Array.from({ length: 3 }, (_, i) => ({ id: `p${i}`, name: `P${i}`, seedScore: 600 - i }));
+    const t = E.createTournament({ name: 'T', date: '2026-01-01', distanceM: 70, faceCm: 122, formatId: 'individual', participants, finalFormat: 'lancaster' });
+    return t.finalStage.sides[3] === null || t.finalStage.sides[3] === undefined;
+  })(),
+  'expected sides[3] to be absent so the wildcard control can bail out');
+
 assert.equal(failures, 0, `${failures} engine check(s) failed`);
 console.log('\nall engine checks passed');

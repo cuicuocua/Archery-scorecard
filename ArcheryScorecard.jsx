@@ -334,11 +334,22 @@ function sameRound(a, b) {
 }
 
 // entries: a flat list from stageEntries() — see below. scope: { round, bowType, sessionType }.
+// Unlike Statistiche — which groups by distance+face alone and compares
+// per-arrow — a personal best here must also have the SAME TOTAL ARROW
+// COUNT as the stage being shot. Two reasons, and they point the same way:
+// comparing raw totals across different lengths meant a 72-arrow Targa 70m
+// always outranked a 36-arrow WA1440 70m stage no matter how well the
+// latter was shot; and paceVsPB below compares the two cumulative curves
+// arrow by arrow, which is only meaningful between rounds of equal length.
+// Chunking still doesn't matter (12x6 and 6x12 are both 72 arrows, and
+// sameRound already treats them as the same round).
 function findPersonalBest(entries, scope, excludeSessionId) {
+  const scopeArrows = scope.round.arrowsPerEnd * scope.round.ends;
   const candidates = entries.filter(e =>
     e.status === 'completed' &&
     e.sessionId !== excludeSessionId &&
     sameRound(e.round, scope.round) &&
+    e.round.arrowsPerEnd * e.round.ends === scopeArrows &&
     (e.bowType || null) === (scope.bowType || null) &&
     (e.sessionType || 'allenamento') === (scope.sessionType || 'allenamento'));
   if (!candidates.length) return null;
@@ -441,17 +452,38 @@ function sessionProgressLabel(session) {
 // this way: a 4-stage round (this club's WA 1440 aggregate convention) and
 // a 2-stage 25m+18m round (the standard FITARCO/WA Combined round). Any
 // other multi-stage shape isn't a known archetype.
+// WA 1440 is four distances shot long-to-short, the two longest on the
+// 122cm face and the two shortest on the 80cm face. The distances
+// themselves vary by category (90/70/50/30 for senior men, 70/60/50/30 for
+// senior women, shorter again for juniors and para classes), so the
+// archetype is recognised by that face-and-ordering shape rather than one
+// hardcoded distance set. Matching on stage count alone — as this used to —
+// labelled any four-stage session "WA 1440", including four rounds at 18m.
+function isWA1440(stages) {
+  if (stages.length !== 4) return false;
+  const faces = stages.map(st => st.round.faceCm);
+  const dists = stages.map(st => st.round.distanceM);
+  return faces[0] === 122 && faces[1] === 122 && faces[2] === 80 && faces[3] === 80
+    && dists.every((d, i) => i === 0 || d < dists[i - 1]);
+}
+
+// The standard FITARCO/WA indoor combined round: 25m on a 60cm face and 18m
+// on a 40cm face, in either order. Face sizes are checked too — 25m and 18m
+// on some other face is a different round.
+function isWACombined(stages) {
+  if (stages.length !== 2) return false;
+  const shot = stages.map(st => `${st.round.distanceM}/${st.round.faceCm}`).sort();
+  return shot[0] === '18/40' && shot[1] === '25/60';
+}
+
 function sessionDisplayName(session) {
   const { stages } = session;
   if (stages.length === 1) {
     const preset = matchedPreset(stages[0].round);
     return { name: roundShapeLabel(stages[0].round), isArchetype: !!preset };
   }
-  if (stages.length === 4) return { name: 'WA 1440', isArchetype: true };
-  const distances = stages.map(st => st.round.distanceM);
-  if (stages.length === 2 && distances.includes(25) && distances.includes(18)) {
-    return { name: 'WA Combined', isArchetype: true };
-  }
+  if (isWA1440(stages)) return { name: 'WA 1440', isArchetype: true };
+  if (isWACombined(stages)) return { name: 'WA Combined', isArchetype: true };
   return { name: stages.map(st => `${st.round.distanceM}m · ${st.round.faceCm}cm`).join(' + '), isArchetype: false };
 }
 
@@ -518,7 +550,11 @@ function describeBias(cxCm, cyCm) {
 // misses, then gold rate. Omitted if nothing stands out.
 function sessionInsight(session, allSessions) {
   const entries = stageEntries(allSessions);
-  let baselineSum = 0, baselineArrows = 0, histCount = 0;
+  let baselineSum = 0, baselineArrows = 0;
+  // Distinct sessions, not a running total across stages — a 4-stage
+  // session used to count its baseline sessions once per stage and claim a
+  // sample up to 4x larger than it really compared against.
+  const histSessions = new Set();
   session.stages.forEach(stage => {
     const hist = entries.filter(e =>
       e.status === 'completed' && e.sessionId !== session.id &&
@@ -526,7 +562,7 @@ function sessionInsight(session, allSessions) {
       (e.bowType || null) === (session.bowType || null) &&
       (e.sessionType || 'allenamento') === (session.sessionType || 'allenamento'));
     if (!hist.length) return;
-    histCount += hist.length;
+    hist.forEach(e => histSessions.add(e.sessionId));
     const arrows = arrowsShotCount(stage);
     const histArrows = hist.reduce((s, e) => s + arrowsShotCount(e), 0);
     if (!histArrows) return;
@@ -545,7 +581,7 @@ function sessionInsight(session, allSessions) {
     const baselineAvg = baselineSum / baselineArrows;
     const diffPct = baselineAvg ? ((thisAvg - baselineAvg) / baselineAvg) * 100 : 0;
     if (Math.abs(diffPct) < 2) {
-      sentences.push(`Media in linea con il tuo standard: ${thisAvg.toFixed(2)} punti a freccia (confronto su ${histCount} sessioni precedenti).`);
+      sentences.push(`Media in linea con il tuo standard: ${thisAvg.toFixed(2)} punti a freccia (confronto su ${histSessions.size} sessioni precedenti).`);
     } else if (diffPct > 0) {
       sentences.push(`${diffPct.toFixed(0)}% sopra la tua media abituale: ${thisAvg.toFixed(2)} contro ${baselineAvg.toFixed(2)} punti a freccia.`);
     } else {
@@ -738,28 +774,51 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 // itself here BEFORE attempting the network call and only clears itself on
 // confirmed success, so a failed write survives reload/tab close and gets
 // retried (see flushPending, called on boot and on the 'online' event).
+//
+// The key is per-account. It used to be a single global one, which meant a
+// club device shared by two archers would replay whatever the first had
+// queued offline under whoever signed in NEXT — flushPending writes with the
+// current userId, so A's sessions landed in B's account and vanished from
+// A's.
 const PENDING_KEY = 'archery-scorecard-pending-v1';
-function readPending() {
-  try { return JSON.parse(localStorage.getItem(PENDING_KEY)) || {}; } catch { return {}; }
+const pendingKey = userId => `${PENDING_KEY}:${userId}`;
+
+function readPending(userId) {
+  try { return JSON.parse(localStorage.getItem(pendingKey(userId))) || {}; } catch { return {}; }
 }
-function writePending(map) {
-  try { localStorage.setItem(PENDING_KEY, JSON.stringify(map)); } catch { /* storage full/unavailable */ }
+function writePending(userId, map) {
+  try { localStorage.setItem(pendingKey(userId), JSON.stringify(map)); } catch { /* storage full/unavailable */ }
 }
-function setPending(kind, id, op, data) {
-  const map = readPending();
+function setPending(userId, kind, id, op, data) {
+  const map = readPending(userId);
   map[`${kind}:${id}`] = { kind, id, op, data };
-  writePending(map);
+  writePending(userId, map);
 }
-function clearPending(kind, id) {
-  const map = readPending();
+function clearPending(userId, kind, id) {
+  const map = readPending(userId);
   delete map[`${kind}:${id}`];
-  writePending(map);
+  writePending(userId, map);
+}
+
+// One-time adoption of anything left in the old un-scoped key. Whoever signs
+// in first inherits it — which is the very ambiguity the per-account key
+// exists to remove, but it only applies to writes queued before this
+// version, and dropping them on the floor would be a guaranteed loss rather
+// than a hypothetical mis-attribution.
+function adoptLegacyPending(userId) {
+  try {
+    const raw = localStorage.getItem(PENDING_KEY);
+    if (!raw) return;
+    const legacy = JSON.parse(raw) || {};
+    if (Object.keys(legacy).length) writePending(userId, { ...legacy, ...readPending(userId) });
+    localStorage.removeItem(PENDING_KEY);
+  } catch { /* ignore */ }
 }
 // Overlays any writes still stuck in the outbox onto freshly-loaded remote
 // data, so a device that's still offline at boot shows the last edit made
 // on it instead of quietly reverting to stale server state.
-function applyPending(loaded, kind) {
-  const entries = Object.values(readPending()).filter(e => e.kind === kind);
+function applyPending(userId, loaded, kind) {
+  const entries = Object.values(readPending(userId)).filter(e => e.kind === kind);
   if (entries.length === 0) return loaded;
   const { normalize } = STORES[kind];
   let list = [...loaded];
@@ -775,9 +834,10 @@ function applyPending(loaded, kind) {
   return list;
 }
 async function flushPending(userId) {
-  for (const e of Object.values(readPending())) {
+  adoptLegacyPending(userId);
+  for (const e of Object.values(readPending(userId))) {
     const store = STORES[e.kind];
-    if (e.op === 'delete') await store.remove(e.id);
+    if (e.op === 'delete') await store.remove(userId, e.id);
     else await store.upsert(userId, e.data);
   }
 }
@@ -804,25 +864,25 @@ function makeStore(kind, table, normalize, msg) {
     // Records itself in the outbox BEFORE the network call and only clears on
     // confirmed success — see the PENDING_KEY comment above.
     async upsert(userId, item) {
-      setPending(kind, item.id, 'upsert', item);
+      setPending(userId, kind, item.id, 'upsert', item);
       try {
         const { error } = await supabase.from(table).upsert({
           id: item.id, user_id: userId, data: item, updated_at: new Date().toISOString(),
         });
         if (error) throw error;
-        clearPending(kind, item.id);
+        clearPending(userId, kind, item.id);
         return true;
       } catch (err) {
         console.error(msg.save, err);
         return false;
       }
     },
-    async remove(id) {
-      setPending(kind, id, 'delete', null);
+    async remove(userId, id) {
+      setPending(userId, kind, id, 'delete', null);
       try {
         const { error } = await supabase.from(table).delete().eq('id', id);
         if (error) throw error;
-        clearPending(kind, id);
+        clearPending(userId, kind, id);
         return true;
       } catch (err) {
         console.error(msg.remove, err);
@@ -1216,6 +1276,17 @@ const BOW_TYPE_OPTIONS_WITH_NONE = [{ id: 'none', label: 'Non specificato' }, ..
 // Shifts startedAt (and completedAt, if set) to a new calendar date while
 // preserving each timestamp's time-of-day and the gap between the two —
 // editing the date of a past session shouldn't invent a shooting time.
+// yyyy-mm-dd in the LOCAL timezone, for <input type="date">. Slicing the
+// ISO string instead gives the UTC date, which for a session started just
+// after midnight local time is the previous day — the picker would then
+// disagree with the date shown everywhere else (formatDateFull and friends
+// all render locally), and touching it would silently shift the session.
+function localDateInputValue(iso) {
+  const d = new Date(iso);
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 function withSessionDate(session, dateStr) {
   const [y, m, d] = dateStr.split('-').map(Number);
   if (!y || !m || !d) return session;
@@ -1235,7 +1306,7 @@ function SessionMetaEditor({ session, onUpdate }) {
     <div className="flex flex-col gap-3 w-full rounded-2xl p-4" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
       <div className="text-sm font-semibold" style={{ color: T.textDim }}>Dettagli</div>
 
-      <input type="date" value={session.startedAt.slice(0, 10)} onChange={e => e.target.value && onUpdate(s => withSessionDate(s, e.target.value))}
+      <input type="date" value={localDateInputValue(session.startedAt)} onChange={e => e.target.value && onUpdate(s => withSessionDate(s, e.target.value))}
         className="rounded-lg px-3 py-2 text-sm w-full" style={{ background: T.surfaceAlt, border: `1px solid ${T.border}`, color: T.text, colorScheme: 'dark' }} />
 
       <ChipSelect label="Tipo" options={SESSION_TYPES} value={session.sessionType} onChange={(v) => v && onUpdate(s => ({ ...s, sessionType: v }))} />
@@ -1341,7 +1412,7 @@ function SessionSummary({ session, sessions, onExit, onUpdate }) {
   const avg = shot ? total / shot : 0;
   const insight = useMemo(() => sessionInsight(session, sessions), [session, sessions]);
   return (
-    <div className="px-4 py-6 flex flex-col gap-5 items-center text-center w-full mx-auto">
+    <div className="px-4 py-6 flex flex-col gap-5 items-center text-center w-full max-w-3xl mx-auto">
       <div>
         <div className="text-sm uppercase tracking-wide flex items-center gap-2 justify-center" style={{ color: T.textDim }}>
           Sessione completata
@@ -1456,7 +1527,7 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
   }
 
   return (
-    <div className="flex flex-col w-full mx-auto min-h-screen">
+    <div className="flex flex-col w-full max-w-3xl mx-auto min-h-screen">
       <header className="sticky top-0 z-10 flex items-center justify-between px-3 py-3" style={{ background: T.bg, borderBottom: `1px solid ${T.border}` }}>
         <button onClick={onExit} className="p-2 -ml-2 rounded-full active:scale-95 transition-transform min-w-11 min-h-11 flex items-center justify-center" aria-label="Indietro"><ChevronLeft /></button>
         <div className="text-center">
@@ -1622,7 +1693,7 @@ function NewSessionScreen({ onCreate, onCancel }) {
   }
 
   return (
-    <div className="w-full mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+    <div className="w-full max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
         <button onClick={goBack} className="p-2 -ml-2 rounded-full min-w-11 min-h-11 flex items-center justify-center" aria-label="Indietro"><ChevronLeft /></button>
         <h1 className="text-xl font-bold">{NEW_SESSION_TITLES[step]}</h1>
@@ -1745,6 +1816,26 @@ function NewSessionScreen({ onCreate, onCancel }) {
 // or a bare array of sessions. Imported sessions overwrite existing ones
 // with the same id (so re-importing an updated file is safe) and are
 // otherwise added.
+// Import is a trust boundary: whatever comes out of the file picker gets
+// upserted to Supabase BEFORE anything renders it, so a wrong file used to
+// persist and then crash every render of Storico
+// (flattenArrows -> stage.ends.flatMap on an undefined `ends`), leaving the
+// account broken until the rows were deleted server-side. Checking the
+// shape first turns that into a message. Deliberately structural only — it
+// asks "can the app read this?", not "are these scores plausible".
+function isImportableSession(s) {
+  if (!s || typeof s !== 'object' || typeof s.id !== 'string') return false;
+  // Pre-v1.4 files carry a flat round+ends; normalizeSession wraps those.
+  const stages = s.stages || (s.round && s.ends ? [{ round: s.round, ends: s.ends }] : null);
+  if (!Array.isArray(stages) || stages.length === 0) return false;
+  return stages.every(st =>
+    st && st.round &&
+    Number.isFinite(st.round.arrowsPerEnd) && Number.isFinite(st.round.ends) &&
+    Number.isFinite(st.round.distanceM) && Number.isFinite(st.round.faceCm) &&
+    Array.isArray(st.ends) &&
+    st.ends.every(e => e && Array.isArray(e.arrows) && e.arrows.every(a => a && Number.isFinite(a.score))));
+}
+
 function ImportButton({ onImport }) {
   const inputRef = useRef(null);
   const [status, setStatus] = useState('');
@@ -1759,8 +1850,13 @@ function ImportButton({ onImport }) {
         const parsed = JSON.parse(reader.result);
         const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.sessions) ? parsed.sessions : null;
         if (!list || !list.length) throw new Error('empty');
-        onImport(list);
-        setStatus(`Importate ${list.length} sessioni`);
+        const usable = list.filter(isImportableSession);
+        if (!usable.length) throw new Error('no valid sessions');
+        onImport(usable);
+        const skipped = list.length - usable.length;
+        setStatus(skipped
+          ? `Importate ${usable.length} sessioni · ${skipped} ignorate perché non leggibili`
+          : `Importate ${usable.length} sessioni`);
       } catch (err) {
         console.error('Errore import', err);
         setStatus('File non valido');
@@ -1901,7 +1997,7 @@ function StoricoScreen({ sessions, onOpen, onResume, onDelete, onImport, onSignO
   const matchingEntries = filterId === 'all' ? [] : allEntries.filter(e => roundShapeKey(e.round) === filterId);
 
   return (
-    <div className="w-full mx-auto px-4 pt-4 pb-8 flex flex-col gap-5">
+    <div className="w-full max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-5">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold">Storico</h1>
         <div className="flex items-center gap-2">
@@ -2135,7 +2231,7 @@ function StatisticheScreen({ sessions }) {
 
   if (!completedSessions.length) {
     return (
-      <div className="w-full mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+      <div className="w-full max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
         <h1 className="text-xl font-bold">Statistiche</h1>
         <div className="rounded-2xl p-4 text-sm" style={{ background: T.surface, border: `1px dashed ${T.border}`, color: T.textDim }}>
           Completa qualche sessione per iniziare a vedere le tue statistiche cumulative.
@@ -2145,7 +2241,7 @@ function StatisticheScreen({ sessions }) {
   }
 
   return (
-    <div className="w-full mx-auto px-4 pt-4 pb-8 flex flex-col gap-5">
+    <div className="w-full max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-5">
       <h1 className="text-xl font-bold">Statistiche</h1>
 
       <div className="grid grid-cols-3 gap-2">
@@ -2422,7 +2518,7 @@ function DetailScreen({ session, sessions, onBack, onUpdate, onDelete }) {
   const multiStage = session.stages.length > 1;
   const insight = useMemo(() => sessionInsight(session, sessions), [session, sessions]);
   return (
-    <div className="w-full mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+    <div className="w-full max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
         <button onClick={onBack} className="p-2 -ml-2 rounded-full min-w-11 min-h-11 flex items-center justify-center" aria-label="Indietro"><ChevronLeft /></button>
         <h1 className="text-xl font-bold flex items-center gap-2">
@@ -2485,7 +2581,7 @@ function HomeScreen({ sessions, onNew, onResume, legacyData, onImportLegacy, onD
   const completedCount = sessions.filter(s => s.status === 'completed').length;
 
   return (
-    <div className="px-4 pt-6 pb-4 flex flex-col gap-6 w-full mx-auto">
+    <div className="px-4 pt-6 pb-4 flex flex-col gap-6 w-full max-w-3xl mx-auto">
       <header className="flex items-center gap-3">
         <div className="rounded-2xl p-3" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
           <Target size={28} color={T.gold} />
@@ -2563,9 +2659,11 @@ function BottomNav({ view, setView }) {
   return (
     <div className="sticky bottom-0 z-10" style={{ background: T.bgElevated, borderTop: `1px solid ${T.border}` }}>
       {/* Bar background stays full-bleed; the tappable row aligns to the
-          same centered column as the screen content above it, so icons
-          don't spread across the full width on a wide viewport. */}
-      <div className="flex w-full mx-auto">
+          same max-w-3xl centered column the screens above it use, so icons
+          don't spread across the full width on a wide viewport. (The two
+          bracket screens are deliberately wider — the nav simply doesn't
+          line up with those, and the bracket has its own scroll anyway.) */}
+      <div className="flex w-full max-w-3xl mx-auto">
         <NavButton icon={Target} label="Home" active={view === 'home'} onClick={() => setView('home')} />
         <NavButton icon={Clock} label="Storico" active={view === 'storico'} onClick={() => setView('storico')} />
         <NavButton icon={BarChart3} label="Statistiche" active={view === 'statistiche'} onClick={() => setView('statistiche')} />
@@ -2774,7 +2872,8 @@ function propagateWinner(rounds, roundIdx, matchIdx, winnerSlot) {
 function clearMatchResult(match) {
   return {
     ...match,
-    units: [], cumSpA: 0, cumSpB: 0, shootOff: null, forfeit: false, winnerSlot: null,
+    units: [], cumSpA: match.baseSpA || 0, cumSpB: match.baseSpB || 0,
+    shootOff: null, forfeit: false, winnerSlot: null,
     status: (match.slotA && match.slotB) ? 'pending' : 'waiting',
   };
 }
@@ -2970,7 +3069,11 @@ function recordUnit(match, formatDef, unitIndex, side, arrows) {
   unit = { ...unit, [side === 'A' ? 'arrowsA' : 'arrowsB']: arrows, [side === 'A' ? 'totalA' : 'totalB']: sumArrows(arrows) };
   units[unitIndex] = unit;
 
-  let cumSpA = 0, cumSpB = 0;
+  // Starts from the match's carried-over set points, not from zero: the
+  // 3-way final's silver/bronze runoff begins at whatever the two archers
+  // had already earned against each other (see startThreeWayRunoff).
+  // Absent on every ordinary match, where it reads as 0.
+  let cumSpA = match.baseSpA || 0, cumSpB = match.baseSpB || 0;
   units.forEach(u => {
     if (u.totalA == null || u.totalB == null) return;
     if (u.totalA > u.totalB) { u.spA = 2; u.spB = 0; }
@@ -3098,7 +3201,13 @@ function startThreeWayRunoff(final, formatDef) {
   const remaining = [0, 1, 2].filter(i => i !== final.goldSlot);
   const runoff = {
     slotA: final.sides[remaining[0]], slotB: final.sides[remaining[1]],
-    units: [], cumSpA: final.cumSp[remaining[0]], cumSpB: final.cumSp[remaining[1]],
+    units: [],
+    // baseSpA/baseSpB are what recordUnit accumulates onto. Setting only
+    // cumSpA/cumSpB is not enough — recordUnit recomputes those from the
+    // units array on every end, so the carried points would vanish the
+    // moment the first runoff end was confirmed.
+    baseSpA: final.cumSp[remaining[0]], baseSpB: final.cumSp[remaining[1]],
+    cumSpA: final.cumSp[remaining[0]], cumSpB: final.cumSp[remaining[1]],
     status: 'in_progress', winnerSlot: null, shootOff: null, forfeit: false,
   };
   return { ...final, runoff: { ...runoff, sideA: remaining[0], sideB: remaining[1] } };
@@ -3204,8 +3313,12 @@ function contrastRatio(hexA, hexB) {
   return lA > lB ? lA / lB : lB / lA;
 }
 
+// 4.5:1, not the 3:1 large-text/graphics threshold: the accent is used for
+// the small "Campione" caption and other body-size text on the public page,
+// not just for borders and icons. A logo colour that can't clear this is
+// dropped and the page falls back to T.gold.
 function accentColorContrastOk(hex) {
-  return contrastRatio(hex, T.bg) >= 3;
+  return contrastRatio(hex, T.bg) >= 4.5;
 }
 
 function createTournament({ name, date, distanceM, faceCm, formatId, participants, finalFormat = 'standard' }) {
@@ -3675,7 +3788,7 @@ function TournamentCreateScreen({ onCreate, onCancel }) {
   }
 
   return (
-    <div className="w-full mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+    <div className="w-full max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
         <button onClick={goBack} className="p-2 -ml-2 rounded-full min-w-11 min-h-11 flex items-center justify-center" aria-label="Indietro"><ChevronLeft /></button>
         <h1 className="text-xl font-bold">{TOURNAMENT_STEP_TITLES[step]}</h1>
@@ -3766,7 +3879,7 @@ function TournamentEditParticipantsScreen({ tournament, onSave, onCancel }) {
   const canSave = participants.length >= 2;
 
   return (
-    <div className="w-full mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+    <div className="w-full max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
         <button onClick={onCancel} className="p-2 -ml-2 rounded-full min-w-11 min-h-11 flex items-center justify-center" aria-label="Indietro"><ChevronLeft /></button>
         <h1 className="text-xl font-bold">Modifica partecipanti</h1>
@@ -4556,6 +4669,11 @@ function LancasterWildcardControl({ tournament, finalStage, focusRef, onOpenPlay
   }
 
   if (finalStage.match1.status === 'completed') return null;
+  // With fewer than 4 competitors the ladder's 4th slot is empty, so match1
+  // is a bye — there is no 4th seed to challenge, and everyone still in the
+  // tournament is already on the ladder. Offering the wildcard here read
+  // the name off that empty slot and crashed the page.
+  if (!finalStage.sides[3]) return null;
 
   return (
     <Disclosure variant="link" label="Ripescaggio: fai rientrare un'eliminata →">
@@ -4744,7 +4862,7 @@ function MatchScreen({ match, title, formatId, onBack, onDone, onComplete, keybo
 
   if (match.status === 'completed' && !isEditing) {
     return (
-      <div className="w-full mx-auto px-4 pt-4 pb-8 flex flex-col gap-4 items-center text-center">
+      <div className="w-full max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4 items-center text-center">
         <div className="flex items-center gap-2 self-start">
           <button onClick={finish} className="p-2 -ml-2 rounded-full min-w-11 min-h-11 flex items-center justify-center" aria-label="Indietro"><ChevronLeft /></button>
           <h1 className="text-xl font-bold">{title}</h1>
@@ -4766,7 +4884,7 @@ function MatchScreen({ match, title, formatId, onBack, onDone, onComplete, keybo
   }
 
   return (
-    <div className="w-full mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+    <div className="w-full max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
         <button onClick={onBack} className="p-2 -ml-2 rounded-full min-w-11 min-h-11 flex items-center justify-center" aria-label="Indietro"><ChevronLeft /></button>
         <h1 className="text-xl font-bold">{title}</h1>
@@ -4902,7 +5020,7 @@ function ThreeWayFinalScreen({ tournament, onBack, onDone, onComplete, keyboardS
 
   if (final.status === 'completed') {
     return (
-      <div className="w-full mx-auto px-4 pt-4 pb-8 flex flex-col gap-4 items-center text-center">
+      <div className="w-full max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4 items-center text-center">
         <div className="flex items-center gap-2 self-start">
           <button onClick={finish} className="p-2 -ml-2 rounded-full min-w-11 min-h-11 flex items-center justify-center" aria-label="Indietro"><ChevronLeft /></button>
           <h1 className="text-xl font-bold">Finale a 3</h1>
@@ -4945,7 +5063,7 @@ function ThreeWayFinalScreen({ tournament, onBack, onDone, onComplete, keyboardS
   if (final.status === 'shootoff3') {
     const contenders = final.shootoffContenders || [0, 1, 2];
     return (
-      <div className="w-full mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+      <div className="w-full max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
         <div className="flex items-center gap-2">
           <button onClick={onBack} className="p-2 -ml-2 rounded-full min-w-11 min-h-11 flex items-center justify-center" aria-label="Indietro"><ChevronLeft /></button>
           <h1 className="text-xl font-bold">Finale a 3</h1>
@@ -4971,7 +5089,7 @@ function ThreeWayFinalScreen({ tournament, onBack, onDone, onComplete, keyboardS
   }
 
   return (
-    <div className="w-full mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
+    <div className="w-full max-w-3xl mx-auto px-4 pt-4 pb-8 flex flex-col gap-4">
       <div className="flex items-center gap-2">
         <button onClick={onBack} className="p-2 -ml-2 rounded-full min-w-11 min-h-11 flex items-center justify-center" aria-label="Indietro"><ChevronLeft /></button>
         <h1 className="text-xl font-bold">Finale a 3</h1>
@@ -5035,7 +5153,7 @@ function TournamentRow({ tournament, onOpen, onDelete }) {
 
 function TorneiScreen({ tournaments, onNew, onOpen, onDelete }) {
   return (
-    <div className="w-full mx-auto px-4 pt-6 pb-8 flex flex-col gap-4">
+    <div className="w-full max-w-3xl mx-auto px-4 pt-6 pb-8 flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Tornei</h1>
         <button onClick={onNew} className="p-2.5 rounded-full min-w-11 min-h-11 flex items-center justify-center" style={{ background: T.gold, color: GOLD_TEXT }} aria-label="Nuovo torneo"><Plus size={20} /></button>
@@ -5173,13 +5291,13 @@ export default function ArcheryScorecard() {
     flushPending(userId).then(() => {
       STORES.session.load(userId).then(s => {
         if (!mounted) return;
-        const merged = applyPending(s, 'session');
+        const merged = applyPending(userId, s, 'session');
         setSessions(merged);
         setLoaded(true);
         if (merged.length === 0) setLegacyData(findLegacyLocalSessions());
       });
       STORES.tournament.load(userId).then(t => {
-        if (mounted) setTournaments(applyPending(t, 'tournament'));
+        if (mounted) setTournaments(applyPending(userId, t, 'tournament'));
       });
     });
     return () => { mounted = false; };
@@ -5212,7 +5330,7 @@ export default function ArcheryScorecard() {
 
   const deleteSession = useCallback((id) => {
     setSessions(prev => prev.filter(s => s.id !== id));
-    if (userId) STORES.session.remove(id).then(ok => flagSaveError(ok, 'Impossibile eliminare la sessione online: verrà ritentato da solo appena torna la connessione.'));
+    if (userId) STORES.session.remove(userId, id).then(ok => flagSaveError(ok, 'Impossibile eliminare la sessione online: verrà ritentato da solo appena torna la connessione.'));
   }, [userId, flagSaveError]);
 
   const importSessions = useCallback((imported) => {
@@ -5254,7 +5372,14 @@ export default function ArcheryScorecard() {
 
   const deleteTournament = useCallback((id) => {
     setTournaments(prev => prev.filter(t => t.id !== id));
-    if (userId) STORES.tournament.remove(id).then(ok => flagSaveError(ok, 'Impossibile eliminare il torneo online: verrà ritentato da solo appena torna la connessione.'));
+    if (!userId) return;
+    // The logo is a Storage object, not part of the row, so deleting the
+    // tournament left it behind forever. Fire-and-forget and never surfaced:
+    // a failed cleanup is one stray file, not lost data, and it must not
+    // block or fail the delete itself. Removing a path that was never
+    // uploaded is a no-op server-side, so no need to check for one first.
+    supabase.storage.from('tournament-logos').remove([`${userId}/${id}.png`]).catch(() => {});
+    STORES.tournament.remove(userId, id).then(ok => flagSaveError(ok, 'Impossibile eliminare il torneo online: verrà ritentato da solo appena torna la connessione.'));
   }, [userId, flagSaveError]);
 
   // Participants write their own match submissions directly via the
