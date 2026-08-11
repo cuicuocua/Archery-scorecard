@@ -424,6 +424,8 @@ a single-elimination tournament with live match scoring.
   above it. `TargetFace` keeps its own `max-w-2xl` cap so the target
   diagram doesn't balloon to viewport width on an ultra-wide monitor;
   charts and lists scale with the new full-width columns as intended.
+  **Partly reverted in v1.19** — content screens are capped at `max-w-3xl`
+  again; only the two bracket screens stayed full-bleed.
 - **`ChipSelect` signals its mode**: a multi-select row (`multi` prop,
   currently just "Altre condizioni") now shows a small checkbox glyph on
   each chip, filled when active — single-select rows stay plain pills.
@@ -783,3 +785,87 @@ bronze final is realistically always run live by the organizer anyway.
   `activate` always purges the previous deploy's cached shell rather than
   serving a stale version forever — an online scorer always gets whatever
   was just deployed.
+## v1.19 additions — Audit pass
+
+No new features. A four-pass audit of the whole file: deduplication, dead
+code, correctness, and claims the code made but didn't support. Full
+reasoning is in the four commit messages; the parts that change what you
+see or rely on:
+
+- **Engine coverage joined the v1.18 test suite**
+  (`test/bracket-engine.test.js`): all three final formats played through
+  to a podium at every field size 2-8, plus correction cascades, the 3-way
+  runoff carry-over, and the participant-submission replay path. Worth
+  noting how the v1.18 suite behaved here — 68 of 68 passing while the
+  3-competitor deadlock below was live on the deployed site, because no
+  test in it ever built a field of 3.
+- **Three engine bugs the harness found**, all the same shape — state
+  updated when something happened rather than derived from what's true. A
+  3-competitor field deadlocked on both the Finale a 3 and Lancaster
+  formats (the empty 4th slot is a bye, a bye is never *played*, so it
+  never seeded its side of the final stage). Correcting a confirmed set
+  left the downstream match holding the previous winner's arrows while
+  reporting "Da giocare". `propagateWinner()` mutated match objects still
+  referenced by the previous React state.
+- **Participant submissions are replayed, not applied**: reconciliation
+  used to take the whole submitted match object once the arrows agreed —
+  but `winnerSlot`, `status`, `slotA`/`slotB`, `shootOff` and `forfeit`
+  aren't derived from arrows, so two participants could agree on every
+  arrow and still submit a different verdict on who won. The agreed
+  arrows are now replayed onto the bracket's own match
+  (`rebuildMatchFromUnits()`) and range-checked; nothing else in a
+  submission is trusted.
+- **The offline outbox is keyed per account**: it used one global
+  localStorage key, so on a shared device the first archer's queued
+  writes were replayed under whoever signed in next. Anything left under
+  the old key is adopted once, on first load.
+- **Import is shape-checked first**: a bad file used to be upserted to
+  Supabase *before* rendering, so it persisted and then crashed every
+  render of Storico until the rows were deleted server-side.
+- **Statistics that overstated their own confidence**: condition buckets
+  now need 3 sessions each (the "Analisi avanzata" gate of 5 total says
+  nothing about any single bucket, and buckets of one were drawn as
+  bars); the fatigue line needs two standard errors of the session's own
+  arrow spread rather than a flat 0.4 points; `sessionInsight` no longer
+  counts its baseline once per stage; the group-offset line reports the
+  offset instead of blaming the release, since a sight setting moves a
+  group at least as often.
+- **Personal bests need a matching arrow count**: a 72-arrow Targa 70m
+  always beat a 36-arrow WA1440 70m stage however well the latter was
+  shot. Round *grouping* still ignores length (seeing all your 70m work
+  together is useful), and a group that mixes lengths now says
+  "· lunghezze diverse" rather than implying per-arrow averaging makes
+  them equivalent — it only would if fatigue weren't real, and this app
+  charts fatigue as a feature.
+- **`WA 1440` / `WA Combined` are recognized by shape**, not stage count —
+  four rounds at 18m used to be named and styled as a real WA1440.
+- **Layout**: 19 `w-full mx-auto` wrappers were no-ops with no max width.
+  Content screens are `max-w-3xl`; the two bracket screens stay full-bleed
+  on purpose.
+- **Schema**: a partial unique index on `data->>'shareToken'` — the
+  `get_shared_tournament()` comment reasoned about "the one row whose
+  token matches", which nothing enforced. **Needs running by hand against
+  the live database**; `supabase/schema.sql` has never had a migration
+  runner.
+- Also: deleting a tournament now deletes its logo from Storage; the date
+  picker is fed a local date rather than a UTC one (a session started just
+  after midnight showed the previous day); the accent-colour contrast gate
+  is 4.5:1, not the large-text 3:1; `extractAccentColor()` buckets by hue
+  instead of averaging every colourful pixel into a hue present nowhere in
+  the logo.
+
+Deduplication in the same pass: `TournamentBody` renders the bracket and
+every final-stage block for both `BracketScreen` and the public
+`SharedTournamentScreen` (the two copies had already drifted — the
+spectator page rendered the Lancaster play-in differently and missed
+`accentColor` on its round list); `makeStore`/`STORES` replace two
+identical load/upsert/delete triplets; `Disclosure` replaces six copies of
+collapsed-button-expands-to-panel, whose footers now uniformly read
+"Chiudi" (three said "Annulla").
+
+Not fixed, deliberately: **arrows tapped on the face and arrows entered on
+the keypad are not scored identically** — a tap is a dimensionless point,
+so it can only round *down* at a ring boundary, while a keypad arrow
+carries the called score with line-cutters rounded up. Applying a shaft
+width would fix future scoring and silently rescore it against every past
+session. Use the keypad when the score matters.

@@ -386,7 +386,7 @@ function paceVsPB(stage, pbEntry) {
 //
 // A session is `{ id, stages: [stage, ...], sessionType, bowType,
 // conditions, status, startedAt, completedAt, location, note }`.
-// (Sessions saved before v1.16 also carry `roundId`/`roundLabel`; nothing
+// (Sessions saved before v1.19 also carry `roundId`/`roundLabel`; nothing
 // reads them — the display name is derived from the stage shape instead,
 // see sessionDisplayName.)
 // status/completedAt are session-wide: a multi-stage session only becomes

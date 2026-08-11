@@ -1,7 +1,8 @@
 // Builds the standalone GitHub Pages bundle for ArcheryScorecard.jsx: a
 // single self-contained index.html with Tailwind's compiled output and the
 // React/recharts/lucide-react/@supabase bundle inlined. Run with `npm run
-// build` from this directory (site/); output goes to site/dist/.
+// build` from the repo root (the script resolves every path off __dirname,
+// so the working directory doesn't matter); output goes to site/dist/.
 const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
