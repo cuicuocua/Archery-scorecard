@@ -1,2 +1,22 @@
 node_modules/
 site/dist/
+
+# macOS Finder droppings — three were already sitting untracked in the tree.
+.DS_Store
+
+# Machine-local Claude Code permission grants (absolute paths to this Mac).
+# .claude/launch.json IS tracked: it's the shared dev-server config.
+.claude/settings.local.json
+
+# Output of the /impeccable design-critique skill — regenerated on demand,
+# timestamped per run, never read by the app or the build.
+.impeccable/
+
+# Provenance for the one-off transcription of Matteo's 12 paper scoresheets:
+# 4.6 MB of scanned PDFs plus the personal score data derived from them.
+# Kept on disk (build-import.mjs re-derives the JSON and re-verifies every
+# sheet total), deliberately out of a repo that publishes to GitHub Pages.
+imports/
+
+# One-off text export of tournament results, generated from the app.
+Risultati_Tornei.txt
