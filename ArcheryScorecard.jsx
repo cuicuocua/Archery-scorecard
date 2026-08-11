@@ -5746,7 +5746,7 @@ export {
   computeGroupStats, groupStats,
   // personal scorecard: sessions + personal bests
   sameRound, findPersonalBest, paceVsPB, createSession, sessionFlattenArrows,
-  sessionTotalScore, sessionXCount, sessionArrowsShot, sessionTotalArrows,
+  sessionTotalScore, sessionXCount, sessionArrowsShot,
   activeStageIndex, sessionAddArrow, sessionUndoLastArrow, sessionProgressLabel,
   sessionDisplayName, stageEntries, normalizeSession, withSessionDate,
   roundShapeKey, matchedPreset, roundShapeLabel,
