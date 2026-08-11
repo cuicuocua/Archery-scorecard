@@ -1,260 +1,244 @@
 # Repository audit — 2026-08-11
 
-Organizational pass over `archery-scorecard`. No application behaviour was
-changed. Four commits, each revertable alone.
+Organizational pass over `archery-scorecard`, plus the reconciliation of two
+branches that had been developing in parallel without knowing about each
+other. No application behaviour was changed by the organizational work; the
+reconciliation carried four earlier commits of correctness work onto trunk.
 
 ## 1. Summary
 
-The code is in good shape; the *repository around it* was not.
+The code is in good shape. The *repository around it* was not, and the worst
+of it was invisible from inside a single checkout: **this branch and origin
+had both forked from `eee3d9e` (2026-08-07) and done substantial parallel
+work on 2026-08-08 without either knowing about the other.**
 
-`ArcheryScorecard.jsx` had just come through four passes of correctness work
-and carries a 31-check engine harness. That harness had never once run
-automatically — the deploy workflow went straight from `npm install` to
-`npm run build`, so a bracket engine that could no longer produce a podium
-would have deployed cleanly and surfaced as a stuck tournament on
-competition day. That was the single highest-impact finding and it is fixed.
+Origin — the branch the live site deploys from — carried v1.16 through
+v1.18: an 80cm six-ring face fix, a miss button and volée confirmation in
+target-tap scoring, an installable offline PWA, and a 68-test suite under
+`test/`. This checkout carried four passes of correctness work on the
+bracket engine and the storage layer, plus its own separate test harness.
+Neither side's tests knew about the other side's fixes.
 
-The rest was drift of the kind that accumulates when one file is the whole
-product and everything else is treated as scenery. `git status` listed nine
-untracked entries, so it had stopped being a usable signal — real work in
-progress was indistinguishable from `.DS_Store`. `docs/superpowers/` was
-tracking its specs and not its plans, with no decision recorded either way.
-The README's changelog stopped at v1.15 while the code's own comments refer
-to "before v1.16". `site/build.js` told you to run it from the wrong
-directory.
+The reconciliation is the substance of this pass. The empirical finding that
+justified it: **origin's engine could not finish a 3-competitor tournament**
+in either the Finale a 3 or Lancaster format. It deadlocks — no exception,
+no error, just a draw with no playable match left and nobody on the podium.
+Its 68 tests passed anyway, because none of them ever built a field of three
+and none played a tournament through to its podium at all. That is live on
+the deployed site today.
 
-One structural problem is *not* fixed and cannot be from here:
-`supabase/schema.sql` is applied by hand, has no migration runner, and no
-record of what has actually been run against the live database. The
-share-token unique index added in the last audit pass is, as far as this
-repository knows, still unapplied. See open question 1.
+The rest was ordinary drift. `git status` listed nine untracked entries, so
+it had stopped being a usable signal. `docs/superpowers/` tracked its specs
+and not its plans, with no decision recorded either way. `site/build.js` told
+you to run it from the wrong directory.
 
-Two smaller things I'd call previous decisions worth revisiting: the
-repository's default branch — the one the deploy watches — is named
-`claude/arcieri-senesi-scorecard-52a25z`, and the README is now ~770 lines
-doing two unrelated jobs. Neither is urgent. Both are questions below rather
-than changes, because fixing either is a decision, not a cleanup.
+Two previous decisions worth revisiting, neither urgent, both questions
+below rather than changes: the default branch of a public repository is
+named `claude/arcieri-senesi-scorecard-52a25z`, and the README is now ~880
+lines doing two unrelated jobs.
 
 ## 2. Tooling used
 
 No skills applied (the one available, `convert-documents-to-markdown`, has
 no bearing here). Evidence came from `git ls-files` / `git log` /
-`git grep`, `rg`, `npm ls`, `npm ci --dry-run`, the project's own
-`npm run build` and `npm test`, and `graphify update .` (399 nodes, 668
-edges) per `CLAUDE.md`. No new dependencies installed.
+`git grep` / `git merge-tree`, `rg`, `gh repo view`, `npm ls`,
+`npm ci --dry-run`, the project's own `npm run build` and `npm test`, a
+throwaway `git worktree` at origin's HEAD to probe its engine directly, and
+`graphify update .` per `CLAUDE.md`. No new dependencies installed.
 
-Baseline before any change: build clean at 931 KB, 31/31 engine checks
-passing, no tracked file modified. Same after. Nothing was already failing.
+Baseline on origin before any change: build clean, 68/68 tests passing.
+After reconciliation: build clean at 933 KB, **102/102 tests passing**.
+Nothing was already failing.
 
 ## 3. Changes made
 
-### `c5796c3` — Ignore machine-local and personal-data files; track the shared launch config
+Eleven commits on top of `fdabbae`. The four correctness commits are
+carried over unchanged from the pre-existing audit work; the rest are new.
 
-`.gitignore` gained five entries. Everything named stays on disk untouched;
-it is only no longer offered for commit on every `git add`.
+### Carried over — the four correctness passes
+
+`4e597c9`, `c9deb33`, `f8e83b9`, `48b7500`. Deduplication (`TournamentBody`,
+`makeStore`, `Disclosure`), dead-code removal, eleven correctness fixes, and
+ten unsupported claims retired. Full reasoning in their commit messages;
+user-visible summary in the README's new v1.19 section. **Origin had none of
+these** — verified function by function, then empirically via the deadlock
+probe.
+
+### `528a312` — Drop `sessionTotalArrows` from the test-only export list
+
+The function was removed as dead in `c9deb33`; origin's export block, added
+independently, still named it, so the merged file did not compile. No test
+referenced it.
+
+### `7ef4564` — Ignore machine-local and personal-data files; track the shared launch config
 
 | Path | Was | Now | Why |
 |---|---|---|---|
-| `.DS_Store` (×3: root, `docs/`, `site/`) | untracked | ignored | Finder droppings. |
-| `.claude/settings.local.json` | untracked | ignored | Permission grants containing absolute paths to this Mac. Useless to anyone else, and `.local.` is the conventional ignore marker. |
-| `.impeccable/` | untracked | ignored | Output of the `/impeccable` design-critique skill: timestamped per run, regenerated on demand, never read by the app or the build. |
-| `imports/` (4.6 MB) | untracked | ignored | Twelve scanned paper scoresheets plus the personal score data transcribed off them, in a repository that publishes to GitHub Pages. See open question 3. |
-| `Risultati_Tornei.txt` | untracked | ignored | One-off text export generated from the app. |
-| `.claude/launch.json` | untracked | **tracked** | The opposite case: this is the dev-server config the project shares, not a per-machine grant, so it belongs next to the other build plumbing. |
+| `.DS_Store` (×3) | untracked | ignored | Finder droppings. |
+| `.claude/settings.local.json` | untracked | ignored | Permission grants with absolute paths to this Mac. |
+| `.impeccable/` | untracked | ignored | Skill output, timestamped per run, regenerated on demand. |
+| `imports/` (4.6 MB) | untracked | ignored | Twelve scanned scoresheets plus personal score data, in a public repository. |
+| `Risultati_Tornei.txt` | untracked | ignored | One-off export from the app. |
+| `graphify-out/` | untracked | ignored | Generated knowledge graph — see question 9. |
+| `.claude/launch.json` | untracked | **tracked** | The dev-server config the project shares, not a per-machine grant. |
 
-Net effect: `git status` now reports one untracked entry (`CLAUDE.md`,
-question 2) instead of nine.
+Everything named stays on disk untouched. `git status` now reports one
+untracked entry (`CLAUDE.md`, question 2) instead of nine.
 
-### `8859eb0` — Track the implementation plans alongside the specs they implement
+### `f763891` — Track the implementation plans alongside the specs
 
-`docs/superpowers/` was doing two jobs. `specs/` is in git — six deliberate
-commits, one per spec, going back to 2026-07-28. `plans/` was not, despite
-being the same kind of artifact for the same six features. Nothing recorded
-that split as a decision; the files simply never got staged.
+`specs/` was in git — six deliberate commits — and `plans/` was not, despite
+being the same artifact for the same six features. Five plans, 2,654 lines,
+committed verbatim. Each carries reasoning its spec does not: the
+participant-self-scoring plan is the only record of why the 3-way final is
+excluded from self-scoring, and the only record that the organizer's
+30-second poll was not in the spec and had to be added or a submitted score
+would only be noticed on a full page reload. Scanned for secrets and
+personal data before staging: clean.
 
-Five plans, 2,654 lines, committed verbatim:
+### `d2172ce` — Document the audit pass as v1.19; correct two stale claims
 
-```
-docs/superpowers/plans/2026-07-28-statistiche-redesign.md
-docs/superpowers/plans/2026-07-29-statistiche-consistency-trend.md
-docs/superpowers/plans/2026-07-29-tournament-logo.md
-docs/superpowers/plans/2026-07-29-tournament-sharing.md
-docs/superpowers/plans/2026-07-30-participant-self-scoring.md
-```
+Written as v1.16 on the pre-reconciliation branch, which had not seen
+origin's v1.16–v1.18. Renumbered to v1.19 and appended after them, here and
+at the two places referencing it (README's v1.7 entry and
+`normalizeSession`'s contract comment). Also corrected: v1.7's claim that
+every screen dropped its max-width cap (eighteen were capped again at
+`max-w-3xl`), and `site/build.js`'s header saying to run it from `site/`.
 
-Each carries reasoning its spec does not — the scope trims taken during
-implementation and why, and additions the spec had not anticipated. The
-participant-self-scoring plan is the clearest example: it is the only place
-that records *why* the 3-way final is excluded from self-scoring, and the
-only place that records that the organizer's 30-second poll was not in the
-spec and had to be added or a submitted score would only ever be noticed on
-a full page reload.
+### `09055a9` — Fold the standalone engine harness into the v1.18 test suite
 
-Scanned for secrets before staging: clean (the only email addresses present
-are `email@esempio.it` and `x@x.com`, both placeholders).
+Two harnesses existed for the same file, written in parallel. `test/` is the
+better one — it transpiles rather than bundles, shims `localStorage` and the
+Supabase client, and reads functions off the shared export block rather than
+a second `__engine` object maintained beside it. So `test_bracket.mjs` was
+deleted and its checks moved to `test/bracket-engine.test.js` (30 tests).
+Every test in that file drives the whole scorer loop rather than one
+function, because that is how a bracket bug presents.
 
-### `6d46bbe` — Gate the Pages deploy on the bracket engine tests
+Nine existing tests changed, all asserting behaviour the audit commits
+deliberately corrected: eight outbox tests called `readPending`/`setPending`/
+`applyPending` without a user id (the outbox is keyed per account now), and
+`findPersonalBest`'s fixture had no `arrowsPerEnd`/`ends` (candidates must
+now match on total arrow count). Three tests added covering exactly those
+changes.
 
-```yaml
-- name: Test the bracket engine
-  run: npm test
-```
+### Not carried over
 
-inserted between install and build, plus `test_bracket.mjs` added to the
-workflow's `paths:` filter — without it, a push changing only the tests
-would not re-run them.
+`6d46bbe`, which added an `npm test` step to the deploy workflow. Origin
+added the same step on 2026-08-08. Origin's workflow is untouched.
 
-This is the one change with teeth. `package.json` has had a `test` script
-since the harness was written and nothing ever ran it except a human
-remembering to.
+### Nothing was deleted except `test_bracket.mjs`
 
-### `3a70b6b` — Document the v1.16 audit pass; correct two stale claims
-
-- **README gained a `v1.16 additions — Audit pass` section.**
-  `normalizeSession`'s contract comment refers to sessions saved "before
-  v1.16", but the changelog stopped at v1.15 — four commits of behaviour
-  change had no write-up anywhere but their commit messages. Two of them a
-  user has to know about: participant submissions are now *replayed* rather
-  than trusted, and the schema's new share-token index has to be run by
-  hand.
-- **README v1.7's "Full-width layout" claim corrected.** It said every
-  screen dropped its max-width cap. Eighteen content containers were capped
-  again at `max-w-3xl` in the audit pass; the entry now says where it was
-  reverted instead of describing a layout the app no longer has.
-- **`site/build.js` header comment corrected.** It said to run the script
-  from `site/`. `package.json` runs it from the repo root, and it resolves
-  every path off `__dirname`, so the working directory has never mattered.
-
-### Nothing was deleted
-
-No file was removed, tracked or untracked. Nothing needs its contents
-recorded here for recovery.
+Superseded by `test/bracket-engine.test.js`, in the same commit, with its
+coverage preserved and extended.
 
 ## 4. Proposed but not executed
 
-**`npm install` → `npm ci` in CI.** Standard reproducibility hygiene, and
-the lockfile supports it (`npm ci --dry-run` exits 0). *Blocker:* the dry
-run also surfaced `npm warn allow-scripts — esbuild@0.23.1 (postinstall)`.
-esbuild's postinstall is what fetches its platform binary; if a fresh runner
-blocks it, the build fails at a step that currently works. The lockfile pins
-every version exactly and is in sync with `node_modules`, so `npm install`
-resolves identically today — this is hygiene, not a correctness fix, and not
-worth risking the deploy to verify blind.
+**`npm install` → `npm ci` in CI.** The lockfile supports it
+(`npm ci --dry-run` exits 0). *Blocker:* the dry run also surfaced
+`npm warn allow-scripts — esbuild@0.23.1 (postinstall)`. That postinstall
+fetches esbuild's platform binary; if a fresh runner blocks it, the build
+fails at a step that currently works. The lockfile pins every version and is
+in sync, so `npm install` resolves identically today. Hygiene, not
+correctness — not worth risking the deploy to verify blind.
 
-**`@supabase/supabase-js` 2.110.9 → 2.112.2.** Two minor versions behind.
-*Blocker:* no functional reason to move, and the auth/RPC paths this app
-depends on have no browser-verifiable test coverage. Worth doing next time
-someone is already testing a signed-in flow end to end.
+**`@supabase/supabase-js` 2.110.9 → 2.112.2.** *Blocker:* no functional
+reason, and the auth/RPC paths have no browser-verifiable coverage. Worth
+doing next time someone is already testing a signed-in flow end to end.
 
-**Splitting the README.** It is ~770 lines doing two jobs: an architecture
-and data-model reference at the top, then sixteen `v1.x additions` sections
-that are a changelog. The reference part is what anyone actually needs and
-it is buried above 700 lines of history. *Blocker:* this is a rewrite of the
-project's primary document, not a cleanup pass, and the split point is a
-judgement call — see question 5.
+**Splitting the README.** ~880 lines doing two jobs: an architecture
+reference at the top, then nineteen `v1.x additions` sections that are a
+changelog. The reference part is what anyone needs and it is buried above
+800 lines of history. *Blocker:* a rewrite of the primary document, and the
+split point is a judgement call — question 5.
 
-**Bundle size on the public share page.** One 931 KB `index.html` is served
-to every spectator following a share link, including recharts, the whole
-personal-scorecard app, and `@supabase/supabase-js` — none of which the
-spectator page renders. *Blocker:* fixing it means a second esbuild entry
-point and a second HTML output, which changes the deployment shape. That is
-a feature-sized change, not an organizational one.
+**Bundle size on the public share page.** One 933 KB `index.html` reaches
+every spectator following a share link, including recharts, the whole
+personal-scorecard app, and `@supabase/supabase-js`. *Blocker:* fixing it
+means a second entry point and a second HTML output, which changes the
+deployment shape. Feature-sized, not organizational.
 
-**Moving `test_bracket.mjs` into `test/`.** Considered and rejected. One
-file, correctly referenced by `package.json`, moving it gains nothing.
+**Moving `test/bracket-engine.test.js`'s `playThrough` helper into
+`test/load.cjs`.** Considered and rejected — one consumer, and the loop is
+easier to read next to the assertions that depend on it.
 
 ## 5. Open questions
 
-Numbered for reply. Numbers stay stable as they close — 1 and 3 are
-resolved and struck through rather than removed.
+Numbers stay stable as they close; resolved ones are struck through.
 
-1. ~~**⚠ Blocking — has the share-token unique index actually been run
-   against the live database?**~~ **RESOLVED 2026-08-11: yes, applied.**
-   The schema file and the live database agree. The underlying gap stands —
-   `supabase/schema.sql` is applied by hand, has no migration runner, and
-   nothing in the repository records what has been run — but it is not
-   blocking anything today.
+1. ~~**Has the share-token unique index been run against the live
+   database?**~~ **RESOLVED 2026-08-11: yes, applied.** The underlying gap
+   stands — `supabase/schema.sql` is applied by hand, has no migration
+   runner, and nothing records what has been run — but nothing is blocked on
+   it today.
 
-2. **Should `CLAUDE.md` be tracked in git?** It is the last untracked file
-   and it duplicates four sections of the README. It was briefly committed
-   by accident during the previous pass and I amended it back out rather
-   than make the call unilaterally. Yes = commit it; no = it gets added to
-   `.gitignore` so `git status` reaches zero.
+2. **Should `CLAUDE.md` be tracked?** It is the last untracked file and
+   duplicates four sections of the README. Note that its "No service worker
+   / full offline install — deliberate v1 scope" rule is now false: v1.18
+   shipped one. Whichever way this goes, that line needs deleting.
 
-3. ~~**⚠ Blocking on `imports/` — is this repository public?**~~
-   **RESOLVED 2026-08-11 by evidence, not by asking:** `gh repo view` reports
-   `cuicuocua/Archery-scorecard`, `visibility: PUBLIC`. Ignoring `imports/`
-   stands — twelve scanned paper scoresheets and the personal score data
-   transcribed off them do not belong in a public repository. The five plans
-   committed in `8859eb0` were re-checked against this: no real participant
-   names, no personal data, no secrets.
+3. ~~**Is this repository public?**~~ **RESOLVED 2026-08-11 by evidence:**
+   `gh repo view` reports `cuicuocua/Archery-scorecard`, `visibility: PUBLIC`.
+   Ignoring `imports/` stands. The five committed plans were re-checked
+   against that: no real participant names, no personal data, no secrets.
 
-4. **Should the deploy branch be renamed?** The repository's default branch,
-   and the only branch `deploy-pages.yml` watches, is
-   `claude/arcieri-senesi-scorecard-52a25z`. It works, but it names an
-   agent session, and anyone cloning this sees an experiment branch as
-   trunk. Renaming means editing the workflow's `branches:` list and
-   changing the default in GitHub settings.
+4. **Should the deploy branch be renamed?** The default branch of a public
+   repository, and the only branch `deploy-pages.yml` watches, is
+   `claude/arcieri-senesi-scorecard-52a25z`. **Do this with GitHub's own
+   branch-rename** (`gh api -X POST repos/cuicuocua/Archery-scorecard/branches/<old>/rename`),
+   which moves the remote branch, the default pointer and any open PRs in
+   one server-side operation — not the local `git branch -m` + push I
+   proposed earlier, which is what nearly overwrote the diverged commits.
 
-5. **Split the README?** Reference (architecture, data model, round
-   definitions, rules) stays in `README.md`; the sixteen `v1.x additions`
-   sections move to `CHANGELOG.md` untouched. Yes/no.
+5. **Split the README?** Reference stays in `README.md`; the nineteen
+   `v1.x additions` sections move to `CHANGELOG.md` untouched. Yes/no.
 
-6. **Delete `.impeccable/`?** The single critique file is dated
-   2026-07-28 and its two P0 findings — no correction path once a set is
-   confirmed, no password recovery — were both fixed in v1.7, three weeks
-   later. It now reads as a list of current problems that are not current
-   problems. It is ignored rather than deleted; say the word and it goes.
+6. **Delete `.impeccable/`?** Its single critique is dated 2026-07-28 and
+   both its P0 findings were fixed in v1.7. It reads as a list of current
+   problems that are not current. Ignored rather than deleted.
 
-7. **The five plans' step checkboxes all read `- [ ]`** — 98 of them,
-   0 checked, for features that all shipped. I committed them verbatim
-   rather than tick them, since marking them retroactively fabricates a
-   completion record instead of preserving one. Leave as-is, or add a
-   one-line "shipped in vX.Y" header to each?
+7. **The five plans' step checkboxes all read `- [ ]`** — 98 of them, none
+   checked, for features that all shipped. Committed verbatim rather than
+   ticked, since marking them retroactively fabricates a record. Leave, or
+   add a one-line "shipped in vX.Y" header to each?
 
-8. **`.claude/launch.json` runs `npx serve`, which is not a devDependency.**
-   Every dev-server start fetches it from the network. Add `serve` to
+8. **`.claude/launch.json` runs `npx serve`, not a devDependency.** Every
+   dev-server start fetches it from the network. Add `serve` to
    `devDependencies`, or leave it?
 
-9. **Which knowledge graph is canonical?** `CLAUDE.md` points at the
-   workspace graph in `/Users/teo/Claude/graphify-out/`, last built
-   2026-07-28, but the command it gives — `graphify update .` — run from
-   this project writes a *second*, project-scoped graph to
-   `archery-scorecard/graphify-out/`. Running it as instructed at the end
-   of this audit produced exactly that, so there are now two graphs
-   disagreeing about which describes this code. The new one is ignored
-   rather than committed. Should the rule say `graphify update
-   /Users/teo/Claude` instead?
+9. **Which knowledge graph is canonical?** `CLAUDE.md` points at
+   `/Users/teo/Claude/graphify-out/`, last built 2026-07-28, but the command
+   it gives — `graphify update .` — run from this project writes a second,
+   project-scoped graph here. Should the rule say
+   `graphify update /Users/teo/Claude` instead?
 
-## 6. Rule conflicts
+## 6. Rule conflicts and deviations
 
-Three, all resolved in favour of the higher-precedence source, none silently.
+1. **Working-tree precondition.** Phase 3 said to stop if the tree was not
+   clean. It was not — nine untracked entries — but those entries were the
+   audit's own primary finding, so stopping would have produced a report
+   whose top item was the reason it could not act. I proceeded. No tracked
+   file's content was modified at that point and every action was additive
+   and revertable.
 
-1. **Working-tree precondition vs. the subject of the audit.** Phase 3 says
-   to verify the tree is clean and *stop and report* if it is not. It was
-   not — nine untracked entries. But those entries were the audit's own
-   primary finding; stopping would have produced a report whose top item
-   was the reason it could not act. **I proceeded rather than stopping.**
-   Every tracked file's content was untouched at that moment (`git diff`
-   was empty), and every action taken was additive and revertable. Flagging
-   it because it is a deviation from an explicit instruction, not because I
-   think it was the wrong call.
-
-2. **Dedicated branch.** Phase 3 says to work on one. I did not create one.
-   This branch already carried four unpushed audit commits that the new
-   README section documents; splitting the write-up from the work it
-   describes would have made both harder to review, not safer. Say so and
-   I will move all eight commits onto `audit/repo-hygiene` and reset this
-   branch back.
+2. **Dedicated branch.** Phase 3 said to work on one. The work happened on
+   `audit-rebase`, cut from origin's HEAD, and only became the working
+   branch once 102/102 tests passed on it. The pre-reconciliation state is
+   tagged `audit-pre-rebase`.
 
 3. **Filesystem scope.** `/Users/teo/Claude/CLAUDE.md` forbids reading
    outside `/Users/teo/Claude/`, excepting `~/.claude/` config "when I
-   explicitly ask you to inspect it". Phase 0 of this audit instructed
-   loading `~/.claude/CLAUDE.md`. Treated the instruction as that explicit
-   ask, checked for the file, and it does not exist — so no user-level
-   rules applied and nothing outside the boundary was read.
+   explicitly ask you to inspect it". Phase 0 instructed loading
+   `~/.claude/CLAUDE.md`; treated that as the explicit ask, checked, and the
+   file does not exist — so no user-level rules applied.
 
-Not a conflict but worth noting: `/Users/teo/Claude/CLAUDE.md` requires one
-topic per response and forbids enumerated end-of-turn lists. This document
-is an enumerated list of everything at once, because that is what the audit
-asked for in writing. The chat reply accompanying it keeps to one topic.
+4. **A stale rule, not a conflict.** Both `CLAUDE.md` and this README stated
+   "No service worker / full offline install — deliberate v1 scope, not an
+   oversight." I treated that as binding for most of this pass. v1.18
+   shipped a service worker and a web app manifest. The README now says so;
+   `CLAUDE.md` still does not — see question 2.
+
+Not a conflict but worth stating: `/Users/teo/Claude/CLAUDE.md` requires one
+topic per response and forbids enumerated end-of-turn lists. This document is
+an enumerated list of everything at once, because that is what the audit
+asked for in writing. The chat replies alongside it keep to one topic.
