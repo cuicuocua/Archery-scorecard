@@ -86,11 +86,14 @@ describe('createSession / sessionAddArrow / sessionUndoLastArrow', () => {
 });
 
 describe('sameRound / findPersonalBest / paceVsPB', () => {
-  const roundShape = { distanceM: 18, faceCm: 40 };
+  // One arrow per end, three ends — the fixtures below record one arrow per
+  // end. arrowsPerEnd/ends are load-bearing for findPersonalBest, which only
+  // ranks entries of the same total length against each other.
+  const roundShape = { distanceM: 18, faceCm: 40, arrowsPerEnd: 1, ends: 3 };
 
-  function completedEntry(id, totals) {
+  function completedEntry(id, totals, round = roundShape) {
     return {
-      sessionId: id, status: 'completed', round: roundShape, bowType: null, sessionType: 'allenamento',
+      sessionId: id, status: 'completed', round, bowType: null, sessionType: 'allenamento',
       ends: totals.map((score, i) => ({ index: i, arrows: [{ score, isX: false, x: null, y: null }] })),
     };
   }
@@ -108,6 +111,19 @@ describe('sameRound / findPersonalBest / paceVsPB', () => {
     ];
     const pb = m.findPersonalBest(entries, { round: roundShape, bowType: null, sessionType: 'allenamento' }, null);
     assert.equal(pb.sessionId, 's2');
+  });
+
+  // sameRound deliberately ignores length so all your 18m work groups
+  // together, but a personal best has to be like-for-like: a longer round
+  // scores higher for arithmetic reasons, not for shooting better.
+  it('findPersonalBest ignores a longer round at the same distance and face', () => {
+    const longRound = { ...roundShape, ends: 6 };
+    const entries = [
+      completedEntry('short', [9, 9, 9]),
+      completedEntry('long', [10, 10, 10, 10, 10, 10], longRound),
+    ];
+    const pb = m.findPersonalBest(entries, { round: roundShape, bowType: null, sessionType: 'allenamento' }, null);
+    assert.equal(pb.sessionId, 'short');
   });
 
   it('findPersonalBest excludes the session currently being compared against itself', () => {

@@ -5305,15 +5305,6 @@ function TorneiScreen({ tournaments, onNew, onOpen, onDelete }) {
   );
 }
 
-// Exported solely so test_bracket.mjs can drive the bracket/match engine
-// headlessly — nothing in the app imports this, and the bundler drops it.
-export const __engine = {
-  createTournament, buildBracket, flatMatchRefs, isRefPlayable, resolveMatchRef,
-  applyMatchResult, recordUnit, record3WayUnit, applyThreeWayRunoffUpdate,
-  matchFormatDef, arrowsPerUnit, tournamentIsComplete, tournamentPodium, winnerOf, loserOf,
-  rebuildMatchFromUnits, unitsMatch,
-};
-
 // ---------- root ----------
 
 export default function ArcheryScorecard() {
@@ -5756,6 +5747,7 @@ export {
   bestByShape,
   // offline outbox
   readPending, writePending, setPending, clearPending, applyPending,
+  adoptLegacyPending,
   // tournaments: bracket engine
   matchFormatDef, arrowsPerUnit, standardSeedOrder, emptyMatch, finalFormatDef,
   buildBracket, makeMatch, propagateWinner, fillMatchSlot, resolveByeIfLonely,
@@ -5770,5 +5762,7 @@ export {
   // tournaments: refs + state derivation
   resolveMatchRef, refEquals, refKey, flatMatchRefs, isRefPlayable,
   nextPlayableRef, applyMatchResult, tournamentIsComplete, tournamentPodium,
-  tournamentHasStarted,
+  tournamentHasStarted, winnerOf, loserOf,
+  // tournaments: participant self-scoring
+  unitsMatch, rebuildMatchFromUnits,
 };
