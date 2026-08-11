@@ -218,6 +218,16 @@ preferences.
    Every dev-server start fetches it from the network. Add `serve` to
    `devDependencies`, or leave it?
 
+9. **Which knowledge graph is canonical?** `CLAUDE.md` points at the
+   workspace graph in `/Users/teo/Claude/graphify-out/`, last built
+   2026-07-28, but the command it gives — `graphify update .` — run from
+   this project writes a *second*, project-scoped graph to
+   `archery-scorecard/graphify-out/`. Running it as instructed at the end
+   of this audit produced exactly that, so there are now two graphs
+   disagreeing about which describes this code. The new one is ignored
+   rather than committed. Should the rule say `graphify update
+   /Users/teo/Claude` instead?
+
 ## 6. Rule conflicts
 
 Three, all resolved in favour of the higher-precedence source, none silently.
