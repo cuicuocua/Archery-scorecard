@@ -165,17 +165,15 @@ file, correctly referenced by `package.json`, moving it gains nothing.
 
 ## 5. Open questions
 
-Numbered for reply. **1 and 3 block further cleanup**; the rest are
-preferences.
+Numbered for reply. Numbers stay stable as they close — 1 and 3 are
+resolved and struck through rather than removed.
 
-1. **⚠ Blocking — has the share-token unique index actually been run against
-   the live database?** `supabase/schema.sql` is applied by hand and nothing
-   in the repository records what state the real database is in. The index
-   added in commit `596fabd` enforces an invariant that
-   `get_shared_tournament()`'s comment already reasons about. Until someone
-   confirms, the schema file is a *wish list*, not a description. Follow-up
-   if the answer is no: should the file grow a "run these, in this order,
-   applied on <date>" ledger at the top?
+1. ~~**⚠ Blocking — has the share-token unique index actually been run
+   against the live database?**~~ **RESOLVED 2026-08-11: yes, applied.**
+   The schema file and the live database agree. The underlying gap stands —
+   `supabase/schema.sql` is applied by hand, has no migration runner, and
+   nothing in the repository records what has been run — but it is not
+   blocking anything today.
 
 2. **Should `CLAUDE.md` be tracked in git?** It is the last untracked file
    and it duplicates four sections of the README. It was briefly committed
@@ -183,13 +181,13 @@ preferences.
    than make the call unilaterally. Yes = commit it; no = it gets added to
    `.gitignore` so `git status` reaches zero.
 
-3. **⚠ Blocking on `imports/` — is this repository public?** It deploys to
-   `cuicuocua.github.io`, which suggests yes. If it is, ignoring `imports/`
-   was the right call and it should stay that way. If it is private, the
-   4.6 MB of scoresheet PDFs are worth committing as provenance for real
-   data now living in Supabase, and `build-import.mjs` — which re-derives
-   the JSON and re-verifies every sheet's grand total — is the only record
-   of how that transcription was checked.
+3. ~~**⚠ Blocking on `imports/` — is this repository public?**~~
+   **RESOLVED 2026-08-11 by evidence, not by asking:** `gh repo view` reports
+   `cuicuocua/Archery-scorecard`, `visibility: PUBLIC`. Ignoring `imports/`
+   stands — twelve scanned paper scoresheets and the personal score data
+   transcribed off them do not belong in a public repository. The five plans
+   committed in `8859eb0` were re-checked against this: no real participant
+   names, no personal data, no secrets.
 
 4. **Should the deploy branch be renamed?** The repository's default branch,
    and the only branch `deploy-pages.yml` watches, is
