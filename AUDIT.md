@@ -172,10 +172,12 @@ Numbers stay stable as they close; resolved ones are struck through.
    runner, and nothing records what has been run — but nothing is blocked on
    it today.
 
-2. **Should `CLAUDE.md` be tracked?** It is the last untracked file and
-   duplicates four sections of the README. Note that its "No service worker
-   / full offline install — deliberate v1 scope" rule is now false: v1.18
-   shipped one. Whichever way this goes, that line needs deleting.
+2. ~~**Should `CLAUDE.md` be tracked?**~~ **RESOLVED: yes** — committed as
+   `ddd72d3` and pushed. Its "No service worker / full offline install —
+   deliberate v1 scope" rule was false as written (v1.18 shipped one) and
+   has been corrected in place. It still duplicates four sections of the
+   README; that overlap is left alone, since a short orientation file and a
+   long reference serve different readers.
 
 3. ~~**Is this repository public?**~~ **RESOLVED 2026-08-11 by evidence:**
    `gh repo view` reports `cuicuocua/Archery-scorecard`, `visibility: PUBLIC`.
