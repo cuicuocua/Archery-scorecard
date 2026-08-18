@@ -451,6 +451,59 @@ function tenRingRadiusCm(round) {
   return ten ? (ten.outer / FACE_R) * spotR : spotR / 10;
 }
 
+// ---------- zoom sizing ----------
+//
+// How big the 10-ring actually renders, as a fraction of the visible
+// viewport, at a given zoom. This — not the face's physical diameter — is
+// what decides whether an arrow can be placed accurately by thumb: a
+// compound 10-ring is half the diameter of a recurve one, and a triple
+// sheet fits three spots in the space a single face gets, so the same "1×"
+// means very different things from one round to the next.
+function tenRingViewFraction(round, zoom) {
+  const layout = roundSpotLayout(round);
+  const { specs } = ringGeometry(roundRingClass(round));
+  const ten = specs.find(s => s.score === 10);
+  const tenOuter = ten ? ten.outer : FACE_R / 10;
+  let halfExtent;
+  if (layout === 'single') {
+    halfExtent = FACE_R / zoom + (zoom === 1 ? 15 : 0); // mirrors TargetFace's 1× margin
+  } else {
+    const offsets = spotOffsets(layout);
+    const spotR = FACE_R + 3;
+    const xs = offsets.map(o => o.x), ys = offsets.map(o => o.y);
+    const w = (Math.max(...xs) + spotR) - (Math.min(...xs) - spotR);
+    const h = (Math.max(...ys) + spotR) - (Math.min(...ys) - spotR);
+    halfExtent = Math.max(w, h) / 2 / zoom;
+  }
+  return tenOuter / (halfExtent * 2);
+}
+
+// The yardstick every other round is measured against: a plain recurve
+// face at 1×, which is what the app has always opened at and what the tap
+// target has always been tuned for.
+function tapReferenceFraction() {
+  return tenRingViewFraction({ faceCm: 40, ringClass: 'full', spotLayout: 'single' }, 1);
+}
+
+function isCompoundRingClass(ringClass) { return ringClass === 'indoor6C' || ringClass === 'spot6C'; }
+
+// Compound faces get one extra step on the ladder: their 10-ring is half
+// the diameter, so the zoom a recurve archer tops out at still leaves a
+// compound centre small. Recurve rounds keep the ladder they've always had.
+function zoomLevelsFor(round) {
+  return isCompoundRingClass(roundRingClass(round)) ? [1, 2, 4, 8] : [1, 2, 4];
+}
+
+// Open at the first zoom where the 10-ring is at least as big on screen as
+// a recurve face's is at 1×. Compound centres and vertical triples start
+// zoomed in because at 1× they are genuinely too small to tap accurately;
+// a plain recurve face still opens at 1×, unchanged.
+function defaultZoomFor(round) {
+  const target = tapReferenceFraction();
+  const levels = zoomLevelsFor(round);
+  return levels.find(z => tenRingViewFraction(round, z) >= target) || levels[levels.length - 1];
+}
+
 // Whether a group's offset from centre is real or just the scatter of a
 // small sample: the standard error of the centroid, against the same
 // two-sigma bar sessionInsight uses for fatigue. Below that the group is
@@ -493,6 +546,44 @@ function describeGroupShape(stats, round) {
     : null;
 
   return { offsetCm, offCentre, tight, headline, axis, stats };
+}
+
+// Below this many positioned arrows an offset is a rumour, not a reading —
+// two-sigma on a handful of arrows still clears far too easily, and a sight
+// moved on that evidence is as likely to be moved the wrong way.
+const SIGHT_MIN_ARROWS = 6;
+
+// A graded verdict on whether the group is actually telling you to move
+// anything, rather than just handing over an offset and leaving the archer
+// to assume it's a correction. Four things can be true of an off-centre
+// group and only one of them is worth touching the sight for:
+//   insufficient — too few arrows to distinguish a bias from scatter
+//   centred      — the offset is inside its own error bars
+//   unstable     — the group moved during the session, so there's no one
+//                  offset to correct to; a sight change chases a drift
+//   spread       — the offset is real but smaller than how wide the group
+//                  is, so consistency is the binding constraint, not aim
+//   adjust       — real, stable, and big relative to the spread
+// `arrows` must be in the order they were shot; the drift test depends on
+// it. Says nothing about WHY the group sits where it does — sight, anchor,
+// stance, spine and wind all move it, and this data can't separate them.
+function assessSightAdjustment(arrows, round) {
+  const positioned = (arrows || []).filter(a => a.x != null && a.y != null);
+  const stats = computeGroupStats(positioned, round);
+  if (!stats) return null;
+  if (stats.count < SIGHT_MIN_ARROWS) return { verdict: 'insufficient', stats, needed: SIGHT_MIN_ARROWS };
+  if (!groupOffsetIsReal(stats)) return { verdict: 'centred', stats, offsetCm: 0 };
+
+  const offsetCm = Math.sqrt(stats.cxCm ** 2 + stats.cyCm ** 2);
+  const mid = Math.floor(positioned.length / 2);
+  const first = computeGroupStats(positioned.slice(0, mid), round);
+  const second = computeGroupStats(positioned.slice(mid), round);
+  if (first && second && spotsDifferSignificantly(first, second)) {
+    const driftCm = Math.sqrt((first.cxCm - second.cxCm) ** 2 + (first.cyCm - second.cyCm) ** 2);
+    return { verdict: 'unstable', stats, offsetCm, driftCm };
+  }
+  if (offsetCm < stats.meanRadiusCm) return { verdict: 'spread', stats, offsetCm };
+  return { verdict: 'adjust', stats, offsetCm };
 }
 
 // Do two spots sit far enough apart to be worth correcting separately, or
@@ -1548,21 +1639,48 @@ function TargetFace({ faceCm, ringClass = 'full', spotLayout = 'single', zoom = 
 // it scatters. Descriptive by design — the offset doubles as the size of
 // the correction that would centre the group, but what to change to get
 // there (sight, anchor, stance, spine, wind) is not in this data.
-function GroupReadout({ shape }) {
+function sightAdviceText(advice, stats) {
+  if (!advice) return null;
+  switch (advice.verdict) {
+    case 'insufficient':
+      return `Ancora poche frecce per giudicare la mira (${advice.stats.count} di ${advice.needed}).`;
+    case 'centred':
+      return 'Nessuna correzione: lo scarto rientra nel margine di errore.';
+    case 'unstable':
+      return `Gruppo non stabile: si è spostato di ${advice.driftCm.toFixed(1)} cm tra prima e seconda metà, quindi non c'è un unico scarto da correggere.`;
+    case 'spread':
+      return `La dispersione (${stats.meanRadiusCm.toFixed(1)} cm) è più larga dello scarto: la costanza pesa più della mira.`;
+    case 'adjust':
+      return 'Scarto stabile e più largo della dispersione: correzione utile.';
+    default:
+      return null;
+  }
+}
+
+function GroupReadout({ shape, advice }) {
   if (!shape) return null;
   const { stats, offsetCm, offCentre, headline, axis } = shape;
+  const adviceText = sightAdviceText(advice, stats);
   return (
     <div className="text-xs flex flex-col gap-0.5" style={{ color: T.textDim }}>
       <div className="font-semibold" style={{ color: T.text }}>{headline}</div>
       <div>
         {offCentre
-          ? `${offsetCm.toFixed(1)} cm dal centro (${describeBias(stats.cxCm, stats.cyCm)})`
+          ? `Scarto ${describeBias(stats.cxCm, stats.cyCm)}${
+              // The combined figure only says something new when the offset
+              // has two components — on a purely sideways or purely vertical
+              // one it just repeats the number describeBias already gave.
+              Math.abs(stats.cxCm) >= 0.3 && Math.abs(stats.cyCm) >= 0.3
+                ? ` (${offsetCm.toFixed(1)} cm in totale)` : ''}`
           : 'Centro entro il margine di errore'}
       </div>
       <div>
         Ampiezza {stats.maxRadiusCm.toFixed(1)} cm · media {stats.meanRadiusCm.toFixed(1)} cm
         {axis ? ` · dispersione ${axis}` : ''} · {stats.count} frecce
       </div>
+      {adviceText && (
+        <div style={{ color: advice.verdict === 'adjust' ? T.gold : T.textFaint }}>{adviceText}</div>
+      )}
     </div>
   );
 }
@@ -1587,7 +1705,7 @@ function GroupAnalysis({ round, arrows, dense = true }) {
             <TargetFace faceCm={spotFaceCm(round.faceCm, layout)} ringClass={roundRingClass(round)}
               points={spotArrows.filter(a => a.x != null)} centroid={stats} dense={dense} />
             {stats
-              ? <GroupReadout shape={shapes[spot]} />
+              ? <GroupReadout shape={shapes[spot]} advice={assessSightAdjustment(spotArrows, round)} />
               : <div className="text-xs" style={{ color: T.textFaint }}>Nessuna freccia con posizione registrata.</div>}
           </div>
         ))}
@@ -1833,7 +1951,11 @@ function SessionSummary({ session, sessions, onExit, onUpdate }) {
 
 function ShootingScreen({ session, sessions, onUpdate, onExit }) {
   const [mode, setMode] = useState('face');
-  const [zoom, setZoom] = useState(1);
+  // Opens at whatever zoom makes this face's 10-ring as tappable as a
+  // recurve face is at 1× — see defaultZoomFor. Re-derived when the stage
+  // changes, since a multi-distance round can move between faces that need
+  // very different zoom (and a level the previous face offered, like 8×,
+  // may not exist on the next one).
   const [noteOpen, setNoteOpen] = useState(false);
   // The end currently being shot is buffered locally, not written into
   // session state arrow-by-arrow — there's no telling what the last arrow
@@ -1855,6 +1977,10 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
   const spotLayout = roundSpotLayout(round);
   const isMultiSpot = spotLayout !== 'single';
   const multiStage = session.stages.length > 1;
+  const zoomLevels = zoomLevelsFor(round);
+  const [zoom, setZoom] = useState(() => defaultZoomFor(round));
+  const roundKey = roundShapeKey(round);
+  useEffect(() => { setZoom(defaultZoomFor(round)); }, [roundKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const endIdx = currentEndIndex(stage);
   // stage.ends[endIdx] only gains arrows once confirmEnd() commits them —
   // except when it's been reopened by undoing back into an already-scored
@@ -1973,7 +2099,7 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
           <div className="px-4 pt-3 flex items-center justify-between gap-2">
             <SegmentedControl options={[{ id: 'face', label: 'Bersaglio' }, { id: 'keypad', label: 'Tastierino' }]} value={mode} onChange={setMode} />
             {mode === 'face' && (
-              <SegmentedControl options={[{ id: 1, label: '1×' }, { id: 2, label: '2×' }, { id: 4, label: '4×' }]} value={zoom} onChange={setZoom} small />
+              <SegmentedControl options={zoomLevels.map(z => ({ id: z, label: `${z}×` }))} value={zoom} onChange={setZoom} small />
             )}
           </div>
 
@@ -2508,7 +2634,16 @@ function roundShapeKey(round) { return `${round.distanceM}|${round.faceCm}|${rou
 // The single-stage preset this shape matches, or null if it doesn't match
 // any recognized archetype exactly.
 function matchedPreset(round) {
-  return ROUND_TYPES.find(r => r.stages.length === 1 && sameRound(r.stages[0], round)) || null;
+  const candidates = ROUND_TYPES.filter(r => r.stages.length === 1 && sameRound(r.stages[0], round));
+  if (!candidates.length) return null;
+  // Vegas and the 20-end triangular triple share distance, face, spot
+  // layout and ring class, and differ only in how long the round is —
+  // which sameRound ignores on purpose (see there: chunking and length
+  // aren't what makes a round a different round for grouping). For a
+  // *name*, though, length is exactly what separates them, so prefer a
+  // preset whose arrow count also matches before falling back.
+  const arrows = round.arrowsPerEnd * round.ends;
+  return candidates.find(r => r.stages[0].arrowsPerEnd * r.stages[0].ends === arrows) || candidates[0];
 }
 
 function roundShapeLabel(round) {
@@ -6120,7 +6255,11 @@ export default function ArcheryScorecard() {
 export {
   // personal scorecard: scoring + arrows
   ringGroupForScore, scoreRank, ringGeometry, scoreFromRadiusUnits,
-  roundSpotLayout, roundRingClass, spotCount, spotFaceCm,
+  roundSpotLayout, roundRingClass, spotCount, spotFaceCm, spotOffsets,
+  groupStatsBySpot, tenRingRadiusCm, groupOffsetIsReal, describeGroupShape,
+  spotsDifferSignificantly, widestSpotGap, assessSightAdjustment,
+  tenRingViewFraction, tapReferenceFraction, isCompoundRingClass,
+  zoomLevelsFor, defaultZoomFor,
   flattenArrows, totalScore, xCount, arrowsShotCount, totalArrowsInRound,
   cumulativeScores, currentEndIndex, addArrow, undoLastArrow,
   computeGroupStats, groupStats,
