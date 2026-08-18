@@ -72,7 +72,11 @@ time, so editing `ROUND_TYPES` later never corrupts historical data. Arrows
 keep entry order within a stage; UI sorts a copy for display. Arrows
 entered via the tappable face carry `x`/`y` (normalized -1..1, fraction of
 face radius); keypad-entered arrows have `x`/`y: null` and are excluded
-from spatial analysis (correctly — there's no position to analyze).
+from spatial analysis (correctly — there's no position to analyze). On a
+multi-spot face an arrow also carries `spot`, and its `x`/`y` are that
+spot's own local coordinates — normalized to the SPOT's radius, not the
+sheet's. An end carries `at` (v1.22+), the moment its volée was confirmed;
+ends saved before that have none and every reader skips them.
 
 Sessions saved before v1.4 have a flat `round`+`ends` instead of `stages`;
 `normalizeSession()` upgrades them to the new shape on load (wrapped as a
@@ -919,3 +923,151 @@ the "Indoor 18m"/"Indoor 25m" categories.
   personal-best bucketing, or ring behavior (all verified correct via the
   automated tests and live scoring runs); tracked to fix in a follow-up
   pass rather than block this release.
+
+## v1.21 additions — Interrupted sessions
+
+Rain, light, a broken nock, running out of time: a round that gets
+abandoned used to sit in `in_progress` forever, cluttering Home's resume
+list and counting for nothing. "Termina la sessione qui" on the shooting
+screen closes it as `partial`, a third status alongside
+`in_progress`/`completed`, and "Riprendi la sessione" on the detail screen
+puts it back exactly where it was.
+
+- **How a partial counts** (`closeSessionEarly`, `entryIsRankable`,
+  `entryCountsForStats`): records — personal bests and the `best` column —
+  use only rounds shot end to end, because a 30-arrow half-round can't be
+  ranked against a 60-arrow one and per-arrow averaging doesn't fix that
+  (this app charts fatigue as a real effect precisely because the back half
+  is harder). Arrow-weighted aggregates and diagnostics *do* include
+  partials: those arrows were really shot and every one of those figures is
+  already weighted by arrow count. Below `MIN_ARROWS_FOR_PARTIAL_STATS`
+  (12) the session is kept for the record but counts for nothing.
+- **A finished stage inside a partial session is still a finished round**,
+  so abandoning a WA1440 at the third distance leaves the first two
+  eligible for personal bests.
+
+## v1.22 additions — Analysis pass
+
+A review of what the analysis layer claimed versus what the data supports,
+plus everything the app was collecting and never reading.
+
+### Corrections
+
+- **Dispersion and drift were still pooling multi-spot faces.**
+  `dispersionTrend()` ran every arrow on a triple face through one
+  centroid, which puts the centre between the spots and books the distance
+  between them as scatter — the exact error `groupStatsBySpot()` exists to
+  prevent, still live after the group readouts were fixed. Dispersion is
+  now the arrow-weighted mean of the per-spot dispersions (unchanged for a
+  single-spot round), and drift is only a *direction* when there is one aim
+  point: a multi-spot round gets one distance-from-centre series per spot
+  instead, since averaging three directions produces a vector pointing
+  nowhere.
+- **The trend chart abandoned the app's own significance rule.**
+  `sessionInsight` won't call fatigue without two standard errors and
+  `groupOffsetIsReal` won't call an offset real without them, but the chart
+  plotted bare point estimates — and the standard error on a 60-arrow
+  average is around a quarter point, larger than most of the session-to-
+  session movement. Every session now carries a ±2 SE band
+  (`avgTrendWithBands`), and `trendVerdict()` states in words whether the
+  line is actually sloping (OLS slope against its own standard error).
+- **"Costanza" mostly re-plotted the average.** Arrow scores are capped at
+  10, so as a group tightens every arrow converges on the ceiling and σ is
+  dragged down with it: an archer improving from 8.0 to 9.5 shows falling σ
+  whether or not they got steadier. `consistencyTrend()` now fits σ against
+  the session average over the archer's own history and plots the residual
+  — how much steadier or streakier the session was than its own quality
+  predicts. Self-calibrating, so it needs no reference table; below
+  `CONSISTENCY_FIT_MIN_SESSIONS` it falls back to raw σ and says so.
+- **The volée chart's min-max band could only widen.** The range between
+  the best and worst a volée has gone is not a property of the archer — it
+  grows with sample size by construction, so a well-practised round shape
+  looked *more* erratic. `endRangeStats()` now reports median and
+  interquartile band, and carries `n` per volée.
+- **Condition buckets** carry a two-sigma error bar and say out loud that
+  sampling error is not the only problem: wind, season and form travel
+  together and this comparison doesn't separate them.
+
+### Points, not centimetres
+
+The group readout spoke in centimetres, which is the wrong currency — a
+centimetre on a 122cm face and on a Vegas spot are not the same mistake.
+Fitting the arrows as a 2D normal (centroid + per-axis spread, all of which
+`computeGroupStats` already returned) and integrating it over the ring
+boundaries gives an expected score per arrow; re-running it with the
+centroid at zero gives the two numbers actually worth knowing:
+
+- **what centring the group is worth**, in points per arrow — routinely far
+  less than the centimetre offset makes it feel, which is the point;
+- **what the spread costs**, which no sight setting can recover.
+
+Deliberately a model (`expectedScorePerArrow`, `pointsBreakdown`): it
+assumes a normal group, and it's printed next to the real average so a bad
+fit is visible rather than implied. `separateFlyers()` splits arrows past
+3σ (elliptical, so a legitimately tall group isn't punished) from the group
+they missed, since one thrown arrow sets `maxRadiusCm` alone and drags
+`meanRadiusCm` with it.
+
+### Collected but never read
+
+- **`location`** was recorded on every session and only ever printed back —
+  stage entries dropped it entirely, which is why nothing could be broken
+  down by field. Now carried through, grouped case- and whitespace-
+  insensitively, displayed under the spelling used most (`scoreByLocation`).
+- **Training volume**: nothing tracked how much you shoot, which is odd for
+  a training log. `weeklyVolume()` buckets arrows into Monday weeks and
+  leaves gaps as gaps; `daysSinceLastSession()` sits beside it.
+- **Position within the end**: ordered data present since v1, never looked
+  at. `arrowPositionStats()` breaks the average down by first/second/third
+  arrow and two-sigma tests the first against the rest.
+- **X rate**: one lifetime tile became a per-session trend and a scoped
+  tile — for compound it's the tie-break that decides placings.
+- **Gara vs allenamento**: the app could always *filter* by type and never
+  *contrast* them. `typeContrast()` does, with a two-sigma test, ignoring
+  the tipo chip (you can't contrast what you've filtered away) but keeping
+  round shape and bow.
+- **Per-spot score**, not just per-spot geometry: a spot quietly averaging
+  half a point below the others states plainly what the offsets hint at.
+- **Match arrows**: every arrow of every tournament match was recorded and
+  never reached the statistics tab. `ownMatchRecord()` identifies the
+  archer by the email the organizer recorded against a participant — the
+  only link that exists between an account and a name in a bracket, and
+  nothing guesses from names. Kept out of the round-shape statistics on
+  purpose: a set match isn't a round.
+- **Recency**: `sessionInsight`'s baseline was all history, so an improving
+  archer was compared against a worse version of themselves indefinitely.
+  Now a rolling window (`INSIGHT_BASELINE_SESSIONS`).
+
+### Cross-round comparability
+
+Every figure in the app is locked to one round shape, so there was no way
+to ask "am I shooting better at 18m or at 70m" — scores aren't comparable
+and neither are centimetres. `angularDispersionMrad()` divides the group by
+the distance, leaving the angle the archer's form subtends; 1 mrad is 1cm
+at 10m. It appears in every group readout and as a lifetime per-round-shape
+chart (`angularByShape`).
+
+This is a physical normalization, **not** a handicap or rating: it says
+nothing about how two distances compare in difficulty. A proper cross-round
+rating needs a published scheme (Archery GB's handicap tables are the
+established one; World Archery has no official equivalent) and is
+deliberately not invented here.
+
+### Rhythm
+
+Ends now carry `at`, stamped when the volée is confirmed
+(`sessionConfirmEnd`). The gap between consecutive stamps is how long that
+volée took to shoot **and** score — the app is used at the target as often
+as at the line, so this is pace of work, not draw time, and the UI says so.
+Gaps past `REST_GAP_SECONDS` are dropped as breaks. `paceContrast()` splits
+each session's volées at that session's own median pace and contrasts the
+halves, so a slow day and a fast archer are never compared with each other.
+Ends saved before this release simply have no `at` and every reader skips
+them, so the panel fills in as sessions accumulate.
+
+### Not done
+
+Folding match arrows into the round-shape statistics. Matches are shot to
+sets, over different distances and volée lengths than any round in
+`ROUND_TYPES`; mixing them into per-round averages would compare things
+that aren't comparable. They get their own summary instead.

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   ResponsiveContainer, LineChart, Line, BarChart, Bar, Cell, ComposedChart, AreaChart, Area,
-  XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine, ErrorBar,
 } from 'recharts';
 import {
   Target, Clock, ChevronLeft, ChevronRight, Plus, Trash2,
@@ -189,6 +189,10 @@ const MIN_SESSIONS_FOR_DEEP_ANALYSIS = 5;
 // authoritative as a ten-session one. Sub-threshold buckets are withheld
 // and counted, rather than charted with a caveat nobody reads.
 const MIN_SESSIONS_PER_CONDITION = 3;
+
+// How far back the per-session takeaway looks when working out "your usual
+// average". A rolling window rather than all history — see sessionInsight.
+const INSIGHT_BASELINE_SESSIONS = 10;
 
 const T = {
   bg: '#14161A',
@@ -614,6 +618,136 @@ function widestSpotGap(perSpot) {
   return worst;
 }
 
+// ---------- flyers ----------
+//
+// One bad release is not the same kind of event as the group it landed
+// outside of, and mean/max radius don't distinguish them: a single flyer
+// sets maxRadiusCm on its own and drags meanRadiusCm up with it, so a
+// tight group with one mistake reads as a loose group. Splitting them
+// answers two different questions — how well am I grouping, and how often
+// do I throw one — instead of blurring both into one number.
+//
+// Elliptical distance (dx/sdX, dy/sdY) rather than plain radius, because a
+// group that legitimately scatters vertically shouldn't have its tall
+// arrows called flyers. At 3 sigma a true bivariate normal leaves ~1.1% of
+// arrows outside, so on a 60-arrow end this flags roughly one arrow by
+// chance — anything more than that is a real tail.
+const FLYER_SIGMA = 3;
+const FLYER_MIN_ARROWS = 8;
+
+function separateFlyers(points, round) {
+  const stats = computeGroupStats(points, round);
+  if (!stats || stats.count < FLYER_MIN_ARROWS || stats.sdXCm <= 0 || stats.sdYCm <= 0) return null;
+  const r = spotFaceCm(round.faceCm, roundSpotLayout(round)) / 2;
+  const core = [], flyers = [];
+  points.filter(a => a.x != null && a.y != null).forEach(a => {
+    const dx = (a.x - stats.x) * r / stats.sdXCm;
+    const dy = (a.y - stats.y) * r / stats.sdYCm;
+    (Math.sqrt(dx * dx + dy * dy) > FLYER_SIGMA ? flyers : core).push(a);
+  });
+  if (!flyers.length) return null;
+  return { coreStats: computeGroupStats(core, round), flyers, all: stats };
+}
+
+// ---------- expected score model ----------
+//
+// The group readout speaks in centimetres, which is the wrong currency: an
+// archer decides whether to touch the sight in points. Fitting the arrows
+// as a 2D normal (centroid + per-axis spread, all of which computeGroupStats
+// already returns) and integrating it over the ring boundaries turns the
+// group into an expected points-per-arrow — and, by re-running it with the
+// centroid moved to zero, into the two numbers actually worth knowing:
+// how much a perfect sight correction would be worth, and how much is left
+// on the table by spread alone, which no sight setting can recover.
+//
+// Deliberately a MODEL, not a measurement: it assumes the arrows are
+// normally distributed, which flyers violate (see separateFlyers). It's
+// reported alongside the real average so a bad fit is visible rather than
+// hidden.
+//
+// Grid integration rather than a closed form: the score is a step function
+// of radius, so there's nothing smooth to integrate analytically. An odd
+// node count puts a sample exactly on the centroid, and +-4 sigma covers
+// 99.99% of the mass; the weights are renormalized so the truncated tail
+// doesn't quietly bias the result downward.
+const SCORE_MODEL_NODES = 121;
+const SCORE_MODEL_SIGMAS = 4;
+
+function expectedScorePerArrow(round, cxCm, cyCm, sdXCm, sdYCm) {
+  const spotR = spotFaceCm(round.faceCm, roundSpotLayout(round)) / 2;
+  const ringClass = roundRingClass(round);
+  const scoreAt = (xCm, yCm) =>
+    scoreFromRadiusUnits(Math.sqrt(xCm * xCm + yCm * yCm) / spotR * FACE_R, ringClass).score;
+  if (!(sdXCm > 0) || !(sdYCm > 0)) return scoreAt(cxCm, cyCm);
+
+  const n = SCORE_MODEL_NODES;
+  const stepX = (2 * SCORE_MODEL_SIGMAS * sdXCm) / (n - 1);
+  const stepY = (2 * SCORE_MODEL_SIGMAS * sdYCm) / (n - 1);
+  // Marginal weights, computed once instead of n^2 times: the distribution
+  // is separable and both axes share the same grid of standard scores, so
+  // the 2D weight at (i,j) is just w[i]*w[j].
+  const w = [];
+  for (let i = 0; i < n; i++) {
+    const z = -SCORE_MODEL_SIGMAS + (i * 2 * SCORE_MODEL_SIGMAS) / (n - 1);
+    w.push(Math.exp(-0.5 * z * z));
+  }
+  let sum = 0, weight = 0;
+  for (let i = 0; i < n; i++) {
+    const xCm = cxCm - SCORE_MODEL_SIGMAS * sdXCm + i * stepX;
+    for (let j = 0; j < n; j++) {
+      const yCm = cyCm - SCORE_MODEL_SIGMAS * sdYCm + j * stepY;
+      const ww = w[i] * w[j];
+      sum += ww * scoreAt(xCm, yCm);
+      weight += ww;
+    }
+  }
+  return weight ? sum / weight : 0;
+}
+
+// The best a single arrow can score. X counts 10, so this is the ceiling on
+// every ring class the app models.
+const MAX_ARROW_SCORE = 10;
+
+// The full read: what this group is worth, what centring it would be worth,
+// and what the spread costs on top. `aim` is the honest size of the prize
+// for a sight correction — and it is routinely much smaller than the
+// centimetre offset makes it feel, which is exactly why it's worth showing.
+function pointsBreakdown(stats, round) {
+  if (!stats || stats.count < 2) return null;
+  const expected = expectedScorePerArrow(round, stats.cxCm, stats.cyCm, stats.sdXCm, stats.sdYCm);
+  const centred = expectedScorePerArrow(round, 0, 0, stats.sdXCm, stats.sdYCm);
+  return {
+    expected,
+    centred,
+    // Clamped at zero: the model can put a marginally off-centre group a
+    // hair above a centred one through grid noise, and "moving your sight
+    // would LOSE you 0.01 points" is not a thing worth printing.
+    aim: Math.max(0, centred - expected),
+    spread: Math.max(0, MAX_ARROW_SCORE - centred),
+  };
+}
+
+// ---------- cross-round comparability ----------
+//
+// Every other figure in the app is locked to one round shape, so there's no
+// way to ask "am I shooting better at 18m or at 70m" — the scores aren't
+// comparable and neither are the centimetres, since the same angular error
+// makes a group twice as wide at twice the distance. Dividing the group by
+// the distance removes exactly that, leaving the angle the archer's form
+// actually subtends. Milliradians because 1 mrad is 1cm at 10m, which makes
+// the number easy to sanity-check.
+//
+// This is a physical normalization, not a handicap or a rating: it says
+// nothing about how the two distances compare in difficulty (wind and sight
+// marks don't scale linearly), only about how tightly the archer is
+// shooting at each. A proper cross-round rating would need a published
+// scheme (Archery GB's handicap tables are the established one; World
+// Archery has no official equivalent) and is deliberately not invented here.
+function angularDispersionMrad(stats, distanceM) {
+  if (!stats || !distanceM) return null;
+  return (stats.meanRadiusCm / 100) / distanceM * 1000;
+}
+
 // Compares distance + face size + spot layout + ring class, not arrows-per-
 // end/ends — how a round gets chunked into ends is a scoring convention,
 // not a real difficulty difference, so two rounds at the same distance/
@@ -719,6 +853,26 @@ function sessionAddArrow(session, arrow) {
     stages,
     status: complete ? 'completed' : 'in_progress',
     completedAt: complete ? new Date().toISOString() : null,
+  };
+}
+
+// Commits a confirmed volée and stamps the end with the moment it was
+// confirmed. The stamp is what every pace figure is derived from (see
+// endDurations) — it measures shooting AND scoring, since the app gets used
+// at the target as much as at the line, and nothing downstream claims
+// otherwise. Ends saved before this existed simply have no `at`, and every
+// reader skips them.
+function sessionConfirmEnd(session, arrows, at) {
+  const stageIdx = activeStageIndex(session);
+  const endIdx = currentEndIndex(session.stages[stageIdx]);
+  const next = arrows.reduce((acc, a) => sessionAddArrow(acc, a), session);
+  const stamp = at || new Date().toISOString();
+  return {
+    ...next,
+    stages: next.stages.map((st, i) => (i !== stageIdx ? st : {
+      ...st,
+      ends: st.ends.map((e, j) => (j === endIdx ? { ...e, at: stamp } : e)),
+    })),
   };
 }
 
@@ -871,6 +1025,10 @@ function stageEntries(sessions) {
     sessionType: s.sessionType,
     bowType: s.bowType,
     conditions: s.conditions,
+    // Carried through for scoreByLocation. Sessions have always recorded a
+    // field and stage entries have always dropped it, which is why nothing
+    // could be broken down by where it was shot.
+    location: s.location,
     status: s.status,
     startedAt: s.startedAt,
     completedAt: s.completedAt,
@@ -926,7 +1084,15 @@ function sessionInsight(session, allSessions) {
       entryCountsForStats(e) && e.sessionId !== session.id &&
       sameRound(e.round, stage.round) &&
       (e.bowType || null) === (session.bowType || null) &&
-      (e.sessionType || 'allenamento') === (session.sessionType || 'allenamento'));
+      (e.sessionType || 'allenamento') === (session.sessionType || 'allenamento'))
+      // Most recent first, then capped: comparing today against every
+      // session ever shot means comparing an improving archer against a
+      // worse version of themselves indefinitely, so a good session keeps
+      // reading as "sopra la media" long after it stopped being true (and
+      // the reverse once form is found). A rolling window tracks the level
+      // they're actually at now.
+      .sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt))
+      .slice(0, INSIGHT_BASELINE_SESSIONS);
     if (!hist.length) return;
     hist.forEach(e => histSessions.add(e.sessionId));
     const arrows = arrowsShotCount(stage);
@@ -947,7 +1113,7 @@ function sessionInsight(session, allSessions) {
     const baselineAvg = baselineSum / baselineArrows;
     const diffPct = baselineAvg ? ((thisAvg - baselineAvg) / baselineAvg) * 100 : 0;
     if (Math.abs(diffPct) < 2) {
-      sentences.push(`Media in linea con il tuo standard: ${thisAvg.toFixed(2)} punti a freccia (confronto su ${histSessions.size} sessioni precedenti).`);
+      sentences.push(`Media in linea con il tuo standard: ${thisAvg.toFixed(2)} punti a freccia (confronto sulle ultime ${histSessions.size} sessioni).`);
     } else if (diffPct > 0) {
       sentences.push(`${diffPct.toFixed(0)}% sopra la tua media abituale: ${thisAvg.toFixed(2)} contro ${baselineAvg.toFixed(2)} punti a freccia.`);
     } else {
@@ -1035,6 +1201,25 @@ function sessionInsight(session, allSessions) {
 // single flat average, so a real peak (or a dip) at a particular end is
 // visible instead of averaged away. Per-arrow rather than per-end-total so
 // ends with different arrow counts stay comparable.
+// Linear interpolation between order statistics — the same definition
+// spreadsheets use, so a quartile printed here matches one worked out by
+// hand. `sorted` must already be ascending.
+function quantile(sorted, q) {
+  if (!sorted.length) return null;
+  if (sorted.length === 1) return sorted[0];
+  const pos = (sorted.length - 1) * q;
+  const lo = Math.floor(pos), hi = Math.ceil(pos);
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo);
+}
+
+// Median and interquartile band, NOT min-max. The range between the best
+// and worst a volée has ever gone is not a property of the archer: it can
+// only grow as sessions accumulate, so a round shape with thirty sessions
+// draws a visibly wider band than one with six purely from having been shot
+// more. The quartiles are stable under sample size and say the thing the
+// chart is actually for — where this volée usually lands. `n` rides along
+// so a volée that only the long rounds ever reach can be read with its
+// thinner support in view.
 function endRangeStats(completedList) {
   const maxEnds = completedList.reduce((m, s) => Math.max(m, s.round.ends), 0);
   const rows = [];
@@ -1046,39 +1231,162 @@ function endRangeStats(completedList) {
         endAvgs.push(end.arrows.reduce((a, b) => a + b.score, 0) / end.arrows.length);
       }
     });
-    if (!endAvgs.length) { rows.push({ end: i + 1, range: null, avg: null }); continue; }
-    const min = Math.min(...endAvgs);
-    const max = Math.max(...endAvgs);
-    const avg = endAvgs.reduce((a, b) => a + b, 0) / endAvgs.length;
-    rows.push({ end: i + 1, range: [min, max], avg });
+    if (!endAvgs.length) { rows.push({ end: i + 1, band: null, median: null, avg: null, n: 0 }); continue; }
+    endAvgs.sort((a, b) => a - b);
+    rows.push({
+      end: i + 1,
+      band: [quantile(endAvgs, 0.25), quantile(endAvgs, 0.75)],
+      median: quantile(endAvgs, 0.5),
+      avg: endAvgs.reduce((a, b) => a + b, 0) / endAvgs.length,
+      n: endAvgs.length,
+    });
   }
   return rows;
 }
 
-// Population standard deviation of a session's individual arrow scores — a
-// "how steady, not just how good" measure. Two sessions can share the same
-// average and be very different achievements: one nervy with a wide score
-// spread, one tight and repeatable. Lower stddev = more consistent.
+// ---------- uncertainty ----------
+//
+// Ordinary least squares of y on x, with the standard error of the slope —
+// enough to ask "is this line actually sloping, or am I reading noise",
+// which is the question every trend chart in the app silently invited and
+// never answered. Returns null below three points, where a slope has no
+// residual degrees of freedom left to estimate its own error from.
+function linearFit(points) {
+  const n = points.length;
+  if (n < 3) return null;
+  const mx = points.reduce((s, p) => s + p.x, 0) / n;
+  const my = points.reduce((s, p) => s + p.y, 0) / n;
+  let sxx = 0, sxy = 0;
+  points.forEach(p => { sxx += (p.x - mx) ** 2; sxy += (p.x - mx) * (p.y - my); });
+  if (sxx === 0) return null;
+  const slope = sxy / sxx;
+  const intercept = my - slope * mx;
+  const residualSs = points.reduce((s, p) => s + (p.y - (intercept + slope * p.x)) ** 2, 0);
+  const slopeSe = Math.sqrt(residualSs / (n - 2) / sxx);
+  return { slope, intercept, slopeSe, n };
+}
+
+// Is the session-to-session line going anywhere? Same two-sigma bar the
+// rest of the app uses. `perTen` restates the slope over ten sessions,
+// because a slope per session is a number nobody can feel.
+function trendVerdict(series, key = 'avg') {
+  const points = series.map((row, i) => ({ x: i, y: row[key] })).filter(p => Number.isFinite(p.y));
+  const fit = linearFit(points);
+  if (!fit) return { verdict: 'insufficient', n: points.length };
+  const significant = Math.abs(fit.slope) >= 2 * fit.slopeSe;
+  return {
+    verdict: !significant ? 'flat' : fit.slope > 0 ? 'up' : 'down',
+    slope: fit.slope,
+    perTen: fit.slope * 10,
+    slopeSe: fit.slopeSe,
+    n: fit.n,
+  };
+}
+
+// Each session's average with its own error bar. A 60-arrow average carries
+// a standard error of roughly a quarter point, which is bigger than most of
+// the movement the trend line shows — so plotting the points bare invites
+// the archer to read a story into scatter. The band is +-2 SE: sessions
+// whose bands overlap did not measurably differ.
+function avgTrendWithBands(completedList) {
+  return completedList
+    .slice()
+    .sort((a, b) => new Date(a.completedAt) - new Date(b.completedAt))
+    .map(e => {
+      const scores = flattenArrows(e).map(a => a.score);
+      const n = scores.length;
+      const avg = n ? scores.reduce((s, v) => s + v, 0) / n : 0;
+      const sd = n > 1 ? Math.sqrt(scores.reduce((s, v) => s + (v - avg) ** 2, 0) / (n - 1)) : 0;
+      const se = n > 1 ? sd / Math.sqrt(n) : 0;
+      return { label: formatDateShort(e.completedAt), avg, se, n, band: [avg - 2 * se, avg + 2 * se] };
+    });
+}
+
+// Population standard deviation of a session's individual arrow scores.
 function scoreStdDevBySession(completedList) {
   return completedList
     .slice()
     .sort((a, b) => new Date(a.completedAt) - new Date(b.completedAt))
     .map(e => {
       const scores = flattenArrows(e).map(a => a.score);
-      if (scores.length < 2) return { label: formatDateShort(e.completedAt), stddev: null };
+      if (scores.length < 2) return { label: formatDateShort(e.completedAt), stddev: null, mean: null };
       const mean = scores.reduce((s, v) => s + v, 0) / scores.length;
       const variance = scores.reduce((s, v) => s + (v - mean) ** 2, 0) / scores.length;
-      return { label: formatDateShort(e.completedAt), stddev: Math.sqrt(variance) };
+      return { label: formatDateShort(e.completedAt), stddev: Math.sqrt(variance), mean };
     });
 }
 
+// How many sessions before the sigma-versus-mean relationship can be fitted
+// from the archer's own data. Below this the raw sigma is shown instead,
+// with the caveat that it moves with the average.
+const CONSISTENCY_FIT_MIN_SESSIONS = 5;
+
+// Raw sigma is a bad consistency measure and this chart used to present it
+// as a good one. Arrow scores are capped at 10, so as a group tightens every
+// arrow converges on the ceiling and sigma is dragged to zero with it: an
+// archer improving from 8.0 to 9.5 points per arrow will show a falling
+// sigma whether or not they became any steadier. Plotted next to the average
+// it is close to an upside-down copy of it.
+//
+// What's left once that's removed is the useful part. Fitting sigma against
+// the session average over the archer's own history gives the sigma a
+// session of that quality would normally have; the residual is how much
+// steadier (below zero) or streakier (above zero) it actually was. Self-
+// calibrating, so it needs no reference table and no assumption about level.
+function consistencyTrend(completedList) {
+  const rows = scoreStdDevBySession(completedList);
+  const usable = rows.filter(r => r.stddev != null);
+  if (usable.length < CONSISTENCY_FIT_MIN_SESSIONS) return { rows, fitted: false };
+  const fit = linearFit(usable.map(r => ({ x: r.mean, y: r.stddev })));
+  if (!fit) return { rows, fitted: false };
+  return {
+    fitted: true,
+    rows: rows.map(r => (r.stddev == null ? { ...r, expected: null, residual: null } : {
+      ...r,
+      expected: fit.intercept + fit.slope * r.mean,
+      residual: r.stddev - (fit.intercept + fit.slope * r.mean),
+    })),
+  };
+}
+
+// Dispersion and drift over time, computed PER SPOT. Pooling every arrow on
+// a triple face through one centroid — which this did — mixes three
+// separately-aimed groups into a group nobody shot: the centroid lands
+// between the spots, and any disagreement between them is added to the
+// dispersion as if it were scatter. That's the exact error groupStatsBySpot
+// exists to prevent, and it was still live here after the group readouts
+// were fixed.
+//
+// Dispersion is the arrow-weighted mean of the per-spot dispersions, which
+// for a single-spot round is unchanged. Drift is only a direction when
+// there's one aim point: on a multi-spot face each spot gets its own offset
+// magnitude instead, since averaging three directions produces a vector
+// pointing nowhere in particular.
 function dispersionTrend(completedList) {
   return completedList
     .slice()
     .sort((a, b) => new Date(a.completedAt) - new Date(b.completedAt))
     .map(s => {
-      const g = computeGroupStats(flattenArrows(s), s.round);
-      return g ? { label: formatDateShort(s.completedAt), dispersion: g.meanRadiusCm, biasX: g.cxCm, biasY: g.cyCm } : null;
+      const perSpot = groupStatsBySpot(s.round, flattenArrows(s));
+      const usable = perSpot.filter(p => p.stats);
+      if (!usable.length) return null;
+      const arrows = usable.reduce((n, p) => n + p.stats.count, 0);
+      const row = {
+        label: formatDateShort(s.completedAt),
+        dispersion: usable.reduce((sum, p) => sum + p.stats.meanRadiusCm * p.stats.count, 0) / arrows,
+        multi: roundSpotLayout(s.round) !== 'single',
+      };
+      if (!row.multi) {
+        row.biasX = usable[0].stats.cxCm;
+        row.biasY = usable[0].stats.cyCm;
+      } else {
+        perSpot.forEach(p => {
+          row[`spot${p.spot}`] = p.stats
+            ? Math.sqrt(p.stats.cxCm ** 2 + p.stats.cyCm ** 2)
+            : null;
+        });
+      }
+      return row;
     })
     .filter(Boolean);
 }
@@ -1103,24 +1411,263 @@ function scoreDistribution(completedList) {
 
 // dimension: one of CONDITION_DIMENSIONS ('wind' | 'timeOfDay' | 'sun' | 'tags').
 // avg is per-arrow (comparable to the fatigue curve's 0-10 scale), not per-session total.
+// Each bar now carries its own two-sigma error bar. Without one, a bucket
+// built from three sessions renders exactly as authoritatively as one built
+// from thirty, and the eye reads any difference in bar height as a real
+// effect — which, at these sample sizes, it usually isn't. The error bar is
+// the sampling error only; it says nothing about the confounding these
+// buckets are full of (your windy sessions may all be from a period when you
+// were shooting worse anyway), which is why the UI says so in words.
 function scoreByCondition(completedList, dimension) {
   const dim = CONDITION_DIMENSIONS.find(d => d.id === dimension);
   const buckets = {};
-  dim.options.forEach(o => { buckets[o.id] = { sum: 0, arrows: 0, sessions: 0 }; });
+  dim.options.forEach(o => { buckets[o.id] = { sum: 0, sumSq: 0, arrows: 0, sessions: 0 }; });
   completedList.forEach(s => {
     const c = s.conditions;
     if (!c) return;
     const values = dimension === 'tags' ? (c.tags || []) : (c[dimension] ? [c[dimension]] : []);
+    const arrows = flattenArrows(s);
     values.forEach(v => {
       if (!buckets[v]) return;
       buckets[v].sum += totalScore(s);
-      buckets[v].arrows += arrowsShotCount(s);
+      buckets[v].sumSq += arrows.reduce((t, a) => t + a.score * a.score, 0);
+      buckets[v].arrows += arrows.length;
       buckets[v].sessions += 1;
     });
   });
   return dim.options
-    .map(o => ({ key: o.label, avg: buckets[o.id].arrows ? buckets[o.id].sum / buckets[o.id].arrows : 0, count: buckets[o.id].sessions }))
+    .map(o => {
+      const b = buckets[o.id];
+      const avg = b.arrows ? b.sum / b.arrows : 0;
+      const variance = b.arrows > 1 ? Math.max(0, b.sumSq / b.arrows - avg * avg) : 0;
+      const se = b.arrows > 1 ? Math.sqrt(variance / b.arrows) : 0;
+      return { key: o.label, avg, count: b.sessions, arrows: b.arrows, err: 2 * se };
+    })
     .filter(r => r.count >= MIN_SESSIONS_PER_CONDITION);
+}
+
+// ---------- training load ----------
+//
+// Nothing in the app tracked volume, which is odd for a training log: how
+// much you shoot is the best-established driver of how well you shoot, and
+// every session already carries the date needed to count it. Weeks run
+// Monday to Sunday and are emitted unbroken, so a fortnight off shows up as
+// two empty columns rather than silently closing the gap.
+function weekStartOf(iso) {
+  const d = new Date(iso);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); // Monday = 0
+  return d;
+}
+
+function weeklyVolume(sessions, weeks = 16) {
+  const counted = sessions.filter(sessionCountsForStats);
+  if (!counted.length) return [];
+  const latest = counted.reduce((a, b) => (new Date(b.completedAt) > new Date(a.completedAt) ? b : a));
+  const end = weekStartOf(latest.completedAt);
+  const buckets = new Map();
+  for (let i = weeks - 1; i >= 0; i--) {
+    const d = new Date(end);
+    d.setDate(d.getDate() - i * 7);
+    buckets.set(d.getTime(), { label: formatDateShort(d.toISOString()), arrows: 0, sessions: 0 });
+  }
+  counted.forEach(s => {
+    const key = weekStartOf(s.completedAt).getTime();
+    const b = buckets.get(key);
+    if (!b) return;
+    b.arrows += sessionArrowsShot(s);
+    b.sessions += 1;
+  });
+  return Array.from(buckets.values());
+}
+
+// Whole days since the last session that counted — the number a training
+// log should put in front of you without being asked.
+function daysSinceLastSession(sessions, now = new Date()) {
+  const counted = sessions.filter(sessionCountsForStats);
+  if (!counted.length) return null;
+  const latest = counted.reduce((a, b) => (new Date(b.completedAt) > new Date(a.completedAt) ? b : a));
+  return Math.floor((now - new Date(latest.completedAt)) / 86400000);
+}
+
+// ---------- contrasts ----------
+//
+// Two arrow-weighted means with a two-sigma test on their difference. The
+// app could already FILTER by session type but never CONTRASTED them, so
+// the question every archer asks — how much do I drop in competition — took
+// flipping between two chips and remembering two numbers.
+function meanWithError(entries) {
+  let sum = 0, sumSq = 0, arrows = 0;
+  entries.forEach(e => flattenArrows(e).forEach(a => { sum += a.score; sumSq += a.score * a.score; arrows += 1; }));
+  if (!arrows) return null;
+  const avg = sum / arrows;
+  const variance = arrows > 1 ? Math.max(0, sumSq / arrows - avg * avg) : 0;
+  return { avg, arrows, sessions: entries.length, se: arrows > 1 ? Math.sqrt(variance / arrows) : 0 };
+}
+
+function contrastGroups(entriesA, entriesB) {
+  const a = meanWithError(entriesA), b = meanWithError(entriesB);
+  if (!a || !b) return null;
+  const diff = a.avg - b.avg;
+  const se = Math.sqrt(a.se ** 2 + b.se ** 2);
+  return { a, b, diff, se, significant: Math.abs(diff) >= 2 * se };
+}
+
+// Gara against allenamento, on whatever scope the caller has already
+// filtered to. Arrow-weighted, so a single long competition doesn't outvote
+// a season of training.
+function typeContrast(entries) {
+  const gara = entries.filter(e => (e.sessionType || 'allenamento') === 'gara');
+  const training = entries.filter(e => (e.sessionType || 'allenamento') === 'allenamento');
+  if (!gara.length || !training.length) return null;
+  return contrastGroups(gara, training);
+}
+
+// ---------- position within the end ----------
+//
+// Which arrow of the volée is it? The data has always been there, ordered,
+// and nothing ever looked: a first arrow shot cold and a last arrow shot
+// after two sighters of feedback are different shots, and archers routinely
+// have a strong preference between them. Two-sigma test of the first arrow
+// against all the others, so a hunch doesn't get printed as a finding.
+function arrowPositionStats(completedList) {
+  const perEnd = completedList.reduce((m, e) => Math.max(m, e.round.arrowsPerEnd), 0);
+  const slots = Array.from({ length: perEnd }, () => ({ sum: 0, sumSq: 0, n: 0 }));
+  completedList.forEach(e => e.ends.forEach(end => end.arrows.forEach((a, i) => {
+    if (!slots[i]) return;
+    slots[i].sum += a.score;
+    slots[i].sumSq += a.score * a.score;
+    slots[i].n += 1;
+  })));
+  const rows = slots.map((s, i) => {
+    const avg = s.n ? s.sum / s.n : 0;
+    const variance = s.n > 1 ? Math.max(0, s.sumSq / s.n - avg * avg) : 0;
+    const se = s.n > 1 ? Math.sqrt(variance / s.n) : 0;
+    return { position: i + 1, avg, n: s.n, se, err: 2 * se };
+  }).filter(r => r.n > 0);
+  if (rows.length < 2) return { rows, firstArrow: null };
+  const first = rows[0];
+  const rest = slots.slice(1).reduce((acc, s) => ({ sum: acc.sum + s.sum, sumSq: acc.sumSq + s.sumSq, n: acc.n + s.n }), { sum: 0, sumSq: 0, n: 0 });
+  const restAvg = rest.n ? rest.sum / rest.n : 0;
+  const restVar = rest.n > 1 ? Math.max(0, rest.sumSq / rest.n - restAvg * restAvg) : 0;
+  const restSe = rest.n > 1 ? Math.sqrt(restVar / rest.n) : 0;
+  const diff = first.avg - restAvg;
+  const se = Math.sqrt(first.se ** 2 + restSe ** 2);
+  return { rows, firstArrow: { diff, se, significant: Math.abs(diff) >= 2 * se, restAvg } };
+}
+
+// ---------- X rate ----------
+//
+// X count existed as one lifetime tile and nothing else, which undersells
+// it: for compound especially the X is what separates two archers who both
+// shoot tens, and it's the tie-break that decides placings.
+function xRateTrend(completedList) {
+  return completedList
+    .slice()
+    .sort((a, b) => new Date(a.completedAt) - new Date(b.completedAt))
+    .map(e => {
+      const arrows = flattenArrows(e);
+      return {
+        label: formatDateShort(e.completedAt),
+        pct: arrows.length ? (arrows.filter(a => a.isX).length / arrows.length) * 100 : 0,
+        n: arrows.length,
+      };
+    });
+}
+
+// ---------- where you shoot ----------
+//
+// `location` was collected on every session and only ever printed back.
+// Free text, so it's grouped case- and whitespace-insensitively, and the
+// most-used spelling is what gets displayed.
+function normalizeLocationKey(location) {
+  return (location || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function scoreByLocation(completedList) {
+  const buckets = new Map();
+  completedList.forEach(s => {
+    const key = normalizeLocationKey(s.location);
+    if (!key) return;
+    if (!buckets.has(key)) buckets.set(key, { names: new Map(), entries: [] });
+    const b = buckets.get(key);
+    const shown = (s.location || '').trim().replace(/\s+/g, ' ');
+    b.names.set(shown, (b.names.get(shown) || 0) + 1);
+    b.entries.push(s);
+  });
+  return Array.from(buckets.values())
+    .map(b => {
+      const stats = meanWithError(b.entries);
+      const label = Array.from(b.names.entries()).sort((x, y) => y[1] - x[1])[0][0];
+      return { key: label, avg: stats.avg, count: stats.sessions, arrows: stats.arrows, err: 2 * stats.se };
+    })
+    .filter(r => r.count >= MIN_SESSIONS_PER_CONDITION)
+    .sort((a, b) => b.avg - a.avg);
+}
+
+// ---------- rhythm ----------
+//
+// Ends carry `at`, the moment the volée was confirmed (see sessionConfirmEnd).
+// The gap between consecutive stamps is how long that volée took to shoot
+// AND score, which is the honest description — the app is used at the target
+// as often as at the line, so this is pace of work, not draw time. Gaps
+// beyond REST_GAP_SECONDS are dropped as breaks rather than folded into an
+// average they would dominate.
+const REST_GAP_SECONDS = 15 * 60;
+
+function endDurations(entry) {
+  const out = [];
+  for (let i = 1; i < entry.ends.length; i++) {
+    const prev = entry.ends[i - 1], cur = entry.ends[i];
+    if (!prev.at || !cur.at || !cur.arrows.length) continue;
+    const secs = (new Date(cur.at) - new Date(prev.at)) / 1000;
+    if (secs <= 0 || secs > REST_GAP_SECONDS) continue;
+    out.push({ index: i, seconds: secs, avg: cur.arrows.reduce((s, a) => s + a.score, 0) / cur.arrows.length });
+  }
+  return out;
+}
+
+// Splits each session's own volées at its own median pace, then contrasts
+// the two halves. Within-session so a slow session and a fast archer aren't
+// compared with each other, and the median is per session so it adapts to
+// how that day was shot.
+function paceContrast(completedList) {
+  const slow = [], fast = [];
+  let sessionsWithTiming = 0;
+  completedList.forEach(e => {
+    const durations = endDurations(e);
+    if (durations.length < 4) return;
+    sessionsWithTiming += 1;
+    const median = quantile(durations.map(d => d.seconds).sort((a, b) => a - b), 0.5);
+    durations.forEach(d => (d.seconds > median ? slow : fast).push(d.avg));
+  });
+  if (sessionsWithTiming < 3 || !slow.length || !fast.length) return { sessionsWithTiming, contrast: null };
+  const summarize = (vals) => {
+    const avg = vals.reduce((s, v) => s + v, 0) / vals.length;
+    const variance = vals.length > 1 ? vals.reduce((s, v) => s + (v - avg) ** 2, 0) / vals.length : 0;
+    return { avg, n: vals.length, se: vals.length > 1 ? Math.sqrt(variance / vals.length) : 0 };
+  };
+  const a = summarize(slow), b = summarize(fast);
+  const diff = a.avg - b.avg;
+  const se = Math.sqrt(a.se ** 2 + b.se ** 2);
+  return { sessionsWithTiming, contrast: { slow: a, fast: b, diff, se, significant: Math.abs(diff) >= 2 * se } };
+}
+
+// Median seconds per volée, session by session — the plain descriptive
+// counterpart to the contrast above.
+function paceTrend(completedList) {
+  return completedList
+    .slice()
+    .sort((a, b) => new Date(a.completedAt) - new Date(b.completedAt))
+    .map(e => {
+      const durations = endDurations(e);
+      if (durations.length < 2) return null;
+      return {
+        label: formatDateShort(e.completedAt),
+        seconds: quantile(durations.map(d => d.seconds).sort((a, b) => a - b), 0.5),
+      };
+    })
+    .filter(Boolean);
 }
 
 function bowLabel(bowType) {
@@ -1720,10 +2267,26 @@ function sightAdviceText(advice, stats) {
   }
 }
 
-function GroupReadout({ shape, advice }) {
+function GroupReadout({ shape, advice, round, arrows }) {
+  const stats = shape ? shape.stats : null;
+  const positioned = useMemo(() => (arrows || []).filter(a => a.x != null && a.y != null), [arrows]);
+  // The offset in points, which is the currency the decision is actually
+  // made in: a centimetre of offset on a 122cm face and on a Vegas spot are
+  // not the same mistake, and only this converts them.
+  const model = useMemo(
+    () => (stats && stats.count >= SIGHT_MIN_ARROWS && round ? pointsBreakdown(stats, round) : null),
+    [stats, round]);
+  const flyers = useMemo(() => (round ? separateFlyers(positioned, round) : null), [positioned, round]);
   if (!shape) return null;
-  const { stats, offsetCm, offCentre, headline, axis } = shape;
+  const { offsetCm, offCentre, headline, axis } = shape;
   const adviceText = sightAdviceText(advice, stats);
+  const mrad = round ? angularDispersionMrad(stats, round.distanceM) : null;
+  // Printed next to the model so a bad fit is visible instead of implied.
+  // The model assumes a normal group; a session with flyers in it will show
+  // the two numbers pulling apart, which is information, not an error.
+  const actual = positioned.length
+    ? positioned.reduce((s, a) => s + a.score, 0) / positioned.length
+    : null;
   return (
     <div className="text-xs flex flex-col gap-0.5" style={{ color: T.textDim }}>
       <div className="font-semibold" style={{ color: T.text }}>{headline}</div>
@@ -1740,7 +2303,30 @@ function GroupReadout({ shape, advice }) {
       <div>
         Ampiezza {stats.maxRadiusCm.toFixed(1)} cm · media {stats.meanRadiusCm.toFixed(1)} cm
         {axis ? ` · dispersione ${axis}` : ''} · {stats.count} frecce
+        {mrad != null ? ` · ${mrad.toFixed(1)} mrad` : ''}
       </div>
+      {model && (
+        <div style={{ color: T.text }}>
+          Centrare il gruppo vale <span style={{ color: T.gold, fontWeight: 700 }}>+{model.aim.toFixed(2)}</span> punti a freccia
+          {' '}· la dispersione ne costa {model.spread.toFixed(2)}
+        </div>
+      )}
+      {model && actual != null && (
+        <div style={{ color: T.textFaint }}>
+          Modello {model.expected.toFixed(2)} · reale {actual.toFixed(2)} punti a freccia
+        </div>
+      )}
+      {/* Only when setting the thrown arrows aside actually changes the
+          reading. On a 60-arrow group a single arrow just past 3 sigma
+          moves the mean by less than the printed decimal, and "il nucleo
+          misura 2.0 cm invece di 2.0" is a sentence that says nothing. */}
+      {flyers && flyers.coreStats && stats.meanRadiusCm - flyers.coreStats.meanRadiusCm >= 0.05 && (
+        <div style={{ color: T.textFaint }}>
+          {flyers.flyers.length} frecc{flyers.flyers.length === 1 ? 'ia' : 'e'} fuori gruppo: senza
+          {flyers.flyers.length === 1 ? ' quella' : ' quelle'} il gruppo misura {flyers.coreStats.meanRadiusCm.toFixed(1)} cm
+          {' '}invece di {stats.meanRadiusCm.toFixed(1)}
+        </div>
+      )}
       {adviceText && (
         <div style={{ color: advice.verdict === 'adjust' ? T.gold : T.textFaint }}>{adviceText}</div>
       )}
@@ -1764,11 +2350,24 @@ function GroupAnalysis({ round, arrows, dense = true }) {
       <div className={isMulti ? 'grid grid-cols-1 sm:grid-cols-3 gap-4' : ''}>
         {perSpot.map(({ spot, arrows: spotArrows, stats }) => (
           <div key={spot} className="flex flex-col gap-2">
-            {isMulti && <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: T.textFaint }}>Spot {spot + 1}</div>}
+            {isMulti && (
+              <div className="text-xs font-semibold uppercase tracking-wide flex items-baseline gap-2" style={{ color: T.textFaint }}>
+                <span>Spot {spot + 1}</span>
+                {/* Per-spot SCORE, not just per-spot geometry: the spots are
+                    scored the same and a spot that quietly averages half a
+                    point below the others is the plainest possible statement
+                    of the same thing the group offsets are hinting at. */}
+                {spotArrows.length > 0 && (
+                  <span style={{ color: T.textDim }}>
+                    media {(spotArrows.reduce((s, a) => s + a.score, 0) / spotArrows.length).toFixed(2)} su {spotArrows.length}
+                  </span>
+                )}
+              </div>
+            )}
             <TargetFace faceCm={spotFaceCm(round.faceCm, layout)} ringClass={roundRingClass(round)}
               points={spotArrows.filter(a => a.x != null)} centroid={stats} dense={dense} />
             {stats
-              ? <GroupReadout shape={shapes[spot]} advice={assessSightAdjustment(spotArrows, round)} />
+              ? <GroupReadout shape={shapes[spot]} advice={assessSightAdjustment(spotArrows, round)} round={round} arrows={spotArrows} />
               : <div className="text-xs" style={{ color: T.textFaint }}>Nessuna freccia con posizione registrata.</div>}
           </div>
         ))}
@@ -2134,7 +2733,7 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
 
   function confirmEnd() {
     if (!endReady) return;
-    onUpdate(s => pending.reduce((acc, arrow) => sessionAddArrow(acc, arrow), s));
+    onUpdate(s => sessionConfirmEnd(s, pending));
     setPending([]);
   }
 
@@ -2879,7 +3478,78 @@ function bestByShape(entries) {
     .sort((a, b) => b.round.distanceM - a.round.distanceM || b.round.faceCm - a.round.faceCm);
 }
 
-function StatisticheScreen({ sessions }) {
+// Below this many positioned arrows a round shape doesn't get an angular
+// bar — the whole point of the chart is comparing shapes against each
+// other, and a bar built on a handful of arrows invites a comparison the
+// data can't support.
+const ANGULAR_MIN_ARROWS = 30;
+
+// Angular dispersion per round shape: the one figure in the app that's
+// comparable ACROSS distances and face sizes. Arrow-weighted and per spot,
+// like everything else.
+function angularByShape(entries) {
+  const map = new Map();
+  entries.forEach(e => {
+    const usable = groupStatsBySpot(e.round, flattenArrows(e)).filter(p => p.stats);
+    if (!usable.length || !e.round.distanceM) return;
+    const key = roundShapeKey(e.round);
+    if (!map.has(key)) map.set(key, { round: e.round, sum: 0, arrows: 0 });
+    const b = map.get(key);
+    usable.forEach(p => {
+      b.sum += angularDispersionMrad(p.stats, e.round.distanceM) * p.stats.count;
+      b.arrows += p.stats.count;
+    });
+  });
+  return Array.from(map.values())
+    .filter(b => b.arrows >= ANGULAR_MIN_ARROWS)
+    .map(b => ({ key: roundShapeLabel(b.round), mrad: b.sum / b.arrows, arrows: b.arrows }))
+    .sort((a, b) => a.mrad - b.mrad);
+}
+
+// The archer's own competition record, pulled out of the tournaments they
+// organized. Matches record every arrow individually, so this is real
+// arrow-level data that until now lived only inside the bracket screens and
+// never reached the statistics tab at all.
+//
+// Identification is by the email the organizer recorded against a
+// participant (the same one that lets a participant self-score from the
+// public link) — the only link that exists between an account and a name in
+// a bracket. No email, no record: nothing here guesses from names.
+function ownMatchRecord(tournaments, email) {
+  const key = (email || '').trim().toLowerCase();
+  if (!key) return null;
+  let matches = 0, won = 0, arrows = 0, points = 0, sumSq = 0;
+  const events = new Set();
+  (tournaments || []).forEach(t => {
+    const me = (t.participants || []).find(p => (p.email || '').trim().toLowerCase() === key);
+    if (!me) return;
+    flatMatchRefs(t).forEach(ref => {
+      // threeFinal has three sides and its own shape — see matchRefHasParticipant.
+      if (ref.kind === 'threeFinal') return;
+      const resolved = resolveMatchRef(t, ref);
+      const m = resolved && resolved.match;
+      if (!m || m.forfeit) return;
+      const side = m.slotA && m.slotA.id === me.id ? 'A' : m.slotB && m.slotB.id === me.id ? 'B' : null;
+      if (!side) return;
+      const own = (m.units || []).flatMap(u => (side === 'A' ? u.arrowsA : u.arrowsB) || []);
+      if (!own.length) return;
+      matches += 1;
+      events.add(t.id);
+      if (m.status === 'completed' && m.winnerSlot === side) won += 1;
+      own.forEach(v => { arrows += 1; points += v; sumSq += v * v; });
+    });
+  });
+  if (!matches) return null;
+  const avg = points / arrows;
+  const variance = arrows > 1 ? Math.max(0, sumSq / arrows - avg * avg) : 0;
+  return {
+    matches, won, arrows, avg,
+    err: arrows > 1 ? 2 * Math.sqrt(variance / arrows) : 0,
+    tournaments: events.size,
+  };
+}
+
+function StatisticheScreen({ sessions, tournaments = [], userEmail = null }) {
   // "Counts for stats" rather than "completed": a session closed early
   // still shot real arrows, and every figure on this screen is
   // arrow-weighted. Records are held back separately — see entryIsRankable.
@@ -2890,6 +3560,10 @@ function StatisticheScreen({ sessions }) {
   const totalX = entries.reduce((s, e) => s + xCount(e), 0);
 
   const shapeRows = useMemo(() => bestByShape(entries), [entries]);
+  const volume = useMemo(() => weeklyVolume(completedSessions), [completedSessions]);
+  const idleDays = useMemo(() => daysSinceLastSession(completedSessions), [completedSessions]);
+  const angular = useMemo(() => angularByShape(entries), [entries]);
+  const matchRecord = useMemo(() => ownMatchRecord(tournaments, userEmail), [tournaments, userEmail]);
 
   const typeCounts = useMemo(() => {
     const counts = {};
@@ -2917,6 +3591,7 @@ function StatisticheScreen({ sessions }) {
     (bowFilter === 'all' || s.bowType === bowFilter));
   const allEntries = useMemo(() => stageEntries(typeAndBowFiltered), [typeAndBowFiltered]);
   const activeShape = filterId ? shapeRows.find(r => roundShapeKey(r.round) === filterId)?.round : null;
+  const multiSpotShape = !!activeShape && roundSpotLayout(activeShape) !== 'single';
   const matchingEntries = filterId ? allEntries.filter(e => roundShapeKey(e.round) === filterId) : [];
   const completed = matchingEntries.filter(entryCountsForStats);
 
@@ -2926,19 +3601,38 @@ function StatisticheScreen({ sessions }) {
   // stage); comparing raw totals would unfairly favor whichever had more
   // arrows.
   const entryAvg = e => totalScore(e) / arrowsShotCount(e);
-  const trend = useMemo(() =>
-    completed.slice().sort((a, b) => new Date(a.completedAt) - new Date(b.completedAt))
-      .map(e => ({ label: formatDateShort(e.completedAt), avg: entryAvg(e) })),
-    [completed]);
-  const consistencyTrend = useMemo(() => scoreStdDevBySession(completed), [completed]);
+  const trendBands = useMemo(() => avgTrendWithBands(completed), [completed]);
+  const trendCall = useMemo(() => trendVerdict(trendBands), [trendBands]);
+  const consistency = useMemo(() => consistencyTrend(completed), [completed]);
+  const xTrend = useMemo(() => (filterId ? xRateTrend(completed) : []), [completed, filterId]);
+  const positions = useMemo(() => (filterId ? arrowPositionStats(completed) : { rows: [], firstArrow: null }), [completed, filterId]);
+  // Deliberately ignores the tipo chip — contrasting gara with allenamento
+  // is impossible once one of the two has been filtered away — but keeps
+  // the round shape and the bow, which are what make the two comparable at
+  // all.
+  const contrast = useMemo(() => {
+    if (!filterId) return null;
+    const scoped = stageEntries(sessions).filter(e =>
+      roundShapeKey(e.round) === filterId &&
+      (bowFilter === 'all' || e.bowType === bowFilter) &&
+      entryCountsForStats(e));
+    return typeContrast(scoped);
+  }, [sessions, filterId, bowFilter]);
+  const byLocation = useMemo(() => (filterId ? scoreByLocation(completed) : []), [completed, filterId]);
+  const pace = useMemo(() => (filterId ? paceContrast(completed) : { sessionsWithTiming: 0, contrast: null }), [completed, filterId]);
+  const paceRows = useMemo(() => (filterId ? paceTrend(completed) : []), [completed, filterId]);
   const pb = completed.length ? completed.reduce((b, e) => (entryAvg(e) > entryAvg(b) ? e : b)) : null;
   const totalArrowsFiltered = completed.reduce((s, e) => s + arrowsShotCount(e), 0);
   const avgScore = totalArrowsFiltered ? completed.reduce((s, e) => s + totalScore(e), 0) / totalArrowsFiltered : null;
+  const xRate = totalArrowsFiltered ? (completed.reduce((s, e) => s + xCount(e), 0) / totalArrowsFiltered) * 100 : null;
   const colorData = useMemo(() => hitRateByColor(completed), [completed]);
   const colorTrend = useMemo(() => (filterId ? colorTrendByShape(completed) : []), [completed, filterId]);
   const endRange = useMemo(() => (filterId ? endRangeStats(completed) : []), [completed, filterId]);
   const allArrows = useMemo(() => completed.flatMap(e => flattenArrows(e)), [completed]);
-  const cumGroup = useMemo(() => (activeShape ? computeGroupStats(allArrows, activeShape) : null), [allArrows, activeShape]);
+  // Just a gate on "is there anything positioned to draw" — the analysis
+  // itself is per spot inside GroupAnalysis, and pooling here to decide
+  // whether to render it would have been the same mistake one level up.
+  const hasPositions = useMemo(() => !!activeShape && allArrows.some(a => a.x != null), [allArrows, activeShape]);
   const dispersion = useMemo(() => (filterId ? dispersionTrend(completed) : []), [completed, filterId]);
   const distribution = useMemo(() => (filterId ? scoreDistribution(completed) : []), [completed, filterId]);
   const byCondition = useMemo(() => (filterId ? scoreByCondition(completed, conditionDim) : []), [completed, filterId, conditionDim]);
@@ -2971,6 +3665,70 @@ function StatisticheScreen({ sessions }) {
           {SESSION_TYPES.map(t => <StatTile key={t.id} label={t.label} value={typeCounts[t.id]} />)}
         </div>
       </div>
+
+      {/* Volume. Not scoped to a round shape on purpose: how much you shoot
+          is a property of the training week, not of one prova, and mixing
+          18m and 70m arrows in the same bar is exactly right for it. */}
+      <div className="flex flex-col gap-2">
+        <div className="flex items-baseline justify-between gap-2">
+          <div className="text-sm font-semibold" style={{ color: T.textDim }}>Carico di allenamento</div>
+          {idleDays != null && (
+            <div className="text-xs" style={{ color: idleDays > 14 ? T.behind : T.textFaint }}>
+              {idleDays === 0 ? 'ultima sessione oggi' : `${idleDays} giorn${idleDays === 1 ? 'o' : 'i'} dall'ultima sessione`}
+            </div>
+          )}
+        </div>
+        <ChartCard title="Frecce per settimana" subtitle="Volume settimanale su tutte le prove, sessioni interrotte comprese">
+          {volume.some(w => w.arrows > 0) ? (
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={volume}>
+                <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+                <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={32} allowDecimals={false} />
+                <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                  formatter={(v, name, item) => [`${v} frecce · ${item.payload.sessions} sessioni`, 'settimana']} />
+                <Bar dataKey="arrows" fill={T.gold} radius={[3, 3, 0, 0]} maxBarSize={48} isAnimationActive={false} />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : <EmptyChart text="Nessuna sessione recente" />}
+        </ChartCard>
+      </div>
+
+      {/* The only cross-round figure in the app. Scores can't be compared
+          between 18m and 70m and neither can centimetres; the angle the
+          group subtends can. */}
+      {angular.length >= 2 && (
+        <ChartCard title="Dispersione angolare per prova (mrad)" subtitle="Ampiezza del gruppo rapportata alla distanza: confrontabile tra prove diverse, più basso è meglio">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={angular} layout="vertical" margin={{ left: 8, right: 8 }}>
+              <CartesianGrid stroke={T.border} strokeDasharray="3 3" horizontal={false} />
+              <XAxis type="number" stroke={T.textDim} tick={{ fontSize: 11 }} />
+              <YAxis type="category" dataKey="key" stroke={T.textDim} tick={{ fontSize: 10 }} width={132} />
+              <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                formatter={(v, name, item) => [`${Number(v).toFixed(2)} mrad su ${item.payload.arrows} frecce`, 'dispersione']} />
+              <Bar dataKey="mrad" fill={T.blue} radius={[0, 3, 3, 0]} maxBarSize={40} isAnimationActive={false} />
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
+      )}
+
+      {/* Match arrows have always been recorded one by one inside the
+          brackets and never counted anywhere. They still don't mix into the
+          round-shape statistics — a set match isn't a round — but they're
+          no longer invisible. */}
+      {matchRecord && (
+        <div className="rounded-2xl p-4 flex flex-col gap-1" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+          <div className="text-sm font-semibold" style={{ color: T.textDim }}>I tuoi scontri diretti</div>
+          <div className="text-sm" style={{ color: T.text }}>
+            {matchRecord.won} vittorie su {matchRecord.matches} match in {matchRecord.tournaments} tornei
+            {' '}· {matchRecord.avg.toFixed(2)} ± {matchRecord.err.toFixed(2)} punti a freccia su {matchRecord.arrows} frecce
+          </div>
+          <div className="text-xs" style={{ color: T.textFaint }}>
+            Dalle gare che hai organizzato, riconoscendoti dall'email registrata tra i partecipanti. Non entra nelle
+            statistiche per prova: i match si tirano a set, con distanze e volée diverse dai round.
+          </div>
+        </div>
+      )}
 
       <div className="flex flex-col gap-2">
         <div className="text-sm font-semibold" style={{ color: T.textDim }}>Le tue prove</div>
@@ -3016,41 +3774,81 @@ function StatisticheScreen({ sessions }) {
             </ScrollFadeRow>
           </div>
 
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-4 gap-2">
             <StatTile label="Sessioni" value={completed.length} />
             <StatTile label="Media/freccia" value={avgScore != null ? avgScore.toFixed(2) : '—'} />
             <StatTile label="Primato/freccia" value={pb ? entryAvg(pb).toFixed(2) : '—'} />
+            <StatTile label="X" value={xRate != null ? `${xRate.toFixed(1)}%` : '—'} />
           </div>
 
-          <ChartCard title="Andamento media a freccia" subtitle="Punti medi per freccia, sessione per sessione">
-            {trend.length >= 2 ? (
+          <ChartCard title="Andamento media a freccia"
+            subtitle="Punti medi per freccia, con l'incertezza di ciascuna media: dove due bande si sovrappongono, le due sessioni non sono distinguibili">
+            {trendBands.length >= 2 ? (
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={trend}>
+                <ComposedChart data={trendBands}>
                   <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
                   <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 10]} />
                   <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
-                    formatter={(v) => [Number(v).toFixed(2), 'media a freccia']} />
+                    formatter={(v, name) => (name === 'band'
+                      ? [`${v[0].toFixed(2)} – ${v[1].toFixed(2)}`, 'incertezza']
+                      : [Number(v).toFixed(2), 'media a freccia'])} />
+                  <Bar dataKey="band" fill={T.gold} fillOpacity={0.32} radius={[3, 3, 3, 3]} isAnimationActive={false} />
                   <Line type="monotone" dataKey="avg" stroke={T.gold} strokeWidth={2} dot={{ r: 3, fill: T.gold }} isAnimationActive={false} />
-                </LineChart>
+                </ComposedChart>
               </ResponsiveContainer>
             ) : <EmptyChart text="Servono almeno 2 sessioni completate" />}
           </ChartCard>
 
-          <ChartCard title="Costanza" subtitle="Variazione dei punteggi in ogni sessione: più basso, più costante">
-            {consistencyTrend.filter(c => c.stddev != null).length >= 2 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={consistencyTrend}>
-                  <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
-                  <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
-                  <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 'auto']} />
-                  <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
-                    formatter={(v) => [`σ = ${Number(v).toFixed(2)} punti`, 'costanza']} />
-                  <Line type="monotone" dataKey="stddev" stroke={T.blue} strokeWidth={2} dot={{ r: 3, fill: T.blue }} isAnimationActive={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            ) : <EmptyChart text="Servono almeno 2 sessioni completate" />}
-          </ChartCard>
+          {/* The verdict the chart used to leave to the eye. A line drawn
+              through noisy points always looks like it's going somewhere. */}
+          <div className="rounded-2xl px-4 py-3 text-sm" style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.textDim }}>
+            {trendCall.verdict === 'insufficient' && 'Servono almeno 3 sessioni per dire se c’è una tendenza.'}
+            {trendCall.verdict === 'flat' && 'Nessuna tendenza misurabile: le differenze tra sessioni rientrano nel rumore statistico.'}
+            {trendCall.verdict === 'up' && (
+              <span style={{ color: T.ahead }}>In crescita: +{trendCall.perTen.toFixed(2)} punti a freccia ogni 10 sessioni.</span>
+            )}
+            {trendCall.verdict === 'down' && (
+              <span style={{ color: T.behind }}>In calo: {trendCall.perTen.toFixed(2)} punti a freccia ogni 10 sessioni.</span>
+            )}
+          </div>
+
+          {/* Sigma alone is not consistency: scores are capped at 10, so it
+              falls on its own as the average rises. See consistencyTrend. */}
+          {consistency.fitted ? (
+            <ChartCard title="Costanza (a parità di media)"
+              subtitle="Quanto la sessione è stata più regolare (sotto zero) o più altalenante (sopra zero) di quanto ci si aspetti a quella media">
+              {consistency.rows.filter(c => c.residual != null).length >= 2 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={consistency.rows}>
+                    <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
+                    <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
+                    <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={46} domain={['auto', 'auto']} />
+                    <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                      formatter={(v, name, item) => [`${Number(v) > 0 ? '+' : ''}${Number(v).toFixed(2)} (σ ${item.payload.stddev.toFixed(2)}, attesa ${item.payload.expected.toFixed(2)})`, 'costanza']} />
+                    <ReferenceLine y={0} stroke={T.borderStrong} />
+                    <Line type="monotone" dataKey="residual" stroke={T.blue} strokeWidth={2} dot={{ r: 3, fill: T.blue }} isAnimationActive={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              ) : <EmptyChart text="Dati insufficienti" />}
+            </ChartCard>
+          ) : (
+            <ChartCard title="Costanza"
+              subtitle={`Variazione dei punteggi in ogni sessione. Attenzione: cala da sola quando la media sale — da ${CONSISTENCY_FIT_MIN_SESSIONS} sessioni in poi questo grafico si corregge da solo`}>
+              {consistency.rows.filter(c => c.stddev != null).length >= 2 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={consistency.rows}>
+                    <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
+                    <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
+                    <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 'auto']} />
+                    <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                      formatter={(v) => [`σ = ${Number(v).toFixed(2)} punti`, 'costanza']} />
+                    <Line type="monotone" dataKey="stddev" stroke={T.blue} strokeWidth={2} dot={{ r: 3, fill: T.blue }} isAnimationActive={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              ) : <EmptyChart text="Servono almeno 2 sessioni completate" />}
+            </ChartCard>
+          )}
 
           <ChartCard title="Andamento colori nel tempo" subtitle="Percentuale di frecce per colore, sessione per sessione">
             {colorTrend.length >= 2 ? (
@@ -3086,26 +3884,89 @@ function StatisticheScreen({ sessions }) {
             ) : <EmptyChart text="Nessuna sessione per questa combinazione" />}
           </ChartCard>
 
-          <ChartCard title="Andamento per volée (min · media · max)" subtitle="Punteggio minimo, medio e massimo per ogni volée, su tutte le sessioni">
-            {endRange.filter(f => f.range != null).length >= 2 ? (
+          <ChartCard title="Andamento per volée (mediana e quartili)"
+            subtitle="Dove finisce di solito ogni volée. Quartili e non minimo-massimo: il minimo e il massimo possono solo allargarsi man mano che accumuli sessioni">
+            {endRange.filter(f => f.band != null).length >= 2 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart data={endRange}>
                   <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="end" stroke={T.textDim} tick={{ fontSize: 11 }} />
                   <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 10]} />
                   <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
-                    formatter={(v, name) => (name === 'range' ? [`${v[0].toFixed(2)} – ${v[1].toFixed(2)}`, 'min – max'] : [Number(v).toFixed(2), 'media'])}
+                    formatter={(v, name, item) => (name === 'band'
+                      ? [`${v[0].toFixed(2)} – ${v[1].toFixed(2)}`, 'metà centrale']
+                      : [`${Number(v).toFixed(2)} su ${item.payload.n} sessioni`, 'mediana'])}
                     labelFormatter={(l) => `Volée ${l}`} />
-                  <Bar dataKey="range" fill={T.blue} fillOpacity={0.35} radius={[3, 3, 3, 3]} isAnimationActive={false} />
-                  <Line type="monotone" dataKey="avg" stroke={T.gold} strokeWidth={2} dot={{ r: 3, fill: T.gold }} isAnimationActive={false} />
+                  <Bar dataKey="band" fill={T.blue} fillOpacity={0.35} radius={[3, 3, 3, 3]} isAnimationActive={false} />
+                  <Line type="monotone" dataKey="median" stroke={T.gold} strokeWidth={2} dot={{ r: 3, fill: T.gold }} isAnimationActive={false} />
                 </ComposedChart>
               </ResponsiveContainer>
             ) : <EmptyChart text="Dati insufficienti" />}
           </ChartCard>
 
+          {/* Which arrow of the volée is it? Ordered data that was sitting
+              in every session since v1 and had never been looked at. */}
+          {positions.rows.length >= 2 && (
+            <ChartCard title="Media per posizione nella volée" subtitle="Prima, seconda, terza freccia... con la relativa incertezza">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={positions.rows}>
+                  <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="position" stroke={T.textDim} tick={{ fontSize: 11 }} />
+                  <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 10]} />
+                  <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                    formatter={(v, name, item) => [`${Number(v).toFixed(2)} su ${item.payload.n} frecce`, 'media']}
+                    labelFormatter={(l) => `Freccia ${l} della volée`} />
+                  <Bar dataKey="avg" fill={T.blue} radius={[3, 3, 0, 0]} maxBarSize={72} isAnimationActive={false}>
+                    <ErrorBar dataKey="err" width={4} strokeWidth={1.5} stroke={T.textDim} />
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </ChartCard>
+          )}
+          {positions.firstArrow && (
+            <div className="rounded-2xl px-4 py-3 text-sm" style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.textDim }}>
+              {positions.firstArrow.significant
+                ? `La prima freccia della volée vale ${positions.firstArrow.diff > 0 ? '+' : ''}${positions.firstArrow.diff.toFixed(2)} punti rispetto alle altre.`
+                : 'La prima freccia della volée non si distingue dalle altre.'}
+            </div>
+          )}
+
+          <ChartCard title="Percentuale di X" subtitle="Quota di frecce nell'X, sessione per sessione">
+            {xTrend.length >= 2 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={xTrend}>
+                  <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
+                  <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={32} unit="%" domain={[0, 'auto']} />
+                  <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                    formatter={(v, name, item) => [`${Number(v).toFixed(1)}% su ${item.payload.n} frecce`, 'X']} />
+                  <Line type="monotone" dataKey="pct" stroke={T.gold} strokeWidth={2} dot={{ r: 3, fill: T.gold }} isAnimationActive={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            ) : <EmptyChart text="Servono almeno 2 sessioni completate" />}
+          </ChartCard>
+
+          {/* The app could always filter by type; it could never contrast
+              them, which is the form the question is actually asked in. */}
+          {contrast && (
+            <div className="rounded-2xl p-4 flex flex-col gap-1" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+              <div className="text-sm font-semibold" style={{ color: T.textDim }}>Gara contro allenamento</div>
+              <div className="text-sm" style={{ color: T.text }}>
+                {contrast.significant
+                  ? `In gara ${contrast.diff >= 0 ? 'guadagni' : 'perdi'} ${Math.abs(contrast.diff).toFixed(2)} punti a freccia.`
+                  : 'Nessuna differenza misurabile tra gara e allenamento.'}
+              </div>
+              <div className="text-xs" style={{ color: T.textFaint }}>
+                Gara {contrast.a.avg.toFixed(2)} su {contrast.a.arrows} frecce ({contrast.a.sessions} sessioni)
+                {' '}· allenamento {contrast.b.avg.toFixed(2)} su {contrast.b.arrows} frecce ({contrast.b.sessions} sessioni).
+                {' '}Il filtro per tipo non si applica qui: servono entrambi per confrontarli.
+              </div>
+            </div>
+          )}
+
           <div className="flex flex-col gap-2">
             <div className="text-sm font-semibold" style={{ color: T.textDim }}>Gruppo cumulativo</div>
-            {cumGroup ? (
+            {hasPositions ? (
               <GroupAnalysis round={activeShape} arrows={allArrows.filter(a => a.x != null)} dense />
             ) : (
               <div className="rounded-2xl p-4 text-sm" style={{ background: T.surface, border: `1px dashed ${T.border}`, color: T.textDim }}>
@@ -3123,7 +3984,7 @@ function StatisticheScreen({ sessions }) {
               </div>
             ) : (
               <>
-                <ChartCard title="Dispersione media nel tempo (cm)" subtitle="Distanza media delle frecce dal centro del gruppo, sessione per sessione">
+                <ChartCard title="Dispersione media nel tempo (cm)" subtitle="Distanza media delle frecce dal centro del proprio gruppo, sessione per sessione — su bersagli a più spot è la media dei tre gruppi, non un gruppo unico">
                   {dispersion.length >= 2 ? (
                     <ResponsiveContainer width="100%" height="100%">
                       <LineChart data={dispersion}>
@@ -3138,22 +3999,48 @@ function StatisticheScreen({ sessions }) {
                   ) : <EmptyChart text="Nessuna freccia con posizione registrata" />}
                 </ChartCard>
 
-                <ChartCard title="Deriva orizzontale e verticale (cm)" subtitle="Scostamento medio del gruppo da centro, per direzione, nel tempo" tall>
-                  {dispersion.length >= 2 ? (
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={dispersion}>
-                        <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
-                        <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
-                        <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={['auto', 'auto']} />
-                        <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
-                          formatter={(v, name) => [`${Number(v).toFixed(1)} cm`, name === 'biasX' ? 'orizzontale' : 'verticale']} />
-                        <Legend formatter={(value) => (value === 'biasX' ? 'Orizzontale' : 'Verticale')} wrapperStyle={{ fontSize: 11, color: T.textDim }} />
-                        <Line type="monotone" dataKey="biasX" stroke={T.gold} strokeWidth={2} dot={{ r: 2, fill: T.gold }} isAnimationActive={false} />
-                        <Line type="monotone" dataKey="biasY" stroke={T.red} strokeWidth={2} dot={{ r: 2, fill: T.red }} isAnimationActive={false} />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  ) : <EmptyChart text="Nessuna freccia con posizione registrata" />}
-                </ChartCard>
+                {/* One aim point, one direction to drift in. On a triple
+                    face there are three, and averaging three directions
+                    produces an arrow pointing nowhere — so each spot gets
+                    its own distance-from-centre instead, with the
+                    directions left to the per-spot readouts below. */}
+                {multiSpotShape ? (
+                  <ChartCard title="Scarto dal centro per spot (cm)" subtitle="Quanto è lontano dal centro il gruppo di ciascuno spot, nel tempo — le direzioni sono nei riquadri per spot qui sotto" tall>
+                    {dispersion.length >= 2 ? (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={dispersion}>
+                          <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
+                          <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
+                          <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 'auto']} />
+                          <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                            formatter={(v, name) => [`${Number(v).toFixed(1)} cm`, `Spot ${Number(name.replace('spot', '')) + 1}`]} />
+                          <Legend formatter={(value) => `Spot ${Number(String(value).replace('spot', '')) + 1}`} wrapperStyle={{ fontSize: 11, color: T.textDim }} />
+                          {[0, 1, 2].map((i) => (
+                            <Line key={i} type="monotone" dataKey={`spot${i}`} stroke={[T.gold, T.blue, T.red][i]} strokeWidth={2}
+                              dot={{ r: 2, fill: [T.gold, T.blue, T.red][i] }} connectNulls isAnimationActive={false} />
+                          ))}
+                        </LineChart>
+                      </ResponsiveContainer>
+                    ) : <EmptyChart text="Nessuna freccia con posizione registrata" />}
+                  </ChartCard>
+                ) : (
+                  <ChartCard title="Deriva orizzontale e verticale (cm)" subtitle="Scostamento medio del gruppo da centro, per direzione, nel tempo" tall>
+                    {dispersion.length >= 2 ? (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={dispersion}>
+                          <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
+                          <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
+                          <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={['auto', 'auto']} />
+                          <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                            formatter={(v, name) => [`${Number(v).toFixed(1)} cm`, name === 'biasX' ? 'orizzontale' : 'verticale']} />
+                          <Legend formatter={(value) => (value === 'biasX' ? 'Orizzontale' : 'Verticale')} wrapperStyle={{ fontSize: 11, color: T.textDim }} />
+                          <Line type="monotone" dataKey="biasX" stroke={T.gold} strokeWidth={2} dot={{ r: 2, fill: T.gold }} isAnimationActive={false} />
+                          <Line type="monotone" dataKey="biasY" stroke={T.red} strokeWidth={2} dot={{ r: 2, fill: T.red }} isAnimationActive={false} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    ) : <EmptyChart text="Nessuna freccia con posizione registrata" />}
+                  </ChartCard>
+                )}
 
                 <ChartCard title="Distribuzione dei punteggi" subtitle="Quante frecce hai segnato per ciascun punteggio">
                   <ResponsiveContainer width="100%" height="100%">
@@ -3169,11 +4056,33 @@ function StatisticheScreen({ sessions }) {
                   </ResponsiveContainer>
                 </ChartCard>
 
+                {/* `location` was collected from day one and only ever
+                    printed back next to the date. */}
+                {byLocation.length >= 2 && (
+                  <ChartCard title="Media per campo" subtitle="Dove tiri meglio, tra i campi con almeno qualche sessione registrata">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={byLocation}>
+                        <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
+                        <XAxis dataKey="key" stroke={T.textDim} tick={{ fontSize: 10 }} interval={0} angle={-20} textAnchor="end" height={44} />
+                        <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 10]} />
+                        <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                          formatter={(v, name, item) => [`${Number(v).toFixed(2)} su ${item.payload.arrows} frecce (${item.payload.count} sessioni)`, 'media']} />
+                        <Bar dataKey="avg" fill={T.gold} radius={[3, 3, 0, 0]} maxBarSize={72} isAnimationActive={false}>
+                          <ErrorBar dataKey="err" width={4} strokeWidth={1.5} stroke={T.textDim} />
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </ChartCard>
+                )}
+
                 <div className="rounded-2xl p-3 flex flex-col gap-2" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
                   <div>
                     <div className="text-sm font-semibold" style={{ color: T.textDim }}>Media per condizioni</div>
                     <div className="text-xs" style={{ color: T.textFaint }}>
-                      Media punti/freccia per ogni condizione con almeno {MIN_SESSIONS_PER_CONDITION} sessioni
+                      Media punti/freccia per ogni condizione con almeno {MIN_SESSIONS_PER_CONDITION} sessioni.
+                      {' '}Le barre di errore sono l'incertezza della media: se si sovrappongono, la differenza non è
+                      {' '}misurabile. Restano comunque condizioni che si accompagnano tra loro — vento, stagione e
+                      {' '}periodo di forma viaggiano insieme, e questo confronto non le separa.
                     </div>
                   </div>
                   <div className="overflow-x-auto pb-1">
@@ -3187,13 +4096,53 @@ function StatisticheScreen({ sessions }) {
                           <XAxis dataKey="key" stroke={T.textDim} tick={{ fontSize: 10 }} interval={0} angle={-20} textAnchor="end" height={40} />
                           <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 10]} />
                           <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
-                            formatter={(v, name, item) => [`${Number(v).toFixed(2)} (${item.payload.count} sessioni)`, 'media']} />
-                          <Bar dataKey="avg" fill={T.blue} radius={[3, 3, 0, 0]} isAnimationActive={false} />
+                            formatter={(v, name, item) => [`${Number(v).toFixed(2)} su ${item.payload.arrows} frecce (${item.payload.count} sessioni)`, 'media']} />
+                          <Bar dataKey="avg" fill={T.blue} radius={[3, 3, 0, 0]} maxBarSize={72} isAnimationActive={false}>
+                            <ErrorBar dataKey="err" width={4} strokeWidth={1.5} stroke={T.textDim} />
+                          </Bar>
                         </BarChart>
                       </ResponsiveContainer>
                     ) : <EmptyChart text={`Nessuna condizione ha ancora ${MIN_SESSIONS_PER_CONDITION} sessioni registrate: continua a segnare vento, sole e momento della giornata.`} />}
                   </div>
                 </div>
+
+                {/* Pace. Only appears once enough sessions carry volée
+                    timestamps — nothing before this release has them. */}
+                {pace.contrast ? (
+                  <div className="rounded-2xl p-4 flex flex-col gap-1" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+                    <div className="text-sm font-semibold" style={{ color: T.textDim }}>Ritmo</div>
+                    <div className="text-sm" style={{ color: T.text }}>
+                      {pace.contrast.significant
+                        ? `Le volée più lente della tua mediana valgono ${pace.contrast.diff > 0 ? '+' : ''}${pace.contrast.diff.toFixed(2)} punti a freccia rispetto a quelle più veloci.`
+                        : 'Volée lente e volée veloci rendono allo stesso modo.'}
+                    </div>
+                    <div className="text-xs" style={{ color: T.textFaint }}>
+                      Confronto interno a ogni sessione, su {pace.sessionsWithTiming} sessioni con i tempi registrati.
+                      {' '}Il tempo è quello tra una volée confermata e la successiva: comprende sia il tiro sia la
+                      {' '}segnatura, quindi è il ritmo di lavoro, non il tempo di trazione.
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-2xl p-4 text-sm" style={{ background: T.surface, border: `1px dashed ${T.border}`, color: T.textDim }}>
+                    Ritmo: servono almeno 3 sessioni con i tempi delle volée
+                    {' '}(ne hai {pace.sessionsWithTiming}). I tempi vengono registrati dalle sessioni tirate d'ora in avanti.
+                  </div>
+                )}
+
+                {paceRows.length >= 2 && (
+                  <ChartCard title="Secondi per volée (mediana)" subtitle="Quanto tempo passa tra una volée confermata e la successiva">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={paceRows}>
+                        <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
+                        <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
+                        <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={32} domain={[0, 'auto']} />
+                        <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                          formatter={(v) => [`${Math.round(Number(v))} s`, 'per volée']} />
+                        <Line type="monotone" dataKey="seconds" stroke={T.blue} strokeWidth={2} dot={{ r: 3, fill: T.blue }} isAnimationActive={false} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </ChartCard>
+                )}
               </>
             )}
           </div>
@@ -6274,7 +7223,9 @@ export default function ArcheryScorecard() {
             onDelete={() => { deleteSession(detailSession.id); setDetailSessionId(null); setView('storico'); }} />
         )}
 
-        {view === 'statistiche' && <StatisticheScreen sessions={sessions} />}
+        {view === 'statistiche' && (
+          <StatisticheScreen sessions={sessions} tournaments={tournaments} userEmail={authSession?.user?.email || null} />
+        )}
 
         {view === 'tornei' && (
           <TorneiScreen tournaments={tournaments}
@@ -6395,13 +7346,21 @@ export {
   sessionTotalScore, sessionXCount, sessionArrowsShot,
   activeStageIndex, sessionAddArrow, sessionUndoLastArrow, sessionProgressLabel,
   closeSessionEarly, reopenSession, stageIsFull, entryIsRankable, sessionPlannedArrows,
-  entryCountsForStats, sessionCountsForStats,
+  entryCountsForStats, sessionCountsForStats, sessionConfirmEnd,
   sessionDisplayName, stageEntries, normalizeSession, withSessionDate,
   roundShapeKey, matchedPreset, roundShapeLabel,
   // personal scorecard: analysis
   describeBias, endRangeStats, scoreStdDevBySession, dispersionTrend,
   scoreDistribution, scoreByCondition, hitRateByColor, colorTrendByShape,
-  bestByShape,
+  bestByShape, sessionInsight,
+  // personal scorecard: group model + uncertainty
+  separateFlyers, expectedScorePerArrow, pointsBreakdown, angularDispersionMrad,
+  angularByShape, quantile, linearFit, trendVerdict, avgTrendWithBands,
+  consistencyTrend,
+  // personal scorecard: volume, contrasts, rhythm
+  weeklyVolume, weekStartOf, daysSinceLastSession, meanWithError, contrastGroups,
+  typeContrast, arrowPositionStats, xRateTrend, normalizeLocationKey,
+  scoreByLocation, endDurations, paceContrast, paceTrend, ownMatchRecord,
   // offline outbox
   readPending, writePending, setPending, clearPending, applyPending,
   adoptLegacyPending,
