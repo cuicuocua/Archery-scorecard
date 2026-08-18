@@ -47,11 +47,39 @@ import { createClient } from '@supabase/supabase-js';
 // stage is compared against every other 70m stage ever shot, whether it
 // came from a standalone Targa 70m session or from inside another
 // multi-stage round. See stageEntries() below.
+// Indoor face variants beyond the plain single full-face: WA/FITARCO's
+// triple vertical/triangular (recurve and compound — compound's 10-ring is
+// half the diameter, see COMPOUND_TEN_SCALE) and the Vegas 3-Spot round.
+// Every triple round is still 3 arrows/end (one per spot) — that's a real
+// rule, not a stylistic choice, so it's baked into each entry below rather
+// than left pickable. Vegas is only ever shot at 18m/40cm and is a shorter
+// round (30 arrows, not 60), so it isn't just "indoor18 with a different
+// spotLayout" — it gets its own entry with its own end count.
+function indoorTripleVariants(distanceM, faceCm) {
+  return [
+    { id: `indoor${distanceM}TripleVerticaleR`, label: `Indoor ${distanceM}m — tripla verticale`, category: `Indoor ${distanceM}m`, editable: false,
+      stages: [{ distanceM, faceCm, arrowsPerEnd: 3, ends: 20, spotLayout: 'vertical3', ringClass: 'spot6R' }] },
+    { id: `indoor${distanceM}TripleTriangolareR`, label: `Indoor ${distanceM}m — tripla triangolare`, category: `Indoor ${distanceM}m`, editable: false,
+      stages: [{ distanceM, faceCm, arrowsPerEnd: 3, ends: 20, spotLayout: 'triangular3', ringClass: 'spot6R' }] },
+    { id: `indoor${distanceM}TripleVerticaleC`, label: `Indoor ${distanceM}m — tripla verticale (compound)`, category: `Indoor ${distanceM}m`, editable: false,
+      stages: [{ distanceM, faceCm, arrowsPerEnd: 3, ends: 20, spotLayout: 'vertical3', ringClass: 'spot6C' }] },
+    { id: `indoor${distanceM}TripleTriangolareC`, label: `Indoor ${distanceM}m — tripla triangolare (compound)`, category: `Indoor ${distanceM}m`, editable: false,
+      stages: [{ distanceM, faceCm, arrowsPerEnd: 3, ends: 20, spotLayout: 'triangular3', ringClass: 'spot6C' }] },
+    { id: `indoor${distanceM}SingoloC`, label: `Indoor ${distanceM}m — singolo (compound)`, category: `Indoor ${distanceM}m`, editable: false,
+      stages: [{ distanceM, faceCm, arrowsPerEnd: 3, ends: 20, spotLayout: 'single', ringClass: 'indoor6C' }] },
+  ];
+}
+
 const ROUND_TYPES = [
-  { id: 'indoor18', label: 'Indoor 18m', category: 'Indoor', editable: false,
+  { id: 'indoor18', label: 'Indoor 18m', category: 'Indoor 18m', editable: false,
     stages: [{ distanceM: 18, faceCm: 40, arrowsPerEnd: 3, ends: 20 }] },
-  { id: 'indoor25', label: 'Indoor 25m', category: 'Indoor', editable: false,
+  ...indoorTripleVariants(18, 40),
+  { id: 'vegas3spot', label: 'Vegas 3 punti', category: 'Indoor 18m', editable: false,
+    stages: [{ distanceM: 18, faceCm: 40, arrowsPerEnd: 3, ends: 10, spotLayout: 'triangular3', ringClass: 'spot6R' }] },
+
+  { id: 'indoor25', label: 'Indoor 25m', category: 'Indoor 25m', editable: false,
     stages: [{ distanceM: 25, faceCm: 60, arrowsPerEnd: 3, ends: 20 }] },
+  ...indoorTripleVariants(25, 60),
 
   { id: 'targa90', label: 'Targa 90m', category: 'Targa 122cm', editable: false,
     stages: [{ distanceM: 90, faceCm: 122, arrowsPerEnd: 6, ends: 12 }] },
@@ -60,12 +88,15 @@ const ROUND_TYPES = [
   { id: 'targa60', label: 'Targa 60m', category: 'Targa 122cm', editable: false,
     stages: [{ distanceM: 60, faceCm: 122, arrowsPerEnd: 6, ends: 12 }] },
 
+  // The 80cm face only ever prints rings 5-10 (see ringGeometry's
+  // 'outdoor6' — a margin-cut face, not an isolated spot: the paper itself
+  // is still 80cm, just blank beyond ring 5).
   { id: 'targa50', label: 'Targa 50m', category: 'Targa 80cm', editable: false,
-    stages: [{ distanceM: 50, faceCm: 80, arrowsPerEnd: 6, ends: 12 }] },
+    stages: [{ distanceM: 50, faceCm: 80, arrowsPerEnd: 6, ends: 12, ringClass: 'outdoor6' }] },
   { id: 'targa40', label: 'Targa 40m', category: 'Targa 80cm', editable: false,
-    stages: [{ distanceM: 40, faceCm: 80, arrowsPerEnd: 6, ends: 12 }] },
+    stages: [{ distanceM: 40, faceCm: 80, arrowsPerEnd: 6, ends: 12, ringClass: 'outdoor6' }] },
   { id: 'targa30', label: 'Targa 30m', category: 'Targa 80cm', editable: false,
-    stages: [{ distanceM: 30, faceCm: 80, arrowsPerEnd: 6, ends: 12 }] },
+    stages: [{ distanceM: 30, faceCm: 80, arrowsPerEnd: 6, ends: 12, ringClass: 'outdoor6' }] },
 
   // Fully custom: one or more stages, each with its own pickable
   // distance/face/arrows/ends — for anything not covered above (para/youth
@@ -256,19 +287,63 @@ function ringGroupForScore(score) {
 
 function scoreRank(a) { return a.isX ? 11 : a.score; }
 
-// The 80cm face is a 6-ring face (scoring rings 5-10 only) — rings 1-4
-// aren't printed on the real target, so a tap that would land in that band
-// is a miss, not a low score. Every other face size (40/60/122cm) is the
-// full 10-ring face.
-function minScoringRing(faceCm) { return faceCm === 80 ? 5 : 1; }
+// ---------- ring geometry ----------
+//
+// `ringClass` describes which rings a face actually has printed and how big
+// its 10-ring is — independent of the face's physical size (`faceCm`) and
+// of how many spots it has (`spotLayout`). Two genuinely different real
+// shapes both reduce the ring count, and they're not the same construction:
+//   - a "margin-cut" face ('outdoor6'/'indoor6C') is physically full-size
+//     with its outer rings simply left unprinted — a tap out there is a
+//     miss, but the target paper itself is the same size as a full face.
+//   - an "isolated spot" face ('spot6R'/'spot6C') is a genuinely smaller
+//     piece of paper — the WA/Vegas triple's 20cm spot *is* the inner half
+//     (by radius) of a 40cm face, printed on its own with no blank margin
+//     beyond ring 6, hence the ×2 rescale below.
+// Compound's 10-ring is half the diameter of recurve's in every variant
+// that has one, since compound's precision demands a tighter center even
+// on an otherwise-identical face.
+const COMPOUND_TEN_SCALE = 0.5;
 
-function scoreFromRadiusUnits(d, faceCm) {
+function ringGeometry(ringClass) {
+  if (ringClass === 'spot6R' || ringClass === 'spot6C') {
+    const rescale = 2; // stretch the kept 10-50 unit band out to fill 0-100
+    const tenScale = ringClass === 'spot6C' ? COMPOUND_TEN_SCALE : 1;
+    const specs = RING_SPECS.filter(s => s.score >= 6)
+      .map(s => ({ ...s, outer: s.outer * rescale * (s.score === 10 ? tenScale : 1) }));
+    return { specs, xOuter: X_OUTER * rescale * tenScale, minRing: 6 };
+  }
+  if (ringClass === 'outdoor6') return { specs: RING_SPECS, xOuter: X_OUTER, minRing: 5 };
+  if (ringClass === 'indoor6C') {
+    const specs = RING_SPECS.map(s => (s.score === 10 ? { ...s, outer: s.outer * COMPOUND_TEN_SCALE } : s));
+    return { specs, xOuter: X_OUTER * COMPOUND_TEN_SCALE, minRing: 6 };
+  }
+  return { specs: RING_SPECS, xOuter: X_OUTER, minRing: 1 }; // 'full'
+}
+
+function roundSpotLayout(round) { return round.spotLayout || 'single'; }
+function roundRingClass(round) { return round.ringClass || 'full'; }
+function spotCount(spotLayout) { return spotLayout === 'single' ? 1 : 3; }
+
+// The physical diameter of ONE spot — half the class size for an isolated
+// multi-spot face (each spot is genuinely smaller paper), unchanged for a
+// single-spot face (including a margin-cut one, which stays full size with
+// blank unscored margin). Used for cm-based group-dispersion stats.
+function spotFaceCm(faceCm, spotLayout) {
+  return spotLayout === 'single' ? faceCm : faceCm / 2;
+}
+
+function scoreFromRadiusUnits(d, ringClass) {
   if (d > FACE_R) return { score: 0, isX: false };
-  if (d <= X_OUTER) return { score: 10, isX: true };
-  const ring10Outer = FACE_R / 10;
-  const ringFromOuter = Math.max(1, Math.ceil(d / ring10Outer));
-  const score = Math.max(1, 11 - ringFromOuter);
-  if (score < minScoringRing(faceCm)) return { score: 0, isX: false };
+  const { specs, xOuter, minRing } = ringGeometry(ringClass);
+  if (d <= xOuter) return { score: 10, isX: true };
+  // Read the ring boundary straight off the same specs TargetFace draws,
+  // rather than assuming an even 10-unit step per ring — isolated-spot
+  // ringClasses rescale those boundaries (see ringGeometry above), so a
+  // fixed step would score them wrong.
+  const hit = [...specs].sort((a, b) => a.outer - b.outer).find(s => d <= s.outer);
+  const score = hit ? hit.score : 0;
+  if (score < minRing) return { score: 0, isX: false };
   return { score, isX: false };
 }
 
@@ -318,10 +393,14 @@ function undoLastArrow(stage) {
   return stage;
 }
 
-function computeGroupStats(points, faceCm) {
+// `round` (not a raw faceCm) so this can derive the physical size of what
+// x/y are actually normalized against — for a multi-spot round that's each
+// spot's own smaller diameter (spotFaceCm), not the round's class-size
+// faceCm, since x/y on those arrows are spot-local.
+function computeGroupStats(points, round) {
   const pts = points.filter(a => a.x != null && a.y != null);
   if (!pts.length) return null;
-  const r = faceCm / 2;
+  const r = spotFaceCm(round.faceCm, roundSpotLayout(round)) / 2;
   const cx = pts.reduce((s, a) => s + a.x, 0) / pts.length;
   const cy = pts.reduce((s, a) => s + a.y, 0) / pts.length;
   let sumR = 0, maxR = 0;
@@ -335,18 +414,22 @@ function computeGroupStats(points, faceCm) {
 }
 
 function groupStats(stage, arrows) {
-  return computeGroupStats(arrows, stage.round.faceCm);
+  return computeGroupStats(arrows, stage.round);
 }
 
-// Compares distance + face size only, not arrows-per-end/ends — how a round
-// gets chunked into ends is a scoring convention, not a real difficulty
-// difference, so two rounds at the same distance/face are the same round
-// for comparison purposes even if one was shot 12x6 and the other 6x12. A
-// WA1440's 70m stage and a standalone Targa 70m session DO count as the
-// same round on purpose; two "Personalizzata" stages at different
-// distances or face sizes never do.
+// Compares distance + face size + spot layout + ring class, not arrows-per-
+// end/ends — how a round gets chunked into ends is a scoring convention,
+// not a real difficulty difference, so two rounds at the same distance/
+// face/target-variant are the same round for comparison purposes even if
+// one was shot 12x6 and the other 6x12. A WA1440's 70m stage and a
+// standalone Targa 70m session DO count as the same round on purpose; two
+// "Personalizzata" stages at different distances or face sizes never do —
+// and neither do, say, an Indoor 18m single face and an Indoor 18m triple
+// vertical, despite sharing distanceM/faceCm: they're not the same
+// challenge, so they must never share a personal-best bucket.
 function sameRound(a, b) {
-  return a.distanceM === b.distanceM && a.faceCm === b.faceCm;
+  return a.distanceM === b.distanceM && a.faceCm === b.faceCm
+    && roundSpotLayout(a) === roundSpotLayout(b) && roundRingClass(a) === roundRingClass(b);
 }
 
 // entries: a flat list from stageEntries() — see below. scope: { round, bowType, sessionType }.
@@ -396,7 +479,10 @@ function paceVsPB(stage, pbEntry) {
 
 function createSession(roundDef, meta) {
   const stages = roundDef.stages.map(st => ({
-    round: { label: `${st.distanceM}m`, distanceM: st.distanceM, faceCm: st.faceCm, arrowsPerEnd: st.arrowsPerEnd, ends: st.ends },
+    round: {
+      label: `${st.distanceM}m`, distanceM: st.distanceM, faceCm: st.faceCm, arrowsPerEnd: st.arrowsPerEnd, ends: st.ends,
+      spotLayout: st.spotLayout || 'single', ringClass: st.ringClass || 'full',
+    },
     ends: Array.from({ length: st.ends }, (_, i) => ({ index: i, arrows: [] })),
   }));
   return {
@@ -613,7 +699,7 @@ function sessionInsight(session, allSessions) {
   // which for the common single-stage session just is the session.
   const mainStage = session.stages.reduce((a, b) => (arrowsShotCount(b) > arrowsShotCount(a) ? b : a));
   const posArrows = flattenArrows(mainStage).filter(a => a.x != null && a.y != null);
-  const group = posArrows.length ? computeGroupStats(posArrows, mainStage.round.faceCm) : null;
+  const group = posArrows.length ? computeGroupStats(posArrows, mainStage.round) : null;
 
   const half = Math.ceil(mainStage.ends.length / 2);
   const firstHalfArrows = mainStage.ends.slice(0, half).flatMap(e => e.arrows);
@@ -720,7 +806,7 @@ function dispersionTrend(completedList) {
     .slice()
     .sort((a, b) => new Date(a.completedAt) - new Date(b.completedAt))
     .map(s => {
-      const g = computeGroupStats(flattenArrows(s), s.round.faceCm);
+      const g = computeGroupStats(flattenArrows(s), s.round);
       return g ? { label: formatDateShort(s.completedAt), dispersion: g.meanRadiusCm, biasX: g.cxCm, biasY: g.cyCm } : null;
     })
     .filter(Boolean);
@@ -1196,19 +1282,99 @@ function SetNewPasswordScreen({ onDone }) {
 
 // ---------- target face ----------
 
-function TargetFace({ faceCm, zoom = 1, interactive = false, onTap, points = [], centroid = null, dense = false }) {
+// Center offsets (in FACE_R=100 units) for each spot of a multi-spot face,
+// arranged the way a real WA/Vegas triple sheet is printed: a vertical
+// column, or a triangle with one spot at the apex and two along the base.
+// A small gap beyond edge-to-edge spacing (2*FACE_R apart) keeps adjacent
+// spots visually separated instead of touching.
+function spotOffsets(spotLayout) {
+  const gap = 16;
+  const step = FACE_R * 2 + gap;
+  if (spotLayout === 'vertical3') return [{ x: 0, y: -step }, { x: 0, y: 0 }, { x: 0, y: step }];
+  if (spotLayout === 'triangular3') {
+    const h = step * Math.sqrt(3) / 2;
+    return [{ x: -step / 2, y: h / 3 }, { x: 0, y: -2 * h / 3 }, { x: step / 2, y: h / 3 }];
+  }
+  return [{ x: 0, y: 0 }];
+}
+
+// Renders one spot's rings + arrow marks + group overlay, already inside
+// whatever <g transform> positions it — shared between the single-spot and
+// multi-spot layouts so there's exactly one place that draws a target.
+function SpotRings({ ringClass, centroid, groupRadius, points, dense }) {
+  const { specs, xOuter, minRing } = ringGeometry(ringClass);
+  return (
+    <>
+      <circle cx={0} cy={0} r={FACE_R + 3} fill="none" stroke={T.borderStrong} strokeWidth={1.5} />
+      {specs.filter(spec => spec.score >= minRing).map(spec => {
+        const c = SCORE_COLORS[spec.group];
+        const strokeColor = spec.group === 'black' ? 'rgba(230,225,215,0.45)' : 'rgba(15,13,8,0.35)';
+        return <circle key={spec.score} cx={0} cy={0} r={spec.outer} fill={c.fill} stroke={strokeColor} strokeWidth={0.6} />;
+      })}
+      <circle cx={0} cy={0} r={xOuter} fill="none" stroke="rgba(15,13,8,0.55)" strokeWidth={0.6} />
+
+      {/* Group trace + crosshair render BEHIND the arrow marks on purpose — at
+          high zoom on a tight group, the crosshair must never hide the very
+          arrows it's summarizing. */}
+      {centroid && (
+        <g>
+          {groupRadius != null && (
+            <circle cx={centroid.x * FACE_R} cy={centroid.y * FACE_R} r={groupRadius} fill="none"
+              stroke={T.text} strokeWidth={0.8} strokeDasharray="3 2" opacity={0.55} />
+          )}
+          <g opacity={0.7}>
+            <line x1={centroid.x * FACE_R - 8} y1={centroid.y * FACE_R} x2={centroid.x * FACE_R + 8} y2={centroid.y * FACE_R} stroke={T.text} strokeWidth={1.2} />
+            <line x1={centroid.x * FACE_R} y1={centroid.y * FACE_R - 8} x2={centroid.x * FACE_R} y2={centroid.y * FACE_R + 8} stroke={T.text} strokeWidth={1.2} />
+            <circle cx={centroid.x * FACE_R} cy={centroid.y * FACE_R} r={3} fill="none" stroke={T.text} strokeWidth={1} />
+          </g>
+        </g>
+      )}
+
+      {points.map((p, i) => {
+        if (p.x == null || p.y == null) return null;
+        const c = SCORE_COLORS[ringGroupForScore(p.score)];
+        const r = dense ? 1.8 : 2.6;
+        const opacity = p.ghost ? 0.35 : (dense ? 0.6 : 0.95);
+        return (
+          <circle key={i} cx={p.x * FACE_R} cy={p.y * FACE_R} r={r} fill={c.fill}
+            stroke={p.ghost ? 'none' : T.markStroke} strokeWidth={p.ghost ? 0 : 0.5} opacity={opacity} />
+        );
+      })}
+    </>
+  );
+}
+
+// `spotLayout` beyond 'single' (the default) renders 2-3 independent mini
+// faces instead of one — a real WA/Vegas triple sheet. `onTap` is always
+// `(spotIdx, x, y)`; single-spot callers just get spotIdx 0 every time.
+// Zoom only applies to the single-spot case — a multi-spot face is small
+// enough per spot that magnifying one at a time isn't how these are shot.
+function TargetFace({ faceCm, ringClass = 'full', spotLayout = 'single', zoom = 1, interactive = false, onTap, points = [], centroid = null, dense = false }) {
   const svgRef = useRef(null);
-  const margin = interactive && zoom === 1 ? 15 : 0;
-  const half = FACE_R / zoom + margin;
-  // Zoom always crops around the target's true center (the bullseye), not
-  // wherever the current group happens to be — a zoomed-in view should show
-  // "the middle of the target," which is what a scorer expects the crop to
-  // mean, even if that means a group that's drifted off-center runs closer
-  // to the edge of the zoomed crop.
-  const vb = `${-half} ${-half} ${half * 2} ${half * 2}`;
+  const isMulti = spotLayout !== 'single';
+  const offsets = spotOffsets(spotLayout);
   const groupRadius = centroid && centroid.maxRadiusCm != null && centroid.maxRadiusCm > 0
-    ? (centroid.maxRadiusCm / (faceCm / 2)) * FACE_R
+    ? (centroid.maxRadiusCm / (spotFaceCm(faceCm, spotLayout) / 2)) * FACE_R
     : null;
+
+  let vbX, vbY, vbW, vbH;
+  if (isMulti) {
+    const spotR = FACE_R + 3;
+    const xs = offsets.map(o => o.x), ys = offsets.map(o => o.y);
+    const minX = Math.min(...xs) - spotR, maxX = Math.max(...xs) + spotR;
+    const minY = Math.min(...ys) - spotR, maxY = Math.max(...ys) + spotR;
+    vbX = minX; vbY = minY; vbW = maxX - minX; vbH = maxY - minY;
+  } else {
+    // Zoom always crops around the target's true center (the bullseye), not
+    // wherever the current group happens to be — a zoomed-in view should show
+    // "the middle of the target," which is what a scorer expects the crop to
+    // mean, even if that means a group that's drifted off-center runs closer
+    // to the edge of the zoomed crop.
+    const margin = interactive && zoom === 1 ? 15 : 0;
+    const half = FACE_R / zoom + margin;
+    vbX = -half; vbY = -half; vbW = half * 2; vbH = half * 2;
+  }
+  const vb = `${vbX} ${vbY} ${vbW} ${vbH}`;
 
   function handlePointerDown(evt) {
     if (!interactive || !svgRef.current) return;
@@ -1219,52 +1385,22 @@ function TargetFace({ faceCm, zoom = 1, interactive = false, onTap, points = [],
     const ctm = svg.getScreenCTM();
     if (!ctm) return;
     const loc = pt.matrixTransform(ctm.inverse());
-    const x = loc.x / FACE_R;
-    const y = loc.y / FACE_R;
-    if (Math.sqrt(x * x + y * y) > 1.15) return;
-    onTap(x, y);
+    for (let i = 0; i < offsets.length; i++) {
+      const x = (loc.x - offsets[i].x) / FACE_R;
+      const y = (loc.y - offsets[i].y) / FACE_R;
+      if (Math.sqrt(x * x + y * y) <= 1.15) { onTap(i, x, y); return; }
+    }
   }
 
   return (
     <div className="w-full max-w-2xl mx-auto aspect-square rounded-2xl overflow-hidden" style={{ background: T.bgElevated }}>
       <svg ref={svgRef} viewBox={vb} className="w-full h-full touch-none" onPointerDown={handlePointerDown}>
-        <circle cx={0} cy={0} r={FACE_R + 3} fill="none" stroke={T.borderStrong} strokeWidth={1.5} />
-        {/* The 80cm face only prints rings 5-10 — the rest of its diameter is a
-            blank, unscored margin, not rings 1-4 at a smaller physical size. */}
-        {RING_SPECS.filter(spec => spec.score >= minScoringRing(faceCm)).map(spec => {
-          const c = SCORE_COLORS[spec.group];
-          const strokeColor = spec.group === 'black' ? 'rgba(230,225,215,0.45)' : 'rgba(15,13,8,0.35)';
-          return <circle key={spec.score} cx={0} cy={0} r={spec.outer} fill={c.fill} stroke={strokeColor} strokeWidth={0.6} />;
-        })}
-        <circle cx={0} cy={0} r={X_OUTER} fill="none" stroke="rgba(15,13,8,0.55)" strokeWidth={0.6} />
-
-        {/* Group trace + crosshair render BEHIND the arrow marks on purpose — at
-            high zoom on a tight group, the crosshair must never hide the very
-            arrows it's summarizing. */}
-        {centroid && (
-          <g>
-            {groupRadius != null && (
-              <circle cx={centroid.x * FACE_R} cy={centroid.y * FACE_R} r={groupRadius} fill="none"
-                stroke={T.text} strokeWidth={0.8} strokeDasharray="3 2" opacity={0.55} />
-            )}
-            <g opacity={0.7}>
-              <line x1={centroid.x * FACE_R - 8} y1={centroid.y * FACE_R} x2={centroid.x * FACE_R + 8} y2={centroid.y * FACE_R} stroke={T.text} strokeWidth={1.2} />
-              <line x1={centroid.x * FACE_R} y1={centroid.y * FACE_R - 8} x2={centroid.x * FACE_R} y2={centroid.y * FACE_R + 8} stroke={T.text} strokeWidth={1.2} />
-              <circle cx={centroid.x * FACE_R} cy={centroid.y * FACE_R} r={3} fill="none" stroke={T.text} strokeWidth={1} />
-            </g>
+        {offsets.map((o, i) => (
+          <g key={i} transform={`translate(${o.x} ${o.y})`}>
+            <SpotRings ringClass={ringClass} centroid={centroid} groupRadius={groupRadius} dense={dense}
+              points={points.filter(p => !isMulti || (p.spot || 0) === i)} />
           </g>
-        )}
-
-        {points.map((p, i) => {
-          if (p.x == null || p.y == null) return null;
-          const c = SCORE_COLORS[ringGroupForScore(p.score)];
-          const r = dense ? 1.8 : 2.6;
-          const opacity = p.ghost ? 0.35 : (dense ? 0.6 : 0.95);
-          return (
-            <circle key={i} cx={p.x * FACE_R} cy={p.y * FACE_R} r={r} fill={c.fill}
-              stroke={p.ghost ? 'none' : T.markStroke} strokeWidth={p.ghost ? 0 : 0.5} opacity={opacity} />
-          );
-        })}
+        ))}
       </svg>
     </div>
   );
@@ -1509,11 +1645,19 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
   // chips are small), so the whole end needs a confirm step before it
   // locks in and the screen moves on to the next one. See confirmEnd().
   const [pending, setPending] = useState([]);
+  // Which spot (0..spotCount-1) the next arrow goes to on a multi-spot
+  // face — drives the keypad-mode spot selector and the miss button's
+  // target. Auto-follows nextOpenSpot (see the effect below) so it always
+  // starts pointed at an open spot, but a manual pick in between two fills
+  // sticks until the next arrow actually lands.
+  const [activeSpot, setActiveSpot] = useState(0);
 
   const isComplete = session.status === 'completed';
   const stageIdx = activeStageIndex(session);
   const stage = session.stages[stageIdx];
   const round = stage.round;
+  const spotLayout = roundSpotLayout(round);
+  const isMultiSpot = spotLayout !== 'single';
   const multiStage = session.stages.length > 1;
   const endIdx = currentEndIndex(stage);
   // stage.ends[endIdx] only gains arrows once confirmEnd() commits them —
@@ -1529,6 +1673,16 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
     [stage, endIdx, currentEnd]);
   const ghostArrows = useMemo(() => displayStage.ends.slice(0, endIdx).flatMap(e => e.arrows), [displayStage, endIdx]);
   const endReady = currentEnd.arrows.length >= round.arrowsPerEnd;
+
+  // One arrow per spot per end on a multi-spot face — a real rule, not a
+  // UI convenience, so it's enforced here rather than left to arrowsPerEnd
+  // alone (which only caps the *count*, not which spots it's spread over).
+  const filledSpots = useMemo(() => new Set(currentEnd.arrows.map(a => a.spot || 0)), [currentEnd]);
+  const nextOpenSpot = useMemo(() => {
+    for (let i = 0; i < spotCount(spotLayout); i++) if (!filledSpots.has(i)) return i;
+    return 0;
+  }, [filledSpots, spotLayout]);
+  useEffect(() => { setActiveSpot(nextOpenSpot); }, [nextOpenSpot]);
 
   // Stats are scoped to the stage currently being shot, since that's what a
   // personal best is scoped to — the session-wide total (shown separately
@@ -1554,15 +1708,16 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
   const stats3 = groupStats(displayStage, last3);
   const endsShotCount = displayStage.ends.filter(e => e.arrows.length > 0).length;
 
-  function handleAddArrow(score, isX, x, y) {
+  function handleAddArrow(score, isX, x, y, spot = 0) {
     if (isComplete || endReady) return;
-    setPending(p => [...p, { score, isX, x: x ?? null, y: y ?? null }]);
+    if (isMultiSpot && filledSpots.has(spot)) return; // that spot already has its one arrow this end
+    setPending(p => [...p, { score, isX, x: x ?? null, y: y ?? null, ...(isMultiSpot ? { spot } : {}) }]);
   }
 
-  function handleFaceTap(x, y) {
+  function handleFaceTap(spotIdx, x, y) {
     const d = Math.sqrt(x * x + y * y) * FACE_R;
-    const r = scoreFromRadiusUnits(d, round.faceCm);
-    handleAddArrow(r.score, r.isX, x, y);
+    const r = scoreFromRadiusUnits(d, roundRingClass(round));
+    handleAddArrow(r.score, r.isX, x, y, spotIdx);
   }
 
   // Undo pops the still-unconfirmed end first — nothing saved yet, so
@@ -1614,13 +1769,21 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
 
           <div className="px-4 pt-3 flex items-center justify-between gap-2">
             <SegmentedControl options={[{ id: 'face', label: 'Bersaglio' }, { id: 'keypad', label: 'Tastierino' }]} value={mode} onChange={setMode} />
-            {mode === 'face' && <SegmentedControl options={[{ id: 1, label: '1×' }, { id: 2, label: '2×' }, { id: 4, label: '4×' }]} value={zoom} onChange={setZoom} small />}
+            {/* Zoom only makes sense for a single-spot face — a multi-spot
+                face's individual spots are already small enough to tap
+                directly, and magnifying just one at a time isn't how these
+                are shot in practice. */}
+            {mode === 'face' && !isMultiSpot && (
+              <SegmentedControl options={[{ id: 1, label: '1×' }, { id: 2, label: '2×' }, { id: 4, label: '4×' }]} value={zoom} onChange={setZoom} small />
+            )}
           </div>
 
           <div className="px-4 pt-3">
             {mode === 'face' ? (
               <TargetFace
                 faceCm={round.faceCm}
+                ringClass={roundRingClass(round)}
+                spotLayout={spotLayout}
                 zoom={zoom}
                 interactive
                 onTap={handleFaceTap}
@@ -1628,13 +1791,20 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
                 centroid={stats3}
               />
             ) : (
-              <Keypad onScore={(score, isX) => handleAddArrow(score, isX, null, null)} />
+              <div className="flex flex-col gap-3">
+                {isMultiSpot && (
+                  <SegmentedControl
+                    options={[0, 1, 2].map(i => ({ id: i, label: String(i + 1) }))}
+                    value={activeSpot} onChange={setActiveSpot} />
+                )}
+                <Keypad onScore={(score, isX) => handleAddArrow(score, isX, null, null, activeSpot)} />
+              </div>
             )}
           </div>
 
           {mode === 'face' && (
             <div className="px-4 pt-3">
-              <button onClick={() => handleAddArrow(0, false, null, null)} disabled={endReady}
+              <button onClick={() => handleAddArrow(0, false, null, null, nextOpenSpot)} disabled={endReady}
                 className="w-full rounded-xl py-2.5 text-sm font-bold disabled:opacity-40"
                 style={{ background: SCORE_COLORS.miss.fill, color: SCORE_COLORS.miss.text }}>
                 Freccia a vuoto (M)
@@ -2110,7 +2280,7 @@ function StoricoScreen({ sessions, onOpen, onResume, onDelete, onImport, onSignO
 // list is built from what's actually been shot. Distance + face only (see
 // sameRound()) — how a round was chunked into ends doesn't change what
 // round it is.
-function roundShapeKey(round) { return `${round.distanceM}|${round.faceCm}`; }
+function roundShapeKey(round) { return `${round.distanceM}|${round.faceCm}|${roundSpotLayout(round)}|${roundRingClass(round)}`; }
 
 // The single-stage preset this shape matches, or null if it doesn't match
 // any recognized archetype exactly.
@@ -2299,7 +2469,7 @@ function StatisticheScreen({ sessions }) {
   const colorTrend = useMemo(() => (filterId ? colorTrendByShape(completed) : []), [completed, filterId]);
   const endRange = useMemo(() => (filterId ? endRangeStats(completed) : []), [completed, filterId]);
   const allArrows = useMemo(() => completed.flatMap(e => flattenArrows(e)), [completed]);
-  const cumGroup = useMemo(() => (activeShape ? computeGroupStats(allArrows, activeShape.faceCm) : null), [allArrows, activeShape]);
+  const cumGroup = useMemo(() => (activeShape ? computeGroupStats(allArrows, activeShape) : null), [allArrows, activeShape]);
   const dispersion = useMemo(() => (filterId ? dispersionTrend(completed) : []), [completed, filterId]);
   const distribution = useMemo(() => (filterId ? scoreDistribution(completed) : []), [completed, filterId]);
   const byCondition = useMemo(() => (filterId ? scoreByCondition(completed, conditionDim) : []), [completed, filterId, conditionDim]);
@@ -2468,7 +2638,8 @@ function StatisticheScreen({ sessions }) {
             <div className="text-sm font-semibold" style={{ color: T.textDim }}>Gruppo cumulativo</div>
             {cumGroup ? (
               <>
-                <TargetFace faceCm={activeShape.faceCm} points={allArrows.filter(a => a.x != null)} centroid={cumGroup} dense />
+                <TargetFace faceCm={spotFaceCm(activeShape.faceCm, roundSpotLayout(activeShape))} ringClass={roundRingClass(activeShape)}
+                  points={allArrows.filter(a => a.x != null)} centroid={cumGroup} dense />
                 <div className="text-sm" style={{ color: T.textDim }}>
                   Deviazione orizzontale: {Math.abs(cumGroup.cxCm).toFixed(1)} cm {cumGroup.cxCm >= 0 ? 'a destra' : 'a sinistra'} ·
                   {' '}Deviazione verticale: {Math.abs(cumGroup.cyCm).toFixed(1)} cm {cumGroup.cyCm >= 0 ? 'in basso' : 'in alto'} · {cumGroup.count} frecce
@@ -2629,7 +2800,9 @@ function DetailScreen({ session, sessions, onBack, onUpdate, onDelete }) {
 
       {!multiStage ? (
         <>
-          <TargetFace faceCm={session.stages[0].round.faceCm} points={flattenArrows(session.stages[0]).filter(a => a.x != null)} />
+          <TargetFace faceCm={spotFaceCm(session.stages[0].round.faceCm, roundSpotLayout(session.stages[0].round))}
+            ringClass={roundRingClass(session.stages[0].round)}
+            points={flattenArrows(session.stages[0]).filter(a => a.x != null)} />
           <SessionMetaEditor session={session} onUpdate={onUpdate} />
           <ConditionsEditor session={session} onUpdate={onUpdate} />
           <div className="flex flex-col gap-2">
@@ -2647,7 +2820,8 @@ function DetailScreen({ session, sessions, onBack, onUpdate, onDelete }) {
                 <div className="font-semibold">Tappa {i + 1} · {stage.round.distanceM}m · {stage.round.faceCm}cm</div>
                 <div className="text-lg font-bold" style={numeralStyle}>{totalScore(stage)}</div>
               </div>
-              <TargetFace faceCm={stage.round.faceCm} points={flattenArrows(stage).filter(a => a.x != null)} />
+              <TargetFace faceCm={spotFaceCm(stage.round.faceCm, roundSpotLayout(stage.round))} ringClass={roundRingClass(stage.round)}
+                points={flattenArrows(stage).filter(a => a.x != null)} />
               <StageEnds stage={stage} />
             </div>
           ))}
@@ -5731,7 +5905,8 @@ export default function ArcheryScorecard() {
 // adding a function to it is a one-line change.
 export {
   // personal scorecard: scoring + arrows
-  ringGroupForScore, scoreRank, minScoringRing, scoreFromRadiusUnits,
+  ringGroupForScore, scoreRank, ringGeometry, scoreFromRadiusUnits,
+  roundSpotLayout, roundRingClass, spotCount, spotFaceCm,
   flattenArrows, totalScore, xCount, arrowsShotCount, totalArrowsInRound,
   cumulativeScores, currentEndIndex, addArrow, undoLastArrow,
   computeGroupStats, groupStats,

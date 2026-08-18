@@ -9,31 +9,78 @@ const ROUND_DEF = {
   stages: [{ distanceM: 18, faceCm: 40, arrowsPerEnd: 3, ends: 20 }],
 };
 
-describe('scoreFromRadiusUnits / minScoringRing — 80cm face is a 6-ring face', () => {
-  // Regression coverage for the fix where an 80cm face (Targa 50m/40m/30m)
-  // was scoring rings 1-4 that don't exist on the real target.
-  it('a full 10-ring face (40/60/122cm) scores every ring down to the edge', () => {
-    assert.equal(m.minScoringRing(40), 1);
-    assert.equal(m.minScoringRing(60), 1);
-    assert.equal(m.minScoringRing(122), 1);
-    assert.deepEqual(m.scoreFromRadiusUnits(65, 40), { score: 4, isX: false });
-    assert.deepEqual(m.scoreFromRadiusUnits(95, 40), { score: 1, isX: false });
+describe('scoreFromRadiusUnits / ringGeometry — ring classes', () => {
+  it('a full 10-ring face scores every ring down to the edge', () => {
+    assert.equal(m.ringGeometry('full').minRing, 1);
+    assert.deepEqual(m.scoreFromRadiusUnits(65, 'full'), { score: 4, isX: false });
+    assert.deepEqual(m.scoreFromRadiusUnits(95, 'full'), { score: 1, isX: false });
   });
 
-  it('the 80cm face only scores rings 5-10 — a tap in the 1-4 band is a miss', () => {
-    assert.equal(m.minScoringRing(80), 5);
-    assert.deepEqual(m.scoreFromRadiusUnits(65, 80), { score: 0, isX: false }, 'would be ring 4 on a full face');
-    assert.deepEqual(m.scoreFromRadiusUnits(95, 80), { score: 0, isX: false }, 'would be ring 1 on a full face');
-    assert.deepEqual(m.scoreFromRadiusUnits(55, 80), { score: 5, isX: false }, 'ring 5 itself still scores normally');
+  // Regression coverage for the outdoor 80cm-face fix (Targa 50m/40m/30m):
+  // a margin-cut face, same physical size, rings 1-4 just left unprinted.
+  it('outdoor6 (80cm face) only scores rings 5-10 — a tap in the 1-4 band is a miss', () => {
+    assert.equal(m.ringGeometry('outdoor6').minRing, 5);
+    assert.deepEqual(m.scoreFromRadiusUnits(65, 'outdoor6'), { score: 0, isX: false }, 'would be ring 4 on a full face');
+    assert.deepEqual(m.scoreFromRadiusUnits(95, 'outdoor6'), { score: 0, isX: false }, 'would be ring 1 on a full face');
+    assert.deepEqual(m.scoreFromRadiusUnits(55, 'outdoor6'), { score: 5, isX: false }, 'ring 5 itself still scores normally');
   });
 
-  it('a dead-center tap is always an X regardless of face size', () => {
-    assert.deepEqual(m.scoreFromRadiusUnits(3, 40), { score: 10, isX: true });
-    assert.deepEqual(m.scoreFromRadiusUnits(3, 80), { score: 10, isX: true });
+  // indoor6C (indoor single-spot compound): margin-cut like outdoor6, but
+  // cuts at ring 6 (not 5) and has compound's halved 10-ring.
+  it('indoor6C only scores rings 6-10, with a smaller 10-ring than recurve', () => {
+    const geo = m.ringGeometry('indoor6C');
+    assert.equal(geo.minRing, 6);
+    assert.deepEqual(m.scoreFromRadiusUnits(55, 'indoor6C'), { score: 0, isX: false }, 'ring 5 no longer scores at all');
+    assert.deepEqual(m.scoreFromRadiusUnits(45, 'indoor6C'), { score: 6, isX: false });
+    assert.equal(geo.xOuter, 2.5, 'half the recurve X-ring radius');
   });
 
-  it('anything past the face radius is a miss', () => {
-    assert.deepEqual(m.scoreFromRadiusUnits(101, 40), { score: 0, isX: false });
+  // spot6R/spot6C (WA/Vegas triple spots): an isolated smaller spot, not a
+  // margin-cut face — ring 6 fills the spot edge to edge (rescaled), no
+  // blank margin beyond it at all.
+  it('spot6R fills the whole isolated spot with rings 6-10, rescaled to the spot\'s own radius', () => {
+    const geo = m.ringGeometry('spot6R');
+    assert.equal(geo.minRing, 6);
+    assert.deepEqual(m.scoreFromRadiusUnits(100, 'spot6R'), { score: 6, isX: false }, 'ring 6 now reaches the spot edge');
+    assert.deepEqual(m.scoreFromRadiusUnits(101, 'spot6R'), { score: 0, isX: false }, 'past the spot edge is a miss');
+    assert.equal(geo.xOuter, 10);
+  });
+
+  it('spot6C is spot6R with a halved 10-ring, same 6-9 boundaries', () => {
+    const rGeo = m.ringGeometry('spot6R'), cGeo = m.ringGeometry('spot6C');
+    const ringsExceptTen = s => s.specs.filter(spec => spec.score !== 10).map(spec => spec.outer);
+    assert.deepEqual(ringsExceptTen(cGeo), ringsExceptTen(rGeo), 'rings 6-9 are identical between recurve and compound');
+    const tenR = rGeo.specs.find(s => s.score === 10).outer, tenC = cGeo.specs.find(s => s.score === 10).outer;
+    assert.equal(tenC, tenR / 2);
+    assert.equal(cGeo.xOuter, rGeo.xOuter / 2);
+  });
+
+  it('a dead-center tap is always an X regardless of ring class', () => {
+    assert.deepEqual(m.scoreFromRadiusUnits(1, 'full'), { score: 10, isX: true });
+    assert.deepEqual(m.scoreFromRadiusUnits(1, 'outdoor6'), { score: 10, isX: true });
+  });
+
+  it('anything past the overall face radius is a miss', () => {
+    assert.deepEqual(m.scoreFromRadiusUnits(101, 'full'), { score: 0, isX: false });
+  });
+});
+
+describe('spotFaceCm / spotCount / roundSpotLayout / roundRingClass', () => {
+  it('single-spot rounds keep the full class faceCm; multi-spot rounds halve it', () => {
+    assert.equal(m.spotFaceCm(40, 'single'), 40);
+    assert.equal(m.spotFaceCm(40, 'vertical3'), 20);
+    assert.equal(m.spotFaceCm(60, 'triangular3'), 30);
+  });
+
+  it('spotCount is 1 for single, 3 for either multi-spot layout', () => {
+    assert.equal(m.spotCount('single'), 1);
+    assert.equal(m.spotCount('vertical3'), 3);
+    assert.equal(m.spotCount('triangular3'), 3);
+  });
+
+  it('roundSpotLayout/roundRingClass default safely for old data with neither field', () => {
+    assert.equal(m.roundSpotLayout({ distanceM: 18, faceCm: 40 }), 'single');
+    assert.equal(m.roundRingClass({ distanceM: 18, faceCm: 40 }), 'full');
   });
 });
 

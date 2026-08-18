@@ -869,3 +869,53 @@ so it can only round *down* at a ring boundary, while a keypad arrow
 carries the called score with line-cutters rounded up. Applying a shaft
 width would fix future scoring and silently rescore it against every past
 session. Use the keypad when the score matters.
+
+## v1.20 additions — Indoor target face variants
+
+Indoor rounds (18m/25m) now offer real WA/FITARCO/Vegas target variants
+beyond the plain single full face, picked at session creation same as any
+other round preset — no separate variant-picker step, just more entries in
+the "Indoor 18m"/"Indoor 25m" categories.
+
+- **Data model**: a round stage gains two optional fields, `spotLayout`
+  (`'single'` default, or `'vertical3'`/`'triangular3'`) and `ringClass`
+  (`'full'` default, or `'outdoor6'`/`'indoor6C'`/`'spot6R'`/`'spot6C'` —
+  see `ringGeometry()`). `ringClass` replaces the old implicit
+  `faceCm === 80` check the outdoor 6-ring fix used; the 80cm outdoor
+  rounds now carry `ringClass: 'outdoor6'` explicitly. `sameRound()` and
+  `roundShapeKey()` both now include spot layout + ring class, so a single
+  face and a triple face at the same distance/faceCm are correctly treated
+  as different rounds for personal-best and Statistiche grouping — they're
+  not the same challenge just because they share a diameter.
+- **Ring geometry, two real shapes**: a margin-cut face (`outdoor6`,
+  `indoor6C`) is physically full-size with its outer rings simply left
+  unprinted; an isolated-spot face (`spot6R`, `spot6C` — WA/Vegas triples)
+  is genuinely smaller paper, the inner half (by radius) of a full face
+  with no blank margin, rescaled so its kept rings fill the spot edge to
+  edge. Compound's 10-ring is half the diameter of recurve's in every
+  class that has one (`COMPOUND_TEN_SCALE`). `TargetFace` and
+  `scoreFromRadiusUnits` both read off the same `ringGeometry()` output, so
+  drawing and scoring can't drift apart.
+- **Multi-spot target face**: `TargetFace` now renders 1-3 independent
+  mini-faces (`spotOffsets()` — vertical column or a triangle with one spot
+  at the apex) instead of always one, reusing the same ring-drawing code
+  per spot (`SpotRings`). Tap detection checks each spot's own circle and
+  reports `(spotIdx, x, y)`. Zoom is single-spot only — a multi-spot face's
+  individual spots are already small enough to tap directly.
+- **One arrow per spot per end**: a real rule, not a UI nicety.
+  `ShootingScreen` tracks which spots already have an arrow in the
+  in-progress end and rejects a second one for the same spot (silent
+  no-op, same guard pattern used elsewhere in the app), and drives a
+  keypad-mode spot selector (reusing `SegmentedControl`) that auto-advances
+  to the next open spot after each fill.
+- **New presets**: WA/FITARCO triple vertical and triangular (recurve and
+  compound) at both 18m and 25m, indoor single-spot compound at both
+  distances, and Vegas 3-Spot (18m/40cm, triangular, but a shorter 30-arrow
+  round — 10 ends, not 20 — so it's its own preset rather than a
+  spotLayout variant of Indoor 18m).
+- **Known follow-up**: a session's displayed name/history-row label
+  doesn't always resolve to its matching preset the way the round-filter
+  chips do for the same shape — cosmetic only, doesn't affect scoring,
+  personal-best bucketing, or ring behavior (all verified correct via the
+  automated tests and live scoring runs); tracked to fix in a follow-up
+  pass rather than block this release.
