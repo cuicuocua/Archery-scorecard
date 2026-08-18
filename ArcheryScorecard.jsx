@@ -642,7 +642,7 @@ function sameRound(a, b) {
 function findPersonalBest(entries, scope, excludeSessionId) {
   const scopeArrows = scope.round.arrowsPerEnd * scope.round.ends;
   const candidates = entries.filter(e =>
-    e.status === 'completed' &&
+    entryIsRankable(e) &&
     e.sessionId !== excludeSessionId &&
     sameRound(e.round, scope.round) &&
     e.round.arrowsPerEnd * e.round.ends === scopeArrows &&
@@ -700,6 +700,9 @@ function sessionFlattenArrows(session) { return session.stages.flatMap(flattenAr
 function sessionTotalScore(session) { return session.stages.reduce((s, st) => s + totalScore(st), 0); }
 function sessionXCount(session) { return session.stages.reduce((s, st) => s + xCount(st), 0); }
 function sessionArrowsShot(session) { return session.stages.reduce((s, st) => s + arrowsShotCount(st), 0); }
+// How many arrows the round called for, shot or not — only meaningful for a
+// session that didn't get there, so it exists for the partial-session copy.
+function sessionPlannedArrows(session) { return session.stages.reduce((s, st) => s + totalArrowsInRound(st), 0); }
 
 // Index of the first not-yet-full stage, or the last stage if all are full.
 function activeStageIndex(session) {
@@ -727,6 +730,66 @@ function sessionUndoLastArrow(session) {
     }
   }
   return session;
+}
+
+// ---------- interrupted sessions ----------
+//
+// Rain, light, a broken nock, running out of time: rounds get abandoned,
+// and before this they stayed 'in_progress' forever — sitting in Home's
+// resume list and counting for nothing. Closing one early marks it
+// 'partial', a third status alongside in_progress/completed.
+//
+// How a partial counts, which is the whole question:
+//   - Records and rankings (personal bests, the "best" column) use only
+//     rounds that were actually finished. A 30-arrow half-round can't be
+//     ranked against a 60-arrow one, and per-arrow averaging doesn't fix
+//     that — a short session is a sprint, and this app charts fatigue as a
+//     real effect precisely because the back half is harder.
+//   - Arrow-weighted aggregates and diagnostics (lifetime totals, the
+//     per-arrow trend, colour distribution, group and dispersion analysis,
+//     condition buckets) DO include partials. Those arrows were really
+//     shot, every one of those figures is already weighted by arrow count
+//     so a short session contributes proportionally less, and discarding
+//     them would throw away real evidence about how someone was shooting.
+//   - Below MIN_ARROWS_FOR_PARTIAL_STATS the session is kept for the record
+//     but counts for nothing: an average over three arrows is noise.
+//
+// A finished STAGE inside a partial session is still a finished round —
+// abandoning a WA1440 at the third distance doesn't un-shoot the first two
+// — so those stages stay eligible for personal bests. Sessions left
+// 'in_progress' are untouched by all of this: they're still being shot.
+const MIN_ARROWS_FOR_PARTIAL_STATS = 12;
+
+function closeSessionEarly(session) {
+  if (session.status === 'completed') return session;
+  return { ...session, status: 'partial', completedAt: new Date().toISOString() };
+}
+
+// Closing early is a judgement call made at the range, and sometimes the
+// wrong one — reopening puts the session back exactly where it was.
+function reopenSession(session) {
+  if (session.status !== 'partial') return session;
+  return { ...session, status: 'in_progress', completedAt: null };
+}
+
+function stageIsFull(entry) { return arrowsShotCount(entry) >= totalArrowsInRound(entry); }
+
+// Whether a stage entry may hold a record: it has to be a round that was
+// actually shot end to end.
+function entryIsRankable(entry) {
+  if (entry.status === 'completed') return true;
+  return entry.status === 'partial' && stageIsFull(entry);
+}
+
+// Whether a stage entry counts toward arrow-weighted aggregates.
+function entryCountsForStats(entry) {
+  if (entry.status === 'completed') return true;
+  return entry.status === 'partial' && arrowsShotCount(entry) >= MIN_ARROWS_FOR_PARTIAL_STATS;
+}
+
+function sessionCountsForStats(session) {
+  if (session.status === 'completed') return true;
+  return session.status === 'partial' && sessionArrowsShot(session) >= MIN_ARROWS_FOR_PARTIAL_STATS;
 }
 
 // "Tappa 2 di 4 · Volée 3 di 6" for a multi-stage session, or just "Volée 3
@@ -860,7 +923,7 @@ function sessionInsight(session, allSessions) {
   const histSessions = new Set();
   session.stages.forEach(stage => {
     const hist = entries.filter(e =>
-      e.status === 'completed' && e.sessionId !== session.id &&
+      entryCountsForStats(e) && e.sessionId !== session.id &&
       sameRound(e.round, stage.round) &&
       (e.bowType || null) === (session.bowType || null) &&
       (e.sessionType || 'allenamento') === (session.sessionType || 'allenamento'));
@@ -1918,7 +1981,7 @@ function SessionSummary({ session, sessions, onExit, onUpdate }) {
     <div className="px-4 py-6 flex flex-col gap-5 items-center text-center w-full max-w-3xl mx-auto">
       <div>
         <div className="text-sm uppercase tracking-wide flex items-center gap-2 justify-center" style={{ color: T.textDim }}>
-          Sessione completata
+          {session.status === 'partial' ? 'Sessione interrotta' : 'Sessione completata'}
           <SessionTypeBadge sessionType={session.sessionType} />
         </div>
         <div className="text-5xl font-bold" style={numeralStyle}>{total}</div>
@@ -1926,6 +1989,14 @@ function SessionSummary({ session, sessions, onExit, onUpdate }) {
           <SessionName session={session} /> · media {avg.toFixed(2)} · {sessionXCount(session)} X
           {bowLabel(session.bowType) ? ` · ${bowLabel(session.bowType)}` : ''}
         </div>
+        {session.status === 'partial' && (
+          <div className="text-xs mt-2" style={{ color: T.textFaint }}>
+            {shot} frecce su {sessionPlannedArrows(session)}
+            {sessionArrowsShot(session) >= MIN_ARROWS_FOR_PARTIAL_STATS
+              ? ' · conta nelle medie, non tra i primati'
+              : ` · sotto le ${MIN_ARROWS_FOR_PARTIAL_STATS} frecce, non entra nelle statistiche`}
+          </div>
+        )}
         {session.stages.length > 1 && (
           <div className="text-xs mt-2 flex flex-wrap gap-1.5 justify-center">
             {session.stages.map((st, i) => (
@@ -1971,6 +2042,10 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
   const [activeSpot, setActiveSpot] = useState(0);
 
   const isComplete = session.status === 'completed';
+  // A session closed early is finished too — it just isn't complete.
+  // Everything that asks "can I still shoot this?" keys off isFinished;
+  // only the header label distinguishes the two.
+  const isFinished = isComplete || session.status === 'partial';
   const stageIdx = activeStageIndex(session);
   const stage = session.stages[stageIdx];
   const round = stage.round;
@@ -2038,7 +2113,7 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
   const endsShotCount = displayStage.ends.filter(e => e.arrows.length > 0).length;
 
   function handleAddArrow(score, isX, x, y, spot = 0) {
-    if (isComplete || endReady) return;
+    if (isFinished || endReady) return;
     if (isMultiSpot && filledSpots.has(spot)) return; // that spot already has its one arrow this end
     setPending(p => [...p, { score, isX, x: x ?? null, y: y ?? null, ...(isMultiSpot ? { spot } : {}) }]);
   }
@@ -2073,20 +2148,20 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
             <SessionTypeBadge sessionType={session.sessionType} />
           </div>
           <div className="text-xs" style={{ color: T.textDim }}>
-            {isComplete ? 'Completata' : sessionProgressLabel(session)}
+            {isComplete ? 'Completata' : session.status === 'partial' ? 'Interrotta' : sessionProgressLabel(session)}
             {bowLabel(session.bowType) ? ` · ${bowLabel(session.bowType)}` : ''}
           </div>
         </div>
         <button onClick={() => setNoteOpen(o => !o)} className="p-2 -mr-2 rounded-full active:scale-95 transition-transform"><StickyNote size={20} /></button>
       </header>
 
-      {noteOpen && !isComplete && (
+      {noteOpen && !isFinished && (
         <div className="px-4 py-3" style={{ background: T.surface, borderBottom: `1px solid ${T.border}` }}>
           <SessionMetaEditor session={session} onUpdate={onUpdate} />
         </div>
       )}
 
-      {!isComplete && (
+      {!isFinished && (
         <>
           {multiStage && (
             <div className="px-4 pt-3 text-xs text-center" style={{ color: T.textDim }}>
@@ -2183,10 +2258,29 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
               Conferma volée
             </button>
           </div>
+
+          <div className="px-4 pb-8 flex flex-col">
+            <Disclosure label="Termina la sessione qui" icon={Check}>
+              {close => (
+                <>
+                  <div className="text-xs" style={{ color: T.textDim }}>
+                    Chiude la sessione con le {shot} frecce già confermate delle {totalArrowsInRound(stage)} previste
+                    {pending.length > 0 ? ` (la volée in corso, non confermata, viene scartata)` : ''}.
+                    {' '}Le frecce restano nello storico e contano nelle medie, ma una prova interrotta non entra tra i primati.
+                    {' '}Puoi riaprirla dal dettaglio della sessione.
+                  </div>
+                  <button onClick={() => { close(); onUpdate(s => closeSessionEarly(s)); }}
+                    className="rounded-xl py-2.5 text-sm font-bold" style={{ background: T.gold, color: GOLD_TEXT }}>
+                    Termina sessione
+                  </button>
+                </>
+              )}
+            </Disclosure>
+          </div>
         </>
       )}
 
-      {isComplete && <SessionSummary session={session} sessions={sessions} onExit={onExit} onUpdate={onUpdate} />}
+      {isFinished && <SessionSummary session={session} sessions={sessions} onExit={onExit} onUpdate={onUpdate} />}
     </div>
   );
 }
@@ -2505,6 +2599,7 @@ function SessionRow({ session, onOpen, onDelete }) {
   }, [confirming]);
 
   const isDone = session.status === 'completed';
+  const isPartial = session.status === 'partial';
   return (
     <div className="rounded-2xl px-4 py-3 flex items-center gap-3" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
       <button onClick={onOpen} className="flex-1 text-left flex items-center justify-between gap-2 min-w-0 min-h-11">
@@ -2512,7 +2607,11 @@ function SessionRow({ session, onOpen, onDelete }) {
           <div className="font-semibold truncate flex items-center gap-2">
             <span className="truncate"><SessionName session={session} /></span>
             <SessionTypeBadge sessionType={session.sessionType} />
-            {!isDone && <span className="text-xs font-normal shrink-0" style={{ color: T.gold }}>in corso</span>}
+            {!isDone && (
+              <span className="text-xs font-normal shrink-0" style={{ color: isPartial ? T.textFaint : T.gold }}>
+                {isPartial ? 'interrotta' : 'in corso'}
+              </span>
+            )}
           </div>
           <div className="text-xs truncate" style={{ color: T.textDim }}>
             {formatDateFull(session.startedAt)}
@@ -2521,7 +2620,7 @@ function SessionRow({ session, onOpen, onDelete }) {
           </div>
         </div>
         <div className="text-lg font-bold shrink-0" style={numeralStyle}>
-          {isDone ? sessionTotalScore(session) : sessionProgressBadge(session)}
+          {isDone || isPartial ? sessionTotalScore(session) : sessionProgressBadge(session)}
         </div>
       </button>
       <button onClick={() => (confirming ? onDelete() : setConfirming(true))} className="p-2 rounded-full shrink-0 min-w-11 min-h-11 flex items-center justify-center"
@@ -2608,14 +2707,14 @@ function StoricoScreen({ sessions, onOpen, onResume, onDelete, onImport, onSignO
           <>
             {typeAndBowFiltered.length === 0 && <div className="text-sm" style={{ color: T.textDim }}>Nessuna sessione.</div>}
             {typeAndBowFiltered.slice().sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt)).map(s => (
-              <SessionRow key={s.id} session={s} onOpen={() => (s.status === 'completed' ? onOpen(s.id) : onResume(s.id))} onDelete={() => onDelete(s.id)} />
+              <SessionRow key={s.id} session={s} onOpen={() => (s.status === 'in_progress' ? onResume(s.id) : onOpen(s.id))} onDelete={() => onDelete(s.id)} />
             ))}
           </>
         ) : (
           <>
             {matchingEntries.length === 0 && <div className="text-sm" style={{ color: T.textDim }}>Nessuna sessione.</div>}
             {matchingEntries.slice().sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt)).map((e, i) => (
-              <StageEntryRow key={`${e.sessionId}-${e.stageIndex}`} entry={e} onOpen={() => (e.status === 'completed' ? onOpen(e.sessionId) : onResume(e.sessionId))} />
+              <StageEntryRow key={`${e.sessionId}-${e.stageIndex}`} entry={e} onOpen={() => (e.status === 'in_progress' ? onResume(e.sessionId) : onOpen(e.sessionId))} />
             ))}
           </>
         )}
@@ -2657,13 +2756,18 @@ function roundShapeLabel(round) {
 // separate from the session's grand total.
 function StageEntryRow({ entry, onOpen }) {
   const isDone = entry.status === 'completed';
+  const isPartial = entry.status === 'partial';
   return (
     <button onClick={onOpen} className="w-full text-left rounded-2xl px-4 py-3 flex items-center justify-between gap-2" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
       <div className="min-w-0">
         <div className="font-semibold truncate flex items-center gap-2">
           <span className="truncate">{entry.round.distanceM}m · {entry.round.faceCm}cm</span>
           <SessionTypeBadge sessionType={entry.sessionType} />
-          {!isDone && <span className="text-xs font-normal shrink-0" style={{ color: T.gold }}>in corso</span>}
+          {!isDone && (
+            <span className="text-xs font-normal shrink-0" style={{ color: isPartial ? T.textFaint : T.gold }}>
+              {isPartial ? 'interrotta' : 'in corso'}
+            </span>
+          )}
           {entry.stageCount > 1 && <span className="text-xs font-normal shrink-0" style={{ color: T.textFaint }}>Tappa {entry.stageIndex + 1}/{entry.stageCount}</span>}
         </div>
         <div className="text-xs truncate" style={{ color: T.textDim }}>
@@ -2671,7 +2775,7 @@ function StageEntryRow({ entry, onOpen }) {
         </div>
       </div>
       <div className="text-lg font-bold shrink-0" style={numeralStyle}>
-        {isDone ? totalScore(entry) : `${currentEndIndex(entry) + 1}/${entry.round.ends}`}
+        {isDone || isPartial ? totalScore(entry) : `${currentEndIndex(entry) + 1}/${entry.round.ends}`}
       </div>
     </button>
   );
@@ -2760,10 +2864,14 @@ function bestByShape(entries) {
     .map(({ round, entries: es }) => {
       const totalArrows = es.reduce((s, e) => s + arrowsShotCount(e), 0);
       const totalPoints = es.reduce((s, e) => s + totalScore(e), 0);
+      // The average is arrow-weighted over everything that counts, but the
+      // "best" is a record and only a round shot end to end can hold one —
+      // otherwise a good half-round outranks every full one.
+      const rankable = es.filter(entryIsRankable);
       return {
         round,
         count: es.length,
-        best: Math.max(...es.map(e => totalScore(e) / arrowsShotCount(e))),
+        best: rankable.length ? Math.max(...rankable.map(e => totalScore(e) / arrowsShotCount(e))) : null,
         avg: totalArrows ? totalPoints / totalArrows : 0,
         mixedLengths: new Set(es.map(e => e.round.arrowsPerEnd * e.round.ends)).size > 1,
       };
@@ -2772,8 +2880,11 @@ function bestByShape(entries) {
 }
 
 function StatisticheScreen({ sessions }) {
-  const completedSessions = useMemo(() => sessions.filter(s => s.status === 'completed'), [sessions]);
-  const entries = useMemo(() => stageEntries(completedSessions), [completedSessions]);
+  // "Counts for stats" rather than "completed": a session closed early
+  // still shot real arrows, and every figure on this screen is
+  // arrow-weighted. Records are held back separately — see entryIsRankable.
+  const completedSessions = useMemo(() => sessions.filter(sessionCountsForStats), [sessions]);
+  const entries = useMemo(() => stageEntries(completedSessions).filter(entryCountsForStats), [completedSessions]);
 
   const totalArrows = entries.reduce((s, e) => s + arrowsShotCount(e), 0);
   const totalX = entries.reduce((s, e) => s + xCount(e), 0);
@@ -2807,7 +2918,7 @@ function StatisticheScreen({ sessions }) {
   const allEntries = useMemo(() => stageEntries(typeAndBowFiltered), [typeAndBowFiltered]);
   const activeShape = filterId ? shapeRows.find(r => roundShapeKey(r.round) === filterId)?.round : null;
   const matchingEntries = filterId ? allEntries.filter(e => roundShapeKey(e.round) === filterId) : [];
-  const completed = matchingEntries.filter(e => e.status === 'completed');
+  const completed = matchingEntries.filter(entryCountsForStats);
 
   // Per-arrow average throughout, not raw totals — roundShapeKey() groups
   // by distance+face only, so a group can mix sessions with different
@@ -2883,7 +2994,7 @@ function StatisticheScreen({ sessions }) {
                   </div>
                 </div>
                 <div className="text-right shrink-0">
-                  <div className="text-lg font-bold" style={numeralStyle}>{row.best.toFixed(2)}</div>
+                  <div className="text-lg font-bold" style={numeralStyle}>{row.best != null ? row.best.toFixed(2) : '—'}</div>
                   <div className="text-xs" style={{ color: T.textFaint }}>primato/freccia</div>
                 </div>
               </button>
@@ -3146,6 +3257,22 @@ function DetailScreen({ session, sessions, onBack, onUpdate, onDelete }) {
           media {(sessionTotalScore(session) / sessionArrowsShot(session)).toFixed(2)} · {sessionXCount(session)} X
         </div>
       </div>
+
+      {session.status === 'partial' && (
+        <div className="rounded-2xl px-4 py-3 flex flex-col gap-3" style={{ background: T.surfaceAlt, border: `1px solid ${T.border}` }}>
+          <div className="text-sm" style={{ color: T.textDim }}>
+            Sessione interrotta: {sessionArrowsShot(session)} frecce su {sessionPlannedArrows(session)}.
+            {' '}{sessionCountsForStats(session)
+              ? 'Conta nelle medie e nelle analisi, ma non tra i primati.'
+              : `Sotto le ${MIN_ARROWS_FOR_PARTIAL_STATS} frecce, quindi resta nello storico ma non entra nelle statistiche.`}
+          </div>
+          <button onClick={() => onUpdate(s => reopenSession(s))}
+            className="rounded-xl py-2.5 text-sm font-semibold self-start px-4"
+            style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.text }}>
+            Riprendi la sessione
+          </button>
+        </div>
+      )}
 
       <InsightCard sentences={insight} />
 
@@ -6267,6 +6394,8 @@ export {
   sameRound, findPersonalBest, paceVsPB, createSession, sessionFlattenArrows,
   sessionTotalScore, sessionXCount, sessionArrowsShot,
   activeStageIndex, sessionAddArrow, sessionUndoLastArrow, sessionProgressLabel,
+  closeSessionEarly, reopenSession, stageIsFull, entryIsRankable, sessionPlannedArrows,
+  entryCountsForStats, sessionCountsForStats,
   sessionDisplayName, stageEntries, normalizeSession, withSessionDate,
   roundShapeKey, matchedPreset, roundShapeLabel,
   // personal scorecard: analysis
