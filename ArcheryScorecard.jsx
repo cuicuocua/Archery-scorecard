@@ -403,18 +403,124 @@ function computeGroupStats(points, round) {
   const r = spotFaceCm(round.faceCm, roundSpotLayout(round)) / 2;
   const cx = pts.reduce((s, a) => s + a.x, 0) / pts.length;
   const cy = pts.reduce((s, a) => s + a.y, 0) / pts.length;
-  let sumR = 0, maxR = 0;
+  let sumR = 0, maxR = 0, sumDx2 = 0, sumDy2 = 0;
   pts.forEach(a => {
     const dx = (a.x - cx) * r, dy = (a.y - cy) * r;
     const d = Math.sqrt(dx * dx + dy * dy);
     sumR += d;
     if (d > maxR) maxR = d;
+    sumDx2 += dx * dx;
+    sumDy2 += dy * dy;
   });
-  return { x: cx, y: cy, cxCm: cx * r, cyCm: cy * r, meanRadiusCm: sumR / pts.length, maxRadiusCm: maxR, count: pts.length };
+  return {
+    x: cx, y: cy, cxCm: cx * r, cyCm: cy * r,
+    meanRadiusCm: sumR / pts.length, maxRadiusCm: maxR,
+    // Per-axis spread, kept separate rather than collapsed into the radius:
+    // a group that scatters vertically and one that scatters horizontally
+    // have the same mean radius and are not the same group.
+    sdXCm: Math.sqrt(sumDx2 / pts.length), sdYCm: Math.sqrt(sumDy2 / pts.length),
+    count: pts.length,
+  };
 }
 
 function groupStats(stage, arrows) {
   return computeGroupStats(arrows, stage.round);
+}
+
+// On a multi-spot face every spot is aimed at separately, so pooling their
+// arrows into one centroid averages away exactly the thing worth seeing —
+// a vertical triple routinely groups high on the top spot and low on the
+// bottom one, and the pooled view reports that as "centred". Always returns
+// one entry per spot (just one for a single-spot round) so callers have a
+// single code path.
+function groupStatsBySpot(round, arrows) {
+  const layout = roundSpotLayout(round);
+  return Array.from({ length: spotCount(layout) }, (_, spot) => {
+    const own = arrows.filter(a => (a.spot || 0) === spot);
+    return { spot, arrows: own, stats: computeGroupStats(own, round) };
+  });
+}
+
+// Radius of the 10-ring in cm for this round's face — the natural yardstick
+// for "is this group tight", and it self-scales across face sizes and
+// across compound's halved 10-ring without a magic constant.
+function tenRingRadiusCm(round) {
+  const { specs } = ringGeometry(roundRingClass(round));
+  const ten = specs.find(s => s.score === 10);
+  const spotR = spotFaceCm(round.faceCm, roundSpotLayout(round)) / 2;
+  return ten ? (ten.outer / FACE_R) * spotR : spotR / 10;
+}
+
+// Whether a group's offset from centre is real or just the scatter of a
+// small sample: the standard error of the centroid, against the same
+// two-sigma bar sessionInsight uses for fatigue. Below that the group is
+// centred as far as this many arrows can tell, and "move your aim 1cm
+// left" would be chasing noise.
+function groupOffsetIsReal(stats) {
+  if (!stats || stats.count < 2) return false;
+  const offset = Math.sqrt(stats.cxCm ** 2 + stats.cyCm ** 2);
+  const se = Math.sqrt(stats.sdXCm ** 2 + stats.sdYCm ** 2) / Math.sqrt(stats.count);
+  return offset >= Math.max(0.3, 2 * se);
+}
+
+// A structured read of one group: where it sits, how wide it is, and which
+// way it scatters — kept descriptive on purpose. The offset is arithmetic
+// (it's how far off centre the arrows actually landed, so it's also the
+// size of the correction that would centre them); the *cause* is not, and
+// this app deliberately doesn't guess at one — see sessionInsight.
+function describeGroupShape(stats, round) {
+  if (!stats) return null;
+  const offsetCm = Math.sqrt(stats.cxCm ** 2 + stats.cyCm ** 2);
+  const offCentre = groupOffsetIsReal(stats);
+  const tenR = tenRingRadiusCm(round);
+  const tight = stats.meanRadiusCm <= tenR;
+
+  let headline;
+  if (!offCentre && tight) headline = 'Compatto e centrato';
+  else if (!offCentre) headline = 'Centrato, ma disperso';
+  else if (tight) headline = 'Compatto ma spostato';
+  else headline = 'Spostato e disperso';
+
+  // Which way it scatters. Only called out when one axis clearly dominates
+  // — a roughly round group has no axis worth naming — and only once the
+  // group is wide enough for "which way" to mean anything: a group tight
+  // enough to read as a single hole has an axis in the arithmetic but not
+  // on the target, and naming it would be reporting rounding noise.
+  const ratio = stats.sdYCm > 0 ? stats.sdXCm / stats.sdYCm : 1;
+  const axis = (stats.count < 3 || stats.meanRadiusCm < 0.3) ? null
+    : ratio > 1.5 ? 'orizzontale'
+    : ratio < 1 / 1.5 ? 'verticale'
+    : null;
+
+  return { offsetCm, offCentre, tight, headline, axis, stats };
+}
+
+// Do two spots sit far enough apart to be worth correcting separately, or
+// is the difference within what this many arrows can resolve? Same
+// two-sigma test as groupOffsetIsReal, applied to the gap between them.
+function spotsDifferSignificantly(a, b) {
+  if (!a || !b || a.count < 2 || b.count < 2) return false;
+  const gap = Math.sqrt((a.cxCm - b.cxCm) ** 2 + (a.cyCm - b.cyCm) ** 2);
+  const seA = (a.sdXCm ** 2 + a.sdYCm ** 2) / a.count;
+  const seB = (b.sdXCm ** 2 + b.sdYCm ** 2) / b.count;
+  return gap >= Math.max(0.5, 2 * Math.sqrt(seA + seB));
+}
+
+// The widest significant gap between any two spots, or null if they're all
+// consistent with each other — the one thing a per-spot breakdown can say
+// that a pooled group never could.
+function widestSpotGap(perSpot) {
+  const usable = perSpot.filter(p => p.stats && p.stats.count >= 2);
+  let worst = null;
+  for (let i = 0; i < usable.length; i++) {
+    for (let j = i + 1; j < usable.length; j++) {
+      const a = usable[i], b = usable[j];
+      if (!spotsDifferSignificantly(a.stats, b.stats)) continue;
+      const gap = Math.sqrt((a.stats.cxCm - b.stats.cxCm) ** 2 + (a.stats.cyCm - b.stats.cyCm) ** 2);
+      if (!worst || gap > worst.gapCm) worst = { a: a.spot, b: b.spot, gapCm: gap };
+    }
+  }
+  return worst;
 }
 
 // Compares distance + face size + spot layout + ring class, not arrows-per-
@@ -730,7 +836,18 @@ function sessionInsight(session, allSessions) {
   const golds = arrows.filter(a => a.score === 10).length;
   const goldRate = arrows.length ? golds / arrows.length : 0;
 
-  if (group && Math.sqrt(group.cxCm ** 2 + group.cyCm ** 2) >= 1.5) {
+  // On a multi-spot face, spots that disagree with each other outrank the
+  // overall offset: pooling them is what hides the pattern, so if the data
+  // can resolve a difference between spots that's the more useful thing to
+  // say — and the pooled offset below would be an average of groups the
+  // archer never shot as one.
+  const spotGap = roundSpotLayout(mainStage.round) !== 'single'
+    ? widestSpotGap(groupStatsBySpot(mainStage.round, posArrows))
+    : null;
+
+  if (spotGap) {
+    sentences.push(`Gli spot non sono allineati tra loro: ${spotGap.gapCm.toFixed(1)} cm tra lo spot ${spotGap.a + 1} e lo spot ${spotGap.b + 1}. Vanno valutati separatamente.`);
+  } else if (group && Math.sqrt(group.cxCm ** 2 + group.cyCm ** 2) >= 1.5) {
     // Reports the offset and stops there. It used to add "attenzione al
     // rilascio", which is a diagnosis the data cannot support — a group
     // that sits consistently off centre is more often a sight setting than
@@ -1354,9 +1471,15 @@ function TargetFace({ faceCm, ringClass = 'full', spotLayout = 'single', zoom = 
   const svgRef = useRef(null);
   const isMulti = spotLayout !== 'single';
   const offsets = spotOffsets(spotLayout);
-  const groupRadius = centroid && centroid.maxRadiusCm != null && centroid.maxRadiusCm > 0
-    ? (centroid.maxRadiusCm / (spotFaceCm(faceCm, spotLayout) / 2)) * FACE_R
-    : null;
+  // `centroid` may be one group (single-spot, or one shared reading) or an
+  // array indexed by spot. Each spot is aimed at separately, so drawing one
+  // pooled crosshair across all three would show every spot a group that
+  // none of them actually shot.
+  const centroidFor = (i) => (Array.isArray(centroid) ? centroid[i] || null : centroid);
+  const spotRadiusCm = spotFaceCm(faceCm, spotLayout) / 2;
+  const groupRadiusFor = (c) => (c && c.maxRadiusCm != null && c.maxRadiusCm > 0
+    ? (c.maxRadiusCm / spotRadiusCm) * FACE_R
+    : null);
 
   let vbX, vbY, vbW, vbH;
   if (isMulti) {
@@ -1407,13 +1530,74 @@ function TargetFace({ faceCm, ringClass = 'full', spotLayout = 'single', zoom = 
   return (
     <div className="w-full max-w-2xl mx-auto aspect-square rounded-2xl overflow-hidden" style={{ background: T.bgElevated }}>
       <svg ref={svgRef} viewBox={vb} className="w-full h-full touch-none" onPointerDown={handlePointerDown}>
-        {offsets.map((o, i) => (
-          <g key={i} transform={`translate(${o.x} ${o.y})`}>
-            <SpotRings ringClass={ringClass} centroid={centroid} groupRadius={groupRadius} dense={dense}
-              points={points.filter(p => !isMulti || (p.spot || 0) === i)} />
-          </g>
-        ))}
+        {offsets.map((o, i) => {
+          const c = centroidFor(i);
+          return (
+            <g key={i} transform={`translate(${o.x} ${o.y})`}>
+              <SpotRings ringClass={ringClass} centroid={c} groupRadius={groupRadiusFor(c)} dense={dense}
+                points={points.filter(p => !isMulti || (p.spot || 0) === i)} />
+            </g>
+          );
+        })}
       </svg>
+    </div>
+  );
+}
+
+// The written half of a group reading: where it sits, how wide, which way
+// it scatters. Descriptive by design — the offset doubles as the size of
+// the correction that would centre the group, but what to change to get
+// there (sight, anchor, stance, spine, wind) is not in this data.
+function GroupReadout({ shape }) {
+  if (!shape) return null;
+  const { stats, offsetCm, offCentre, headline, axis } = shape;
+  return (
+    <div className="text-xs flex flex-col gap-0.5" style={{ color: T.textDim }}>
+      <div className="font-semibold" style={{ color: T.text }}>{headline}</div>
+      <div>
+        {offCentre
+          ? `${offsetCm.toFixed(1)} cm dal centro (${describeBias(stats.cxCm, stats.cyCm)})`
+          : 'Centro entro il margine di errore'}
+      </div>
+      <div>
+        Ampiezza {stats.maxRadiusCm.toFixed(1)} cm · media {stats.meanRadiusCm.toFixed(1)} cm
+        {axis ? ` · dispersione ${axis}` : ''} · {stats.count} frecce
+      </div>
+    </div>
+  );
+}
+
+// One target per spot, each with its own arrows, its own group overlay and
+// its own reading — plus, when the spots genuinely disagree, the one line a
+// pooled group can never produce. Renders a single face for a single-spot
+// round, so both kinds of round go through the same path.
+function GroupAnalysis({ round, arrows, dense = true }) {
+  const layout = roundSpotLayout(round);
+  const isMulti = layout !== 'single';
+  const perSpot = groupStatsBySpot(round, arrows);
+  const shapes = perSpot.map(p => describeGroupShape(p.stats, round));
+  const gap = isMulti ? widestSpotGap(perSpot) : null;
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className={isMulti ? 'grid grid-cols-1 sm:grid-cols-3 gap-4' : ''}>
+        {perSpot.map(({ spot, arrows: spotArrows, stats }) => (
+          <div key={spot} className="flex flex-col gap-2">
+            {isMulti && <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: T.textFaint }}>Spot {spot + 1}</div>}
+            <TargetFace faceCm={spotFaceCm(round.faceCm, layout)} ringClass={roundRingClass(round)}
+              points={spotArrows.filter(a => a.x != null)} centroid={stats} dense={dense} />
+            {stats
+              ? <GroupReadout shape={shapes[spot]} />
+              : <div className="text-xs" style={{ color: T.textFaint }}>Nessuna freccia con posizione registrata.</div>}
+          </div>
+        ))}
+      </div>
+      {gap && (
+        <div className="rounded-2xl px-4 py-3 text-sm" style={{ background: T.surfaceAlt, border: `1px solid ${T.border}`, color: T.textDim }}>
+          Lo spot {gap.a + 1} e lo spot {gap.b + 1} sono spostati di {gap.gapCm.toFixed(1)} cm l'uno rispetto all'altro:
+          {' '}più della dispersione dei due gruppi, quindi vanno corretti separatamente e non come un unico gruppo.
+        </div>
+      )}
     </div>
   );
 }
@@ -1717,7 +1901,14 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
     const withArrows = displayStage.ends.filter(e => e.arrows.length > 0);
     return withArrows.slice(-3).flatMap(e => e.arrows);
   }, [displayStage]);
-  const stats3 = groupStats(displayStage, last3);
+  // Per spot, not pooled — on a triple face each spot is aimed at
+  // separately, so one shared crosshair drawn over all three would show
+  // every spot a group none of them shot. For a single-spot round this is
+  // a one-element array and behaves exactly as before.
+  const perSpot3 = useMemo(() => groupStatsBySpot(round, last3), [round, last3]);
+  const spotShapes3 = useMemo(() => perSpot3.map(p => describeGroupShape(p.stats, round)), [perSpot3, round]);
+  const centroids3 = isMultiSpot ? perSpot3.map(p => p.stats) : perSpot3[0].stats;
+  const anySpotStats = perSpot3.some(p => p.stats);
   const endsShotCount = displayStage.ends.filter(e => e.arrows.length > 0).length;
 
   function handleAddArrow(score, isX, x, y, spot = 0) {
@@ -1811,7 +2002,7 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
                 interactive
                 onTap={handleFaceTap}
                 points={[...ghostArrows.map(a => ({ ...a, ghost: true })), ...currentEnd.arrows.map(a => ({ ...a, ghost: false }))]}
-                centroid={stats3}
+                centroid={centroids3}
               />
             ) : (
               <div className="flex flex-col gap-3">
@@ -1835,9 +2026,18 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
             </div>
           )}
 
-          {mode === 'face' && stats3 && (
-            <div className="px-4 pt-2 text-sm text-center" style={{ color: T.textDim }}>
-              Gruppo (ultime {Math.min(3, endsShotCount)} volée): {describeBias(stats3.cxCm, stats3.cyCm)} · ampiezza {stats3.maxRadiusCm.toFixed(1)} cm
+          {mode === 'face' && anySpotStats && (
+            <div className="px-4 pt-2 text-sm flex flex-col gap-1" style={{ color: T.textDim }}>
+              <div className="text-xs uppercase tracking-wide" style={{ color: T.textFaint }}>
+                Gruppo · ultime {Math.min(3, endsShotCount)} volée
+              </div>
+              {perSpot3.map(({ spot, stats }) => stats && (
+                <div key={spot}>
+                  {isMultiSpot ? `Spot ${spot + 1}: ` : ''}
+                  {spotShapes3[spot].offCentre ? describeBias(stats.cxCm, stats.cyCm) : 'centrato'}
+                  {' '}· ampiezza {stats.maxRadiusCm.toFixed(1)} cm
+                </div>
+              ))}
             </div>
           )}
 
@@ -2660,14 +2860,7 @@ function StatisticheScreen({ sessions }) {
           <div className="flex flex-col gap-2">
             <div className="text-sm font-semibold" style={{ color: T.textDim }}>Gruppo cumulativo</div>
             {cumGroup ? (
-              <>
-                <TargetFace faceCm={spotFaceCm(activeShape.faceCm, roundSpotLayout(activeShape))} ringClass={roundRingClass(activeShape)}
-                  points={allArrows.filter(a => a.x != null)} centroid={cumGroup} dense />
-                <div className="text-sm" style={{ color: T.textDim }}>
-                  Deviazione orizzontale: {Math.abs(cumGroup.cxCm).toFixed(1)} cm {cumGroup.cxCm >= 0 ? 'a destra' : 'a sinistra'} ·
-                  {' '}Deviazione verticale: {Math.abs(cumGroup.cyCm).toFixed(1)} cm {cumGroup.cyCm >= 0 ? 'in basso' : 'in alto'} · {cumGroup.count} frecce
-                </div>
-              </>
+              <GroupAnalysis round={activeShape} arrows={allArrows.filter(a => a.x != null)} dense />
             ) : (
               <div className="rounded-2xl p-4 text-sm" style={{ background: T.surface, border: `1px dashed ${T.border}`, color: T.textDim }}>
                 Nessuna freccia con posizione registrata per questa combinazione. Registra le posizioni sul bersaglio per sbloccare questa analisi.
@@ -2823,9 +3016,8 @@ function DetailScreen({ session, sessions, onBack, onUpdate, onDelete }) {
 
       {!multiStage ? (
         <>
-          <TargetFace faceCm={spotFaceCm(session.stages[0].round.faceCm, roundSpotLayout(session.stages[0].round))}
-            ringClass={roundRingClass(session.stages[0].round)}
-            points={flattenArrows(session.stages[0]).filter(a => a.x != null)} />
+          <GroupAnalysis round={session.stages[0].round}
+            arrows={flattenArrows(session.stages[0]).filter(a => a.x != null)} dense={false} />
           <SessionMetaEditor session={session} onUpdate={onUpdate} />
           <ConditionsEditor session={session} onUpdate={onUpdate} />
           <div className="flex flex-col gap-2">
@@ -2843,8 +3035,7 @@ function DetailScreen({ session, sessions, onBack, onUpdate, onDelete }) {
                 <div className="font-semibold">Tappa {i + 1} · {stage.round.distanceM}m · {stage.round.faceCm}cm</div>
                 <div className="text-lg font-bold" style={numeralStyle}>{totalScore(stage)}</div>
               </div>
-              <TargetFace faceCm={spotFaceCm(stage.round.faceCm, roundSpotLayout(stage.round))} ringClass={roundRingClass(stage.round)}
-                points={flattenArrows(stage).filter(a => a.x != null)} />
+              <GroupAnalysis round={stage.round} arrows={flattenArrows(stage).filter(a => a.x != null)} dense={false} />
               <StageEnds stage={stage} />
             </div>
           ))}
