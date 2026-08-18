@@ -1065,6 +1065,20 @@ halves, so a slow day and a fast archer are never compared with each other.
 Ends saved before this release simply have no `at` and every reader skips
 them, so the panel fills in as sessions accumulate.
 
+### Layout fixes found by driving it on a phone
+
+- **Chart tooltips could scroll the whole page sideways.** A recharts
+  tooltip is absolutely positioned with `nowrap` items, and recharts only
+  nudges it away from the cursor — it never shrinks it. A wordy label
+  ("1.51 mrad su 561 frecce") rendered as a 326px unbreakable box inside a
+  402px viewport, pushing the document wider than the screen. `TOOLTIP_STYLE`
+  now caps the width and lets the text wrap, shared by all 17 tooltips;
+  `ChartCard` clips horizontally as a backstop (`clip`, not `hidden`, which
+  would make it a scroll container and break sticky positioning).
+- **The shooting screen's control row overflowed at narrow widths.** Adding
+  the 8× step for compound faces made the mode + zoom row wider than a small
+  phone. It wraps now instead of pushing the page sideways.
+
 ### Not done
 
 Folding match arrows into the round-shape statistics. Matches are shot to

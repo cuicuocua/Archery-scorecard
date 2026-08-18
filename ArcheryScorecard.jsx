@@ -235,6 +235,25 @@ const GOLD_TEXT = SCORE_COLORS.gold.text;
 const CONDENSED = '"Oswald","Barlow Condensed","Roboto Condensed","Arial Narrow",sans-serif';
 const numeralStyle = { fontFamily: CONDENSED, fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.01em' };
 
+// Shared by every chart tooltip in the app. The width cap and the wrapping
+// are load-bearing, not cosmetic: a recharts tooltip is absolutely
+// positioned and its default item style is `nowrap`, so a wordy label
+// ("1.51 mrad su 561 frecce") renders as one long unbreakable box. Recharts
+// only nudges that box away from the cursor — it never shrinks it — so on a
+// phone it runs past the chart, past the card, and past the viewport, and
+// the whole PAGE gains a horizontal scroll. Capping the width and letting
+// the text wrap keeps every tooltip inside its own card.
+const TOOLTIP_STYLE = {
+  background: T.surface,
+  border: `1px solid ${T.border}`,
+  borderRadius: 8,
+  maxWidth: 200,
+  whiteSpace: 'normal',
+  overflowWrap: 'anywhere',
+};
+const TOOLTIP_LABEL_STYLE = { color: T.text, whiteSpace: 'normal' };
+const TOOLTIP_ITEM_STYLE = { whiteSpace: 'normal' };
+
 const FACE_R = 100;
 const X_OUTER = 5;
 const RING_SPECS = [
@@ -2770,7 +2789,11 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
           )}
           <StatsBar total={total} avg={avg} projected={projected} pace={pace} hasPb={!!pb} />
 
-          <div className="px-4 pt-3 flex items-center justify-between gap-2">
+          {/* Wraps rather than overflowing: the mode control plus a four-step
+              zoom ladder (compound faces get 8×) is wider than a narrow
+              phone, and without wrapping the excess pushed the whole page
+              into a horizontal scroll instead of moving to a second line. */}
+          <div className="px-4 pt-3 flex flex-wrap items-center justify-between gap-2">
             <SegmentedControl options={[{ id: 'face', label: 'Bersaglio' }, { id: 'keypad', label: 'Tastierino' }]} value={mode} onChange={setMode} />
             {mode === 'face' && (
               <SegmentedControl options={zoomLevels.map(z => ({ id: z, label: `${z}×` }))} value={zoom} onChange={setZoom} small />
@@ -3180,7 +3203,13 @@ function ChartCard({ title, subtitle, children, tall = false }) {
         <div className="text-sm font-semibold" style={{ color: T.textDim }}>{title}</div>
         {subtitle && <div className="text-xs" style={{ color: T.textFaint }}>{subtitle}</div>}
       </div>
-      <div className={tall ? 'h-48' : 'h-40'}>{children}</div>
+      {/* overflow-x-clip is a backstop, not the fix: tooltip width is
+          capped at the source (TOOLTIP_STYLE). It's here so that no future
+          chart can make the whole page scroll sideways on a phone the way
+          the angular-dispersion tooltip did. `clip` rather than `hidden`
+          because hidden would make this a scroll container and break
+          sticky positioning; clip leaves the vertical axis visible. */}
+      <div className={`overflow-x-clip ${tall ? 'h-48' : 'h-40'}`}>{children}</div>
     </div>
   );
 }
@@ -3685,7 +3714,7 @@ function StatisticheScreen({ sessions, tournaments = [], userEmail = null }) {
                 <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 10 }} interval="preserveStartEnd" />
                 <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={32} allowDecimals={false} />
-                <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                <Tooltip contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} itemStyle={TOOLTIP_ITEM_STYLE}
                   formatter={(v, name, item) => [`${v} frecce · ${item.payload.sessions} sessioni`, 'settimana']} />
                 <Bar dataKey="arrows" fill={T.gold} radius={[3, 3, 0, 0]} maxBarSize={48} isAnimationActive={false} />
               </BarChart>
@@ -3704,7 +3733,7 @@ function StatisticheScreen({ sessions, tournaments = [], userEmail = null }) {
               <CartesianGrid stroke={T.border} strokeDasharray="3 3" horizontal={false} />
               <XAxis type="number" stroke={T.textDim} tick={{ fontSize: 11 }} />
               <YAxis type="category" dataKey="key" stroke={T.textDim} tick={{ fontSize: 10 }} width={132} />
-              <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+              <Tooltip contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} itemStyle={TOOLTIP_ITEM_STYLE}
                 formatter={(v, name, item) => [`${Number(v).toFixed(2)} mrad su ${item.payload.arrows} frecce`, 'dispersione']} />
               <Bar dataKey="mrad" fill={T.blue} radius={[0, 3, 3, 0]} maxBarSize={40} isAnimationActive={false} />
             </BarChart>
@@ -3789,7 +3818,7 @@ function StatisticheScreen({ sessions, tournaments = [], userEmail = null }) {
                   <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
                   <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 10]} />
-                  <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                  <Tooltip contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} itemStyle={TOOLTIP_ITEM_STYLE}
                     formatter={(v, name) => (name === 'band'
                       ? [`${v[0].toFixed(2)} – ${v[1].toFixed(2)}`, 'incertezza']
                       : [Number(v).toFixed(2), 'media a freccia'])} />
@@ -3824,7 +3853,7 @@ function StatisticheScreen({ sessions, tournaments = [], userEmail = null }) {
                     <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
                     <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
                     <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={46} domain={['auto', 'auto']} />
-                    <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                    <Tooltip contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} itemStyle={TOOLTIP_ITEM_STYLE}
                       formatter={(v, name, item) => [`${Number(v) > 0 ? '+' : ''}${Number(v).toFixed(2)} (σ ${item.payload.stddev.toFixed(2)}, attesa ${item.payload.expected.toFixed(2)})`, 'costanza']} />
                     <ReferenceLine y={0} stroke={T.borderStrong} />
                     <Line type="monotone" dataKey="residual" stroke={T.blue} strokeWidth={2} dot={{ r: 3, fill: T.blue }} isAnimationActive={false} />
@@ -3841,7 +3870,7 @@ function StatisticheScreen({ sessions, tournaments = [], userEmail = null }) {
                     <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
                     <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
                     <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 'auto']} />
-                    <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                    <Tooltip contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} itemStyle={TOOLTIP_ITEM_STYLE}
                       formatter={(v) => [`σ = ${Number(v).toFixed(2)} punti`, 'costanza']} />
                     <Line type="monotone" dataKey="stddev" stroke={T.blue} strokeWidth={2} dot={{ r: 3, fill: T.blue }} isAnimationActive={false} />
                   </LineChart>
@@ -3857,7 +3886,7 @@ function StatisticheScreen({ sessions, tournaments = [], userEmail = null }) {
                   <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
                   <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={32} unit="%" domain={[0, 100]} />
-                  <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                  <Tooltip contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} itemStyle={TOOLTIP_ITEM_STYLE}
                     formatter={(v, name) => [`${Number(v).toFixed(1)}%`, RING_GROUP_LABELS[name]]} />
                   {RING_GROUP_ORDER.map(k => (
                     <Area key={k} type="monotone" dataKey={k} stackId="colors" stroke={SCORE_COLORS[k].fill} fill={SCORE_COLORS[k].fill} isAnimationActive={false} />
@@ -3874,7 +3903,7 @@ function StatisticheScreen({ sessions, tournaments = [], userEmail = null }) {
                   <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="key" stroke={T.textDim} tick={{ fontSize: 11 }} />
                   <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={32} unit="%" />
-                  <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                  <Tooltip contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} itemStyle={TOOLTIP_ITEM_STYLE}
                     formatter={(v, name, item) => [`${item.payload.count} frecce (${Number(v).toFixed(1)}%)`, 'frecce']} />
                   <Bar dataKey="pct" radius={[3, 3, 0, 0]} isAnimationActive={false}>
                     {colorData.map((d, i) => <Cell key={i} fill={d.color} />)}
@@ -3892,7 +3921,7 @@ function StatisticheScreen({ sessions, tournaments = [], userEmail = null }) {
                   <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="end" stroke={T.textDim} tick={{ fontSize: 11 }} />
                   <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 10]} />
-                  <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                  <Tooltip contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} itemStyle={TOOLTIP_ITEM_STYLE}
                     formatter={(v, name, item) => (name === 'band'
                       ? [`${v[0].toFixed(2)} – ${v[1].toFixed(2)}`, 'metà centrale']
                       : [`${Number(v).toFixed(2)} su ${item.payload.n} sessioni`, 'mediana'])}
@@ -3913,7 +3942,7 @@ function StatisticheScreen({ sessions, tournaments = [], userEmail = null }) {
                   <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="position" stroke={T.textDim} tick={{ fontSize: 11 }} />
                   <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 10]} />
-                  <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                  <Tooltip contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} itemStyle={TOOLTIP_ITEM_STYLE}
                     formatter={(v, name, item) => [`${Number(v).toFixed(2)} su ${item.payload.n} frecce`, 'media']}
                     labelFormatter={(l) => `Freccia ${l} della volée`} />
                   <Bar dataKey="avg" fill={T.blue} radius={[3, 3, 0, 0]} maxBarSize={72} isAnimationActive={false}>
@@ -3938,7 +3967,7 @@ function StatisticheScreen({ sessions, tournaments = [], userEmail = null }) {
                   <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
                   <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={32} unit="%" domain={[0, 'auto']} />
-                  <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                  <Tooltip contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} itemStyle={TOOLTIP_ITEM_STYLE}
                     formatter={(v, name, item) => [`${Number(v).toFixed(1)}% su ${item.payload.n} frecce`, 'X']} />
                   <Line type="monotone" dataKey="pct" stroke={T.gold} strokeWidth={2} dot={{ r: 3, fill: T.gold }} isAnimationActive={false} />
                 </LineChart>
@@ -3991,7 +4020,7 @@ function StatisticheScreen({ sessions, tournaments = [], userEmail = null }) {
                         <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
                         <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
                         <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 'auto']} />
-                        <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                        <Tooltip contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} itemStyle={TOOLTIP_ITEM_STYLE}
                           formatter={(v) => [`${Number(v).toFixed(1)} cm`, 'dispersione']} />
                         <Line type="monotone" dataKey="dispersion" stroke={T.blue} strokeWidth={2} dot={{ r: 3, fill: T.blue }} isAnimationActive={false} />
                       </LineChart>
@@ -4012,7 +4041,7 @@ function StatisticheScreen({ sessions, tournaments = [], userEmail = null }) {
                           <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
                           <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
                           <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 'auto']} />
-                          <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                          <Tooltip contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} itemStyle={TOOLTIP_ITEM_STYLE}
                             formatter={(v, name) => [`${Number(v).toFixed(1)} cm`, `Spot ${Number(name.replace('spot', '')) + 1}`]} />
                           <Legend formatter={(value) => `Spot ${Number(String(value).replace('spot', '')) + 1}`} wrapperStyle={{ fontSize: 11, color: T.textDim }} />
                           {[0, 1, 2].map((i) => (
@@ -4031,7 +4060,7 @@ function StatisticheScreen({ sessions, tournaments = [], userEmail = null }) {
                           <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
                           <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
                           <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={['auto', 'auto']} />
-                          <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                          <Tooltip contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} itemStyle={TOOLTIP_ITEM_STYLE}
                             formatter={(v, name) => [`${Number(v).toFixed(1)} cm`, name === 'biasX' ? 'orizzontale' : 'verticale']} />
                           <Legend formatter={(value) => (value === 'biasX' ? 'Orizzontale' : 'Verticale')} wrapperStyle={{ fontSize: 11, color: T.textDim }} />
                           <Line type="monotone" dataKey="biasX" stroke={T.gold} strokeWidth={2} dot={{ r: 2, fill: T.gold }} isAnimationActive={false} />
@@ -4048,7 +4077,7 @@ function StatisticheScreen({ sessions, tournaments = [], userEmail = null }) {
                       <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
                       <XAxis dataKey="key" stroke={T.textDim} tick={{ fontSize: 11 }} />
                       <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} allowDecimals={false} />
-                      <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }} />
+                      <Tooltip contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} itemStyle={TOOLTIP_ITEM_STYLE} />
                       <Bar dataKey="count" radius={[3, 3, 0, 0]} isAnimationActive={false}>
                         {distribution.map((d, i) => <Cell key={i} fill={d.color} />)}
                       </Bar>
@@ -4065,7 +4094,7 @@ function StatisticheScreen({ sessions, tournaments = [], userEmail = null }) {
                         <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
                         <XAxis dataKey="key" stroke={T.textDim} tick={{ fontSize: 10 }} interval={0} angle={-20} textAnchor="end" height={44} />
                         <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 10]} />
-                        <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                        <Tooltip contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} itemStyle={TOOLTIP_ITEM_STYLE}
                           formatter={(v, name, item) => [`${Number(v).toFixed(2)} su ${item.payload.arrows} frecce (${item.payload.count} sessioni)`, 'media']} />
                         <Bar dataKey="avg" fill={T.gold} radius={[3, 3, 0, 0]} maxBarSize={72} isAnimationActive={false}>
                           <ErrorBar dataKey="err" width={4} strokeWidth={1.5} stroke={T.textDim} />
@@ -4088,14 +4117,14 @@ function StatisticheScreen({ sessions, tournaments = [], userEmail = null }) {
                   <div className="overflow-x-auto pb-1">
                     <SegmentedControl options={CONDITION_DIMENSIONS} value={conditionDim} onChange={setConditionDim} small />
                   </div>
-                  <div className="h-40">
+                  <div className="h-40 overflow-x-clip">
                     {byCondition.length ? (
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={byCondition}>
                           <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
                           <XAxis dataKey="key" stroke={T.textDim} tick={{ fontSize: 10 }} interval={0} angle={-20} textAnchor="end" height={40} />
                           <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={28} domain={[0, 10]} />
-                          <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                          <Tooltip contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} itemStyle={TOOLTIP_ITEM_STYLE}
                             formatter={(v, name, item) => [`${Number(v).toFixed(2)} su ${item.payload.arrows} frecce (${item.payload.count} sessioni)`, 'media']} />
                           <Bar dataKey="avg" fill={T.blue} radius={[3, 3, 0, 0]} maxBarSize={72} isAnimationActive={false}>
                             <ErrorBar dataKey="err" width={4} strokeWidth={1.5} stroke={T.textDim} />
@@ -4136,7 +4165,7 @@ function StatisticheScreen({ sessions, tournaments = [], userEmail = null }) {
                         <CartesianGrid stroke={T.border} strokeDasharray="3 3" vertical={false} />
                         <XAxis dataKey="label" stroke={T.textDim} tick={{ fontSize: 11 }} />
                         <YAxis stroke={T.textDim} tick={{ fontSize: 11 }} width={32} domain={[0, 'auto']} />
-                        <Tooltip contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }} labelStyle={{ color: T.text }}
+                        <Tooltip contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} itemStyle={TOOLTIP_ITEM_STYLE}
                           formatter={(v) => [`${Math.round(Number(v))} s`, 'per volée']} />
                         <Line type="monotone" dataKey="seconds" stroke={T.blue} strokeWidth={2} dot={{ r: 3, fill: T.blue }} isAnimationActive={false} />
                       </LineChart>
