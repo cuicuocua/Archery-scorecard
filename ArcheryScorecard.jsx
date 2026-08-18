@@ -1347,9 +1347,10 @@ function SpotRings({ ringClass, centroid, groupRadius, points, dense }) {
 // `spotLayout` beyond 'single' (the default) renders 2-3 independent mini
 // faces instead of one — a real WA/Vegas triple sheet. `onTap` is always
 // `(spotIdx, x, y)`; single-spot callers just get spotIdx 0 every time.
-// Zoom only applies to the single-spot case — a multi-spot face is small
-// enough per spot that magnifying one at a time isn't how these are shot.
-function TargetFace({ faceCm, ringClass = 'full', spotLayout = 'single', zoom = 1, interactive = false, onTap, points = [], centroid = null, dense = false }) {
+// On a multi-spot face `zoomSpot` picks which spot the zoom crops around
+// (the whole sheet has no single "middle" worth magnifying), so the caller
+// drives it from whichever spot is being shot.
+function TargetFace({ faceCm, ringClass = 'full', spotLayout = 'single', zoom = 1, zoomSpot = 0, interactive = false, onTap, points = [], centroid = null, dense = false }) {
   const svgRef = useRef(null);
   const isMulti = spotLayout !== 'single';
   const offsets = spotOffsets(spotLayout);
@@ -1363,7 +1364,18 @@ function TargetFace({ faceCm, ringClass = 'full', spotLayout = 'single', zoom = 
     const xs = offsets.map(o => o.x), ys = offsets.map(o => o.y);
     const minX = Math.min(...xs) - spotR, maxX = Math.max(...xs) + spotR;
     const minY = Math.min(...ys) - spotR, maxY = Math.max(...ys) + spotR;
-    vbX = minX; vbY = minY; vbW = maxX - minX; vbH = maxY - minY;
+    // The viewport is square and preserveAspectRatio letterboxes, so what's
+    // actually visible is the sheet's longer side — that's the extent zoom
+    // divides, keeping "2×" the same linear magnification it means for a
+    // single face. At 1× the whole sheet stays framed; past that the crop
+    // recenters on the chosen spot, since a triple sheet's midpoint is
+    // empty paper on a vertical layout and not on any spot at all.
+    const base = Math.max(maxX - minX, maxY - minY) / 2;
+    const half = base / zoom;
+    const focus = zoom > 1
+      ? (offsets[zoomSpot] || offsets[0])
+      : { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+    vbX = focus.x - half; vbY = focus.y - half; vbW = half * 2; vbH = half * 2;
   } else {
     // Zoom always crops around the target's true center (the bullseye), not
     // wherever the current group happens to be — a zoomed-in view should show
@@ -1769,14 +1781,24 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
 
           <div className="px-4 pt-3 flex items-center justify-between gap-2">
             <SegmentedControl options={[{ id: 'face', label: 'Bersaglio' }, { id: 'keypad', label: 'Tastierino' }]} value={mode} onChange={setMode} />
-            {/* Zoom only makes sense for a single-spot face — a multi-spot
-                face's individual spots are already small enough to tap
-                directly, and magnifying just one at a time isn't how these
-                are shot in practice. */}
-            {mode === 'face' && !isMultiSpot && (
+            {mode === 'face' && (
               <SegmentedControl options={[{ id: 1, label: '1×' }, { id: 2, label: '2×' }, { id: 4, label: '4×' }]} value={zoom} onChange={setZoom} small />
             )}
           </div>
+
+          {/* Which spot the zoom is pointed at. Only meaningful once zoomed
+              in — at 1× the whole sheet is framed and there's nothing to
+              aim — so it appears with the zoom rather than sitting inert.
+              Shares `activeSpot` with the keypad's spot selector, so the
+              view follows along to the next open spot as the end fills. */}
+          {mode === 'face' && isMultiSpot && zoom > 1 && (
+            <div className="px-4 pt-3 flex items-center gap-2">
+              <span className="text-xs shrink-0" style={{ color: T.textDim }}>Zoom su</span>
+              <SegmentedControl
+                options={Array.from({ length: spotCount(spotLayout) }, (_, i) => ({ id: i, label: String(i + 1) }))}
+                value={activeSpot} onChange={setActiveSpot} small />
+            </div>
+          )}
 
           <div className="px-4 pt-3">
             {mode === 'face' ? (
@@ -1785,6 +1807,7 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
                 ringClass={roundRingClass(round)}
                 spotLayout={spotLayout}
                 zoom={zoom}
+                zoomSpot={activeSpot}
                 interactive
                 onTap={handleFaceTap}
                 points={[...ghostArrows.map(a => ({ ...a, ghost: true })), ...currentEnd.arrows.map(a => ({ ...a, ghost: false }))]}
@@ -1794,7 +1817,7 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
               <div className="flex flex-col gap-3">
                 {isMultiSpot && (
                   <SegmentedControl
-                    options={[0, 1, 2].map(i => ({ id: i, label: String(i + 1) }))}
+                    options={Array.from({ length: spotCount(spotLayout) }, (_, i) => ({ id: i, label: String(i + 1) }))}
                     value={activeSpot} onChange={setActiveSpot} />
                 )}
                 <Keypad onScore={(score, isX) => handleAddArrow(score, isX, null, null, activeSpot)} />
