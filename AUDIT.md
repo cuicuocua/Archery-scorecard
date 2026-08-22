@@ -201,9 +201,11 @@ Numbers stay stable as they close; resolved ones are struck through.
    reference sections. One of them (`see "Round definitions" below`) had
    been wrong before the split and is now correct.
 
-6. **Delete `.impeccable/`?** Its single critique is dated 2026-07-28 and
-   both its P0 findings were fixed in v1.7. It reads as a list of current
-   problems that are not current. Ignored rather than deleted.
+6. ~~**Delete `.impeccable/`?**~~ **RESOLVED: deleted**, after checking
+   every finding in it against the current code. The disposition of all of
+   them is recorded in the appendix below, since the file was untracked and
+   deleting it was unrecoverable. One finding was still live and was fixed
+   rather than discarded — see the appendix.
 
 7. **The five plans' step checkboxes all read `- [ ]`** — 98 of them, none
    checked, for features that all shipped. Committed verbatim rather than
@@ -250,3 +252,47 @@ Not a conflict but worth stating: `/Users/teo/Claude/CLAUDE.md` requires one
 topic per response and forbids enumerated end-of-turn lists. This document is
 an enumerated list of everything at once, because that is what the audit
 asked for in writing. The chat replies alongside it keep to one topic.
+
+---
+
+## Appendix — `.impeccable/critique/2026-07-28T13-06-01Z__archeryscorecard-jsx.md`
+
+Deleted 2026-08-22. It was untracked, so this is the only surviving record.
+Design health score at the time: **27/40**, from a dual-agent pass (design
+review plus a detector with browser evidence). Its own deterministic
+scanner returned zero findings; the score came from the heuristic review.
+
+Every finding, checked against the code before deletion:
+
+| Finding | Status |
+|---|---|
+| **[P0]** No correction path once a set/end is confirmed — only "Reset torneo", which wipes the whole bracket | **Fixed in v1.7** — `UnitHistory`, tap a scored unit to reopen it |
+| **[P0]** No password-recovery path in `AuthGate` | **Fixed in v1.7** — `resetPasswordForEmail` + a `PASSWORD_RECOVERY` screen |
+| **[P1]** Superuser mode undiscoverable (no toggle, reachable only by an unhinted `q`) | **Deliberate, not a defect.** Hidden by design; do not "fix" |
+| **[P1]** Tournament creation is one long unpaginated scroll | **Fixed in v1.7** — 4-step wizard, mirroring `NewSessionScreen` |
+| **[P2]** Chip rows overflow with no affordance that more exists | **Fixed in v1.7** — `ScrollFadeRow` edge mask |
+| Bottom nav spans full width while content is a centred column | **Fixed** — v1.6 aligned the nav's icon row; layout revisited again in v1.19 |
+| "Finale 3°/4° posto" heading flush against the bottom nav | **Fixed in v1.7** — `pb-8` → `pb-12` |
+| `ChipSelect` renders single- and multi-select identically | **Fixed in v1.7** — checkbox glyph on multi-select rows |
+| Auth inputs rely on placeholder-only labels | **Fixed in v1.7** — `aria-label` on every auth input |
+| Clicks sometimes not registering in its automation tooling | Tool quirk, self-flagged as such. Not an app defect |
+| **Persona (Jordan):** `AuthGate` error strings don't distinguish wrong password from no-such-account from **network failure** | **Was still live. Fixed 2026-08-22** (see below) |
+| **Persona (Alex):** keyboard accelerators are desktop-only; the phone-at-the-line scorer gets none | **Open, by design.** Superuser mode is a deliberate desktop-only convenience |
+
+Its three closing questions were about the tournament side treating a
+confirmed mistake as unrecoverable while the personal side treats mistakes
+as expected. v1.7's correction path answered them.
+
+**The one that was still true.** `AuthGate`'s catch block collapsed every
+sign-in failure into "Email o password errati" — including a request that
+never reached Supabase. An archer at a range with no signal was told their
+password was wrong, which on competition morning sends them looking for the
+wrong fix. It now distinguishes the two on the absence of an HTTP status
+(`AuthRetryableFetchError` reports 0; a bare fetch failure has none) and
+says "Connessione assente" instead. Verified both ways in a browser: a
+failing fetch gives the connectivity message, and genuinely wrong
+credentials against the real Supabase still give "Email o password errati".
+
+This is the same defect class as the participant-submission bug fixed
+earlier the same day: reporting a confident, specific, wrong cause for what
+is actually a connectivity failure.

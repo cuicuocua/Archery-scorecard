@@ -1981,7 +1981,14 @@ function AuthGate() {
       // successful sign-in/sign-up fires onAuthStateChange in the root
       // component, which swaps this screen out — nothing else to do here.
     } catch (err) {
-      setError(mode === 'signup' ? 'Registrazione non riuscita. Riprova.' : 'Email o password errati.');
+      // A request that never reached Supabase carries no HTTP status
+      // (AuthRetryableFetchError uses 0, a bare fetch failure has none).
+      // Collapsing that into "wrong password" tells an archer standing at
+      // a range with no signal to doubt credentials that are fine — on
+      // competition morning, that sends them looking for the wrong fix.
+      const status = typeof err?.status === 'number' ? err.status : 0;
+      if (status === 0) setError('Connessione assente. Controlla la rete e riprova.');
+      else setError(mode === 'signup' ? 'Registrazione non riuscita. Riprova.' : 'Email o password errati.');
     } finally {
       setBusy(false);
     }
