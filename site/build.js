@@ -15,13 +15,25 @@ execSync(
   { stdio: 'inherit' }
 );
 
-execSync(
-  `npx esbuild ${path.join(__dirname, 'entry.jsx')} --bundle --minify --format=iife --jsx=automatic --outfile=${path.join(dist, 'bundle.js')}`,
-  { stdio: 'inherit' }
-);
+// Two bundles from the same component file. entry.jsx is the whole app;
+// share.jsx imports only SharedTournamentScreen, which lets esbuild drop
+// everything the spectator page never renders — recharts and its d3 tail
+// above all. Tailwind is compiled once for both, since it scans the one
+// component file either way.
+function bundle(entry, out) {
+  execSync(
+    `npx esbuild ${path.join(__dirname, entry)} --bundle --minify --format=iife --jsx=automatic --outfile=${path.join(dist, out)}`,
+    { stdio: 'inherit' }
+  );
+  const code = fs.readFileSync(path.join(dist, out), 'utf8');
+  fs.rmSync(path.join(dist, out));
+  return code;
+}
+
+const js = bundle('entry.jsx', 'bundle.js');
+const shareJs = bundle('share.jsx', 'share-bundle.js');
 
 const css = fs.readFileSync(path.join(dist, 'tailwind-output.css'), 'utf8');
-const js = fs.readFileSync(path.join(dist, 'bundle.js'), 'utf8');
 
 // Same target-face glyph used for the favicon, reused as the PWA icon too
 // so the installed app matches the browser tab. SVG-only, no rasterized
@@ -44,30 +56,36 @@ const manifest = {
 };
 const manifestHref = `data:application/manifest+json,${encodeURIComponent(JSON.stringify(manifest))}`;
 
-const html = `<!doctype html>
+// `installable` gates the PWA machinery: only the organizer's app is meant
+// to be added to a home screen. Handing a spectator a manifest would offer
+// them an install of a page that shows one tournament.
+const page = (script, { installable }) => `<!doctype html>
 <html lang="it">
 <head>
 <meta charset="utf-8">
 <title>Arcieri Senesi — Scorecard</title>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#14161A">
-<meta name="apple-mobile-web-app-capable" content="yes">
+${installable ? `<meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="manifest" href="${manifestHref}">
+<link rel="manifest" href="${manifestHref}">` : ''}
 <link rel="icon" href="data:image/svg+xml,${iconSvg}">
 <style>${css}
 html,body{margin:0;padding:0;background:#14161A;}</style>
 </head>
 <body>
 <div id="root"></div>
-<script>${js}</script>
+<script>${script}</script>
 </body>
 </html>
 `;
 
+const html = page(js, { installable: true });
+const shareHtml = page(shareJs, { installable: false });
+
 fs.writeFileSync(path.join(dist, 'index.html'), html);
+fs.writeFileSync(path.join(dist, 'share.html'), shareHtml);
 fs.rmSync(path.join(dist, 'tailwind-output.css'));
-fs.rmSync(path.join(dist, 'bundle.js'));
 
 // Cache name gets a fresh version stamp on every build, so the service
 // worker's `activate` handler always purges the previous deploy's cached
@@ -77,3 +95,4 @@ const swSource = fs.readFileSync(path.join(__dirname, 'sw.js'), 'utf8')
 fs.writeFileSync(path.join(dist, 'sw.js'), swSource);
 
 console.log('Built site/dist/index.html (' + (html.length / 1024).toFixed(0) + ' KB)');
+console.log('Built site/dist/share.html  (' + (shareHtml.length / 1024).toFixed(0) + ' KB — public spectator page)');

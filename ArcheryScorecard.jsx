@@ -5974,7 +5974,14 @@ function ShareTournamentControl({ tournament, onSetShareToken }) {
   const handleCopy = () => {
     const token = tournament.shareToken || crypto.randomUUID();
     if (!tournament.shareToken) onSetShareToken(token);
-    const url = `${window.location.origin}${window.location.pathname}?share=${token}`;
+    // share.html is the stripped spectator build (see site/build.js): the
+    // same screen without the personal scorecard or its charting library
+    // behind it, ~400 KB instead of ~930 KB on a range with one bar of
+    // signal. Resolved relative to the current document so it works from
+    // both `/app/` and `/app/index.html`. index.html still handles
+    // ?share= itself, so links copied before this change keep working —
+    // they just download more than they need to.
+    const url = `${new URL('share.html', window.location.href).href}?share=${token}`;
     navigator.clipboard.writeText(url);
     setCopied(true);
   };
