@@ -6249,6 +6249,7 @@ function ParticipantAccess({ tournament, token, onSubmitted }) {
   const [submitted, setSubmitted] = useState(false);
   const [sendFailed, setSendFailed] = useState(false);
   const markerAtSubmitRef = useRef(null);
+  const resetForMarkerRef = useRef(null);
   // MatchScreen's onComplete fires after EVERY set, not just the final
   // one (same as it does for the organizer's own scoring, where each call
   // round-trips through applyMatchResult and re-renders with the updated
@@ -6362,6 +6363,16 @@ function ParticipantAccess({ tournament, token, onSubmitted }) {
 
   if (ref && !alreadyPending && (!submitted || discarded)) {
     const resolved = resolveMatchRef(tournament, ref);
+    // Discovering a discard clears the match that was thrown away — once,
+    // keyed on the marker. Clearing it on every render instead would wipe
+    // each set the moment it was confirmed (confirming calls setLiveMatch,
+    // which re-renders while the banner is still up), so the archer could
+    // never get past set 1 of the re-entry they are being asked for.
+    if (discarded && resetForMarkerRef.current !== marker) {
+      resetForMarkerRef.current = marker;
+      if (liveMatch) setLiveMatch(null);
+      if (submitted) setSubmitted(false);
+    }
     return (
       <div className="flex flex-col gap-2">
         {discarded && (
@@ -6369,7 +6380,7 @@ function ParticipantAccess({ tournament, token, onSubmitted }) {
             I punteggi inviati dai due arcieri non coincidevano, quindi <strong style={{ color: T.red }}>nessuno dei due è stato registrato</strong>. Confrontate le frecce fra voi e reinserite il turno.
           </div>
         )}
-        <MatchScreen match={discarded ? resolved.match : (liveMatch || resolved.match)} title={resolved.title} formatId={tournament.formatId} keyboardScoring={false}
+        <MatchScreen match={liveMatch || resolved.match} title={resolved.title} formatId={tournament.formatId} keyboardScoring={false}
           onBack={() => { setSession(null); setLiveMatch(null); }}
           onComplete={(updatedMatch) => handleComplete(updatedMatch, matchKey)} />
       </div>
