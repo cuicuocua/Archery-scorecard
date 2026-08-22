@@ -5165,6 +5165,17 @@ function rebuildMatchFromUnits(match, formatDef, units) {
   return m;
 }
 
+// Written into pendingSubmissions[matchKey] in place of the two
+// submissions when reconciliation throws them away — either because the
+// arrows disagreed or because they wouldn't replay onto the bracket. The
+// participant page reads it to explain why it's asking for the score
+// again; without it, a discarded submission is indistinguishable from
+// never having sent one, and both archers' phones still say "inviato".
+// Underscore-prefixed so it can never collide with a participant id
+// (uid() emits `id_...`), since the SQL function merges new submissions
+// into the same object by participant id.
+const SUBMISSION_MISMATCH_KEY = '__mismatch';
+
 function unitsMatch(unitsA, unitsB) {
   if (!Array.isArray(unitsA) || !Array.isArray(unitsB) || unitsA.length !== unitsB.length) return false;
   const sortNums = arr => [...(arr || [])].sort((x, y) => x - y);
@@ -5174,6 +5185,41 @@ function unitsMatch(unitsA, unitsB) {
     return JSON.stringify(sortNums(ua.arrowsA)) === JSON.stringify(sortNums(ub.arrowsA))
         && JSON.stringify(sortNums(ua.arrowsB)) === JSON.stringify(sortNums(ub.arrowsB));
   });
+}
+
+// The decision half of the participant-submission reconciliation: given a
+// tournament and the pendingSubmissions blob just read back from the
+// server, work out what the bracket and that blob should become. Pure, and
+// deliberately separate from the effect that polls for it — this is the
+// only path by which someone who is not the organizer can move the
+// bracket, and it was previously twenty lines buried in a functional
+// updater where nothing could reach it.
+function reconcilePendingSubmissions(tournament, remotePending, now = new Date().toISOString()) {
+  let next = tournament;
+  const pending = { ...remotePending };
+  for (const [matchKey, submissions] of Object.entries(remotePending)) {
+    const ids = Object.keys(submissions).filter(id => id !== SUBMISSION_MISMATCH_KEY);
+    if (ids.length < 2) continue; // only one side in so far — nothing to reconcile yet
+    const ref = parseRefKey(matchKey);
+    if (!isRefPlayable(next, ref)) { delete pending[matchKey]; continue; }
+    const [subA, subB] = ids.map(id => submissions[id].updatedMatch);
+    let applied = false;
+    if (unitsMatch(subA?.units, subB?.units)) {
+      // Replay the agreed arrows onto the bracket's own match rather than
+      // applying the object a participant sent — see rebuildMatchFromUnits.
+      const rebuilt = rebuildMatchFromUnits(resolveMatchRef(next, ref).match, matchFormatDef(next.formatId), subA.units);
+      if (rebuilt) { next = applyMatchResult(next, ref, rebuilt); applied = true; }
+    }
+    // Applied: the submissions have done their job and go. Not applied:
+    // the arrows disagreed, or agreed but wouldn't replay — either way
+    // both are discarded, but a marker replaces them so the participant
+    // page can say why it wants the score again. Dropping them with no
+    // trace is what let two archers walk away believing a match was
+    // recorded when nothing was.
+    if (applied) delete pending[matchKey];
+    else pending[matchKey] = { [SUBMISSION_MISMATCH_KEY]: now };
+  }
+  return { ...next, pendingSubmissions: pending };
 }
 
 // The three status sets every card, bracket cell and playability check reads.
@@ -6194,6 +6240,8 @@ function ParticipantAccess({ tournament, token, onSubmitted }) {
   const [error, setError] = useState('');
   const [session, setSession] = useState(null); // { participantId, email, name }
   const [submitted, setSubmitted] = useState(false);
+  const [sendFailed, setSendFailed] = useState(false);
+  const markerAtSubmitRef = useRef(null);
   // MatchScreen's onComplete fires after EVERY set, not just the final
   // one (same as it does for the organizer's own scoring, where each call
   // round-trips through applyMatchResult and re-renders with the updated
@@ -6217,13 +6265,26 @@ function ParticipantAccess({ tournament, token, onSubmitted }) {
     setSession({ participantId: data[0].participant_id, email: email.trim(), name: name.trim() });
   }
 
+  // This is the one write in the app with no outbox behind it: a
+  // participant has no auth session, so there's no per-account queue to
+  // retry from (see the outbox note in README). That makes checking the
+  // RPC's error mandatory rather than optional — the archer is standing at
+  // an outdoor range on marginal signal, and "inviato" on their phone is
+  // the only evidence they have that the score left the device. It used to
+  // be shown unconditionally.
   async function handleComplete(updatedMatch, matchKey) {
     setLiveMatch(updatedMatch);
     if (updatedMatch.status !== 'completed') return; // more sets to go
-    await supabase.rpc('submit_participant_match', {
+    const markerNow = tournament.pendingSubmissions?.[matchKey]?.[SUBMISSION_MISMATCH_KEY] || null;
+    setBusy(true);
+    const { error: rpcError } = await supabase.rpc('submit_participant_match', {
       p_token: token, p_email: session.email, p_name: session.name,
       p_match_key: matchKey, p_submission: { updatedMatch, submittedAt: new Date().toISOString() },
     });
+    setBusy(false);
+    if (rpcError) { setSendFailed(true); return; }
+    markerAtSubmitRef.current = markerNow;
+    setSendFailed(false);
     setSubmitted(true);
     onSubmitted?.();
   }
@@ -6263,14 +6324,48 @@ function ParticipantAccess({ tournament, token, onSubmitted }) {
   const candidateRefs = flatMatchRefs(tournament).filter(r => r.kind !== 'threeFinal');
   const ref = candidateRefs.find(r => isRefPlayable(tournament, r) && matchRefHasParticipant(tournament, r, session.participantId));
   const matchKey = ref ? refKey(ref) : null;
-  const alreadyPending = matchKey && tournament.pendingSubmissions?.[matchKey]?.[session.participantId];
+  const pendingForMatch = matchKey ? tournament.pendingSubmissions?.[matchKey] : null;
+  const alreadyPending = !!pendingForMatch?.[session.participantId];
+  const marker = pendingForMatch?.[SUBMISSION_MISMATCH_KEY] || null;
+  // A marker that differs from the one standing when this archer last sent
+  // is a mismatch that happened AFTER their send — so it discarded it.
+  // Same marker means it's the one that asked them to re-enter, which
+  // their pending submission is already the answer to. Without this
+  // distinction the page either lies for a poll interval or nags for one.
+  const discarded = !!marker && !alreadyPending && marker !== markerAtSubmitRef.current;
 
-  if (ref && !alreadyPending && !submitted) {
+  // The RPC failed and nothing reached Postgres. The scored match is still
+  // in local state, so offer it back rather than dropping it — there is no
+  // outbox behind this write to pick it up later.
+  if (sendFailed && liveMatch && matchKey) {
+    return (
+      <div className="rounded-2xl p-3 flex flex-col gap-2 items-center text-center" style={{ background: T.surfaceAlt, border: `1px solid ${T.red}` }}>
+        <div className="text-sm font-semibold" style={{ color: T.red }}>Invio non riuscito</div>
+        <div className="text-xs" style={{ color: T.textDim }}>
+          Il punteggio è ancora su questo telefono e non è stato registrato. Controlla la connessione e riprova.
+        </div>
+        <button onClick={() => handleComplete(liveMatch, matchKey)} disabled={busy}
+          className="rounded-xl px-4 py-2.5 font-semibold min-h-11 disabled:opacity-40"
+          style={{ background: T.gold, color: GOLD_TEXT }}>
+          {busy ? 'Invio…' : 'Riprova'}
+        </button>
+      </div>
+    );
+  }
+
+  if (ref && !alreadyPending && (!submitted || discarded)) {
     const resolved = resolveMatchRef(tournament, ref);
     return (
-      <MatchScreen match={liveMatch || resolved.match} title={resolved.title} formatId={tournament.formatId} keyboardScoring={false}
-        onBack={() => { setSession(null); setLiveMatch(null); }}
-        onComplete={(updatedMatch) => handleComplete(updatedMatch, matchKey)} />
+      <div className="flex flex-col gap-2">
+        {discarded && (
+          <div className="rounded-2xl p-3 text-xs" style={{ background: T.surfaceAlt, border: `1px solid ${T.red}`, color: T.textDim }}>
+            I punteggi inviati dai due arcieri non coincidevano, quindi <strong style={{ color: T.red }}>nessuno dei due è stato registrato</strong>. Confrontate le frecce fra voi e reinserite il turno.
+          </div>
+        )}
+        <MatchScreen match={discarded ? resolved.match : (liveMatch || resolved.match)} title={resolved.title} formatId={tournament.formatId} keyboardScoring={false}
+          onBack={() => { setSession(null); setLiveMatch(null); }}
+          onComplete={(updatedMatch) => handleComplete(updatedMatch, matchKey)} />
+      </div>
     );
   }
 
@@ -7157,27 +7252,7 @@ export default function ArcheryScorecard() {
       lastPendingJsonRef.current = remoteJson;
       if (Object.keys(remotePending).length === 0) return;
 
-      updateTournament(activeTournament.id, t => {
-        let next = t;
-        const pending = { ...remotePending };
-        for (const [matchKey, submissions] of Object.entries(remotePending)) {
-          const ids = Object.keys(submissions);
-          if (ids.length < 2) continue; // only one side in so far — nothing to reconcile yet
-          const ref = parseRefKey(matchKey);
-          if (!isRefPlayable(next, ref)) { delete pending[matchKey]; continue; }
-          const [subA, subB] = ids.map(id => submissions[id].updatedMatch);
-          if (unitsMatch(subA?.units, subB?.units)) {
-            // Replay the agreed arrows onto the bracket's own match rather
-            // than applying the object a participant sent — see
-            // rebuildMatchFromUnits. A submission that won't replay is
-            // dropped along with the mismatched ones below.
-            const rebuilt = rebuildMatchFromUnits(resolveMatchRef(next, ref).match, matchFormatDef(next.formatId), subA.units);
-            if (rebuilt) next = applyMatchResult(next, ref, rebuilt);
-          }
-          delete pending[matchKey]; // resolved (applied) or mismatched (discarded) either way
-        }
-        return { ...next, pendingSubmissions: pending };
-      });
+      updateTournament(activeTournament.id, t => reconcilePendingSubmissions(t, remotePending));
     }
 
     reconcile();
@@ -7409,5 +7484,5 @@ export {
   nextPlayableRef, applyMatchResult, tournamentIsComplete, tournamentPodium,
   tournamentHasStarted, winnerOf, loserOf,
   // tournaments: participant self-scoring
-  unitsMatch, rebuildMatchFromUnits,
+  unitsMatch, rebuildMatchFromUnits, reconcilePendingSubmissions, SUBMISSION_MISMATCH_KEY,
 };
