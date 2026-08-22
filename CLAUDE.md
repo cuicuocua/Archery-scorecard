@@ -17,6 +17,17 @@ Build with `npm run build`.
 - Round definitions are assumptions to verify against FITARCO / World Archery rules. Cite the source when changing one.
 - `@supabase/realtime-js` is aliased to a stub at build time (`site/realtime-stub.js`) — supabase-js builds a client for it unconditionally and this app has no realtime call sites by design. Restore the real package before trying to use channels; `channel()` throws to say so.
 
+## Tests
+
+`npm test` runs everything under `test/` with `node --test`. Two kinds live there:
+
+- **Pure logic** (`bracket*`, `analysis`, `match-scoring`, `offline-outbox`, …) — loaded through `test/load.cjs`, which transpiles the component file and reads the test-only export block at the bottom of it. Fast, and where most coverage is.
+- **Rendered components** (`*-ui.test.js`) — loaded through `test/dom.cjs`, which stands up jsdom, mounts real components, and fakes only the network. Require `dom.cjs`, never `load.cjs`, from these: the DOM has to exist before `react-dom` is imported.
+
+The `--test-force-exit` in the test script is load-bearing, not decoration: jsdom and React's scheduler each hold a handle that outlives the last assertion, so without it the suite passes and then hangs forever. In CI that's a stuck job rather than a red build.
+
+These exist because the component layer shipped three silent failures in one day that the pure-logic suite could not see — a submit reporting success after a failed RPC, a re-entry screen wiping every set confirmed into it, and a sign-in blaming the password for a dead network. When adding a UI test, check it fails against the unfixed code before trusting it.
+
 ## Knowledge graph
 
 This project's graph lives in `archery-scorecard/graphify-out/` (gitignored) — that's what `graphify update .` writes when run from here. There's also a workspace-wide graph at `/Users/teo/Claude/graphify-out/`, but it is a **separate, older** artifact covering every sibling project; `graphify update .` never refreshes it. Don't confuse the two.

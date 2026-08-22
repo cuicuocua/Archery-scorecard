@@ -1055,3 +1055,34 @@ TypeScript, and splitting the component file. The render-cost concerns
 were unmeasured, and at this data scale a network poll costs three orders
 of magnitude more than any re-render. The app's own code is 143 KB of what
 it ships — it was never the app that was heavy.
+
+## v1.24 additions — Tests that can see the screen
+
+No behaviour change. Closes the coverage gap that let three silent failures
+ship from the component layer in a single day.
+
+- **`test/dom.cjs`** stands up jsdom, mounts real components, and fakes only
+  the network — so a test can drive the same flow a competitor drives from
+  their phone. `jsdom` is the one new dependency, dev-only; it never enters
+  a bundle (the build follows `entry.jsx`/`share.jsx`, which don't import
+  it, and both pages are byte-for-byte unchanged).
+- **`test/participant-ui.test.js`** covers the path that broke twice: a
+  submit whose RPC never landed must say *Invio non riuscito* and offer the
+  scored match back rather than report *inviato*; **Riprova** must re-send
+  that same completed match once signal returns; a discarded mismatch must
+  explain itself; and — the regression — each set confirmed during a
+  re-entry must survive the re-render that confirming triggers.
+- **`test/auth-ui.test.js`** covers `AuthGate`: a request that never reached
+  Supabase reports the connection, a genuine 400 still reports the
+  credentials.
+- **Each test was checked against the unfixed code.** Reverting each of the
+  three fixes in turn makes exactly the corresponding test fail. A test that
+  only agrees with the current code proves nothing — the pure-logic suite
+  was passing 214 green the entire time the re-entry screen was unusable.
+- `npm test` now runs with `--test-force-exit`. jsdom holds a timer from
+  construction and React's scheduler holds a MessageChannel; neither is
+  reachable from this codebase, and without the flag the suite passes and
+  then hangs, which in CI is a stuck job rather than a failure.
+
+221 tests. Still no coverage of the tournament organizer's own screens —
+this covers the flows that actually failed, not all 64 components.

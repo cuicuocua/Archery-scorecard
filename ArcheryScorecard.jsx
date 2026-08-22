@@ -7510,4 +7510,6 @@ export {
   tournamentHasStarted, winnerOf, loserOf,
   // tournaments: participant self-scoring
   unitsMatch, rebuildMatchFromUnits, reconcilePendingSubmissions, SUBMISSION_MISMATCH_KEY,
+  // components, for the DOM tests in test/ (see test/dom.cjs)
+  AuthGate,
 };
