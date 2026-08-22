@@ -184,13 +184,13 @@ Numbers stay stable as they close; resolved ones are struck through.
    Ignoring `imports/` stands. The five committed plans were re-checked
    against that: no real participant names, no personal data, no secrets.
 
-4. **Should the deploy branch be renamed?** The default branch of a public
-   repository, and the only branch `deploy-pages.yml` watches, is
-   `claude/arcieri-senesi-scorecard-52a25z`. **Do this with GitHub's own
-   branch-rename** (`gh api -X POST repos/cuicuocua/Archery-scorecard/branches/<old>/rename`),
-   which moves the remote branch, the default pointer and any open PRs in
-   one server-side operation — not the local `git branch -m` + push I
-   proposed earlier, which is what nearly overwrote the diverged commits.
+4. ~~**Should the deploy branch be renamed?**~~ **RESOLVED: renamed to
+   `main`.** Done with GitHub's server-side branch-rename API, which moves
+   the remote branch, the default pointer and any open PRs in one
+   operation — not the local `git branch -m` + push proposed earlier, which
+   is what nearly overwrote the diverged commits. `deploy-pages.yml`'s
+   `branches:` list moved in the same push, since the rename alone would
+   have left the workflow watching a branch that no longer exists.
 
 5. **Split the README?** Reference stays in `README.md`; the nineteen
    `v1.x additions` sections move to `CHANGELOG.md` untouched. Yes/no.
