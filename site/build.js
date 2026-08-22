@@ -20,9 +20,16 @@ execSync(
 // everything the spectator page never renders — recharts and its d3 tail
 // above all. Tailwind is compiled once for both, since it scans the one
 // component file either way.
+// @supabase/realtime-js is aliased away: supabase-js builds a
+// RealtimeClient whether or not anyone wants one, and this app never does
+// (see site/realtime-stub.js for why it never will). That is 55 KB of
+// websocket client and its phoenix dependency, in every bundle, for every
+// user.
+const REALTIME_ALIAS = `--alias:@supabase/realtime-js=${path.join(__dirname, 'realtime-stub.js')}`;
+
 function bundle(entry, out) {
   execSync(
-    `npx esbuild ${path.join(__dirname, entry)} --bundle --minify --format=iife --jsx=automatic --outfile=${path.join(dist, out)}`,
+    `npx esbuild ${path.join(__dirname, entry)} --bundle --minify --format=iife --jsx=automatic ${REALTIME_ALIAS} --outfile=${path.join(dist, out)}`,
     { stdio: 'inherit' }
   );
   const code = fs.readFileSync(path.join(dist, out), 'utf8');
