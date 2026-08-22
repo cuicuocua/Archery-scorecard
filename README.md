@@ -4,11 +4,12 @@
 lucide-react + `@supabase/supabase-js`, Tailwind core utilities only).
 It's built and deployed automatically to GitHub Pages by
 `.github/workflows/deploy-pages.yml` on every push to this branch — see
-`site/` for the build tooling (`entry.jsx` mounts the component,
-`build.js` compiles Tailwind + bundles everything with esbuild into one
-`site/dist/index.html`). `ArcheryScorecard.jsx` itself is the only file
-that matters for the app's behavior; everything under `site/` is just
-plumbing to publish it as a static page.
+`site/` for the build tooling. `build.js` compiles Tailwind and bundles
+with esbuild into two self-contained pages: `site/dist/index.html` (the
+app, from `entry.jsx`) and `site/dist/share.html` (the public spectator
+page, from `share.jsx` — see v1.23 below). `ArcheryScorecard.jsx` itself
+is the only file that matters for the app's behavior; everything under
+`site/` is just plumbing to publish it as static pages.
 
 Data lives in Supabase (Postgres + row-level security) — sign in with an
 email + password and your sessions follow you to any device. Schema in
@@ -21,7 +22,7 @@ below), so Supabase stays the source of truth but a save made without
 connectivity isn't lost. The one write that doesn't is a participant
 submitting their own match score from a public share link — they have no
 account and no outbox, so that one needs connectivity at the moment they
-send it.
+send it, and says so plainly when it doesn't have it (see v1.23).
 
 The app installs as an offline-capable PWA (`site/sw.js` — see v1.18 below):
 the app shell still opens with no connectivity, and cross-device sync is
