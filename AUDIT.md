@@ -34,8 +34,9 @@ you to run it from the wrong directory.
 
 Two previous decisions worth revisiting, neither urgent, both questions
 below rather than changes: the default branch of a public repository is
-named `claude/arcieri-senesi-scorecard-52a25z`, and the README is now ~880
-lines doing two unrelated jobs.
+named `claude/arcieri-senesi-scorecard-52a25z`, and the README is ~880
+lines doing two unrelated jobs. (Both since resolved — see questions 4
+and 5.)
 
 ## 2. Tooling used
 
@@ -146,17 +147,16 @@ correctness — not worth risking the deploy to verify blind.
 reason, and the auth/RPC paths have no browser-verifiable coverage. Worth
 doing next time someone is already testing a signed-in flow end to end.
 
-**Splitting the README.** ~880 lines doing two jobs: an architecture
-reference at the top, then nineteen `v1.x additions` sections that are a
-changelog. The reference part is what anyone needs and it is buried above
-800 lines of history. *Blocker:* a rewrite of the primary document, and the
-split point is a judgement call — question 5.
+~~**Splitting the README.**~~ **Since done** — see question 5. The blocker
+named here (that the split point was a judgement call) turned out to be the
+easy part; the actual work was the eight cross-references spanning the seam,
+which a line-based grep missed because two of them wrapped across a newline.
 
-**Bundle size on the public share page.** One 933 KB `index.html` reaches
-every spectator following a share link, including recharts, the whole
-personal-scorecard app, and `@supabase/supabase-js`. *Blocker:* fixing it
-means a second entry point and a second HTML output, which changes the
-deployment shape. Feature-sized, not organizational.
+~~**Bundle size on the public share page.**~~ **Since done.** The blocker
+named here was wrong: it assumed a second entry point meant restructuring
+the component file. It did not — `site/share.jsx` imports only
+`SharedTournamentScreen` and esbuild drops the rest, no code moved.
+933 KB → 344 KB for spectators. Measuring first would have shown that.
 
 **Moving `test/bracket-engine.test.js`'s `playThrough` helper into
 `test/load.cjs`.** Considered and rejected — one consumer, and the loop is
@@ -192,8 +192,14 @@ Numbers stay stable as they close; resolved ones are struck through.
    `branches:` list moved in the same push, since the rename alone would
    have left the workflow watching a branch that no longer exists.
 
-5. **Split the README?** Reference stays in `README.md`; the nineteen
-   `v1.x additions` sections move to `CHANGELOG.md` untouched. Yes/no.
+5. ~~**Split the README?**~~ **RESOLVED: split.** `README.md` keeps the
+   reference (98 lines); the version sections moved verbatim to
+   `CHANGELOG.md` (1,058 lines), kept oldest-first because entries refer to
+   each other directionally and reversing would have broken every one.
+   Eight cross-references had to be repaired across the seam — four
+   pointing forward into the version history, four pointing back at the
+   reference sections. One of them (`see "Round definitions" below`) had
+   been wrong before the split and is now correct.
 
 6. **Delete `.impeccable/`?** Its single critique is dated 2026-07-28 and
    both its P0 findings were fixed in v1.7. It reads as a list of current

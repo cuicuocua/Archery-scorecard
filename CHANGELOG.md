@@ -1,0 +1,1057 @@
+# Changelog — Arcieri Senesi Scorecard
+
+What changed in each version, and why. Split out of `README.md`, which had
+grown to ~880 lines with the architecture and data-model reference anyone
+actually needs buried above 800 lines of history. See `README.md` for that
+reference; this file is the history alone.
+
+Ordered **oldest first** — the newest version is at the bottom. That's the
+opposite of the usual changelog convention, and deliberate: entries here
+refer forward and backward to each other ("Reverted in v1.17 — see below"),
+and reversing the order would have silently broken every one of them.
+
+## v1.1 additions
+
+- **Zoom recentring**: at 2×/4× on the shooting face, the crop followed the
+  centroid of the last 3 volée instead of always centring on the bullseye,
+  so a group that's drifted off-centre stayed visible and tappable at high
+  zoom. Reverted in v1.17 — see below.
+- **Group-size trace**: the live crosshair now draws a dashed circle at
+  the group's actual radius (furthest arrow from centroid), not just a
+  centre point. It renders behind the arrow marks so a tight group is
+  never hidden under the crosshair itself.
+- **Arco + tipo (gara/allenamento)**: every session records an optional
+  bow (`ricurvo`/`compound`/`nudo`) and a required `sessionType`
+  (`allenamento`/`gara`, defaults to allenamento). Personal-best and pace
+  comparisons are scoped by round + arco + tipo — a gara score and an
+  allenamento score are different achievements and never mixed. Storico
+  filters on all three dimensions independently.
+- **Custom sessions**: distance/face/arrows-per-end/ends are editable at
+  session start via "Personalizzata", available regardless of tipo.
+- **Analisi avanzata**: unlocks once a round+arco+tipo combination has at
+  least `MIN_SESSIONS_FOR_DEEP_ANALYSIS` (5) completed sessions —
+  dispersion-over-time, horizontal/vertical bias-over-time, and a score
+  distribution histogram.
+- **Condizioni**: after finishing a round (and editable later from a
+  session's detail view), pick wind / time of day / sun position
+  (single-select) and other factors like rain or fatigue (multi-select)
+  — always by choice, never free text, so it stays analyzable. Feeds a
+  "media per condizioni" chart in Analisi avanzata once you have data.
+
+## v1.2 additions
+
+- **Gara sociale**: a third `sessionType` alongside allenamento/gara, for
+  unofficial club competitions with made-up rules. Picking it jumps
+  straight to the "Personalizzata" round picker, since these are usually
+  improvised on the spot. Has its own personal-best bucket, like the
+  other two types.
+- **Personal-best scoping fix**: PB/pace comparisons now match on the
+  actual round snapshot (distance/face/arrows/ends), not just `roundId`
+  — two "Personalizzata" sessions with different made-up rules are not
+  the same round and were previously (incorrectly) compared as if
+  chasing the same PB.
+- **New Session is now a 4-step flow** (tipo → prova → arco → dettagli)
+  instead of one long scrolling form.
+- **Real cross-device sync**: moved persistence from browser storage to
+  Supabase, with an email + password login gate (`AuthGate`). See
+  "Data model" in README.md. (Started as an email one-time-code flow, but
+  Supabase's free email service turned out too unreliable without custom
+  SMTP — switched to password auth so login doesn't depend on email
+  delivery at all.)
+- **Importa**: the counterpart to Export, on the Storico screen — loads a
+  JSON file in the same shape `exportJson` produces (or a bare array of
+  sessions) and upserts it, so re-importing an updated file is safe.
+  Existing browser-local data from before this version is offered as a
+  one-time import prompt on first login (`findLegacyLocalSessions`).
+- **GitHub Pages deployment**: the app now has a permanent URL independent
+  of any particular conversation or session — see README.md.
+
+## v1.3 additions
+
+- **Editable session details**: the Storico detail screen now lets you
+  change a recorded session's date, tipo, and arco after the fact (not
+  just location/note as before) — useful for correcting historical
+  imports. Round parameters (distance/face/arrows/ends) stay fixed once a
+  session exists, since the recorded arrows are tied to that shape;
+  delete and re-enter if the round itself was wrong. Changing the date
+  shifts `startedAt`/`completedAt` together, preserving time-of-day and
+  the gap between them.
+
+## v1.4 additions
+
+- **Multi-distance rounds** (WA1440, WA Combined, or any club round shot
+  across several distances): logged as a single session made of multiple
+  "tappe" instead of forcing you to split it into separate sessions. Build
+  one via "Personalizzata" → "+ Aggiungi tappa" in the New Session wizard.
+  The shooting screen walks through each stage in order — the target face
+  and distance swap automatically when a stage's volée are all shot — and
+  shows a running session-wide total alongside stage-scoped stats.
+- **Personal bests are now scoped per distance, not per session**: a
+  WA1440's 70m tappa is compared against every other 70m attempt you've
+  ever logged, including standalone Targa 70m sessions — not just other
+  WA1440s. This is the whole point of the change above: previously a
+  multi-distance round couldn't exist as one session at all, so there was
+  no way to compare "just the 70m part" of anything against your real 70m
+  personal best.
+- **Storico's round filter is now built from what you've actually shot**,
+  not a fixed preset list — since a custom/multi-distance round's shape
+  isn't enumerable in advance. Selecting a distance shows every session
+  (or stage, for multi-distance ones) shot at that exact distance/face/
+  arrows/ends, with its own PB, trend, dispersion, and score-distribution
+  charts, sourced by flattening every session into per-stage records
+  (`stageEntries()`) before any of that analysis runs.
+- Sessions saved before this version (single `round`+`ends`, no `stages`)
+  keep working unchanged — see "Data model" in README.md.
+
+## v1.5 additions
+
+- **Statistiche tab**: a third bottom-nav screen with cumulative stats
+  across every completed session — total sessions/arrows/points-per-arrow/X,
+  a "frecce per colore" chart (percentage of every arrow ever shot landing
+  in each ring colour, derived from score via `ringGroupForScore` so it
+  works for keypad-entered arrows too), an overall points-per-arrow trend,
+  a personal-best-per-distance table (built on the same `stageEntries()`
+  flattening Storico uses), and a sessions-by-tipo breakdown.
+- **Analisi rapida**: every completed session now gets a short, deterministic
+  1-2 sentence takeaway (`sessionInsight()`) — no external AI call, just
+  arithmetic over your own history, so it works fully offline. First
+  sentence compares this session's points-per-arrow against your historical
+  average for the same round shape + tipo + arco (combined per stage for
+  multi-distance rounds). Second sentence surfaces whichever signal is most
+  notable — group bias, in-session fatigue (first half vs second half),
+  misses, or gold rate — omitted if nothing stands out. Shown right after
+  finishing a session and again anytime you revisit it in Storico.
+
+## v1.6 additions — Tournament manager
+
+A fourth bottom-nav tab, entirely separate from the personal scorecard: run
+a single-elimination tournament with live match scoring.
+
+- **Data model**: a tournament is `{ participants, bracketSize, rounds }`,
+  stored in its own `tournaments` table (`supabase/schema.sql`), same
+  RLS-per-user pattern as `sessions`. `rounds[0]` is the first round;
+  `buildBracket()` seeds it and every later round from `participants`
+  (already sorted best-seed-first) using the classic recursive tournament
+  seeding order (`standardSeedOrder()` — for 8 players: 1v8, 4v5, 2v7, 3v6,
+  so the top 2 seeds can't meet before the final). Byes go to the top seeds
+  automatically when the field isn't a power of 2, and resolve immediately
+  — no user action needed to advance a bye.
+- **One match engine for both formats**: individual and team matches both
+  reduce to "play a sequence of units (sets or ends), award 2 set-points to
+  the higher side each unit (1-1 if tied), first to the target set-points
+  wins, shoot-off if still tied once every unit is played" — see
+  `MATCH_FORMATS` for the three presets (Individuale: 5 sets/3 arrows/6 SP;
+  Team misto: 2 archers/side, 4 ends/2 arrows each/5 SP; A squadre: 3
+  archers/side, same end structure) and `recordUnit()`/`recordShootOff()`
+  for the engine itself. These are WA-standard assumptions — verify locally,
+  same spirit as `ROUND_TYPES`. Team formats record each end's arrows as one
+  combined list per side rather than attributing them to a specific archer
+  — a deliberate simplification.
+  - Shoot-off winner is a manual declaration (tap "Vince X"), not
+    auto-computed from arrow position — closest-to-center requires a
+    judgment call the app can't make from a keypad score. Optional score
+    entry is there for the record only.
+- **Live scoring**: `MatchScreen` reuses the same `Keypad` component the
+  personal scorecard uses. Entering a side's last arrow for a unit
+  auto-advances the active-side toggle to the other side, so the scorer
+  doesn't have to remember to switch manually between sets. A completed
+  match calls `applyMatchResult()`, which records the result and — unless
+  it was the final — propagates the winner into next round's slot via
+  `propagateWinner()`.
+- **Bracket view** defaults to a classic horizontal bracket tree
+  (`BracketTree` — connector lines computed with the standard
+  doubling-spacing algorithm, so the draw stays visually balanced at any
+  size), with a toggle to switch to a vertical round-by-round list of match
+  cards instead. The tree is horizontally scrollable rather than squeezed to
+  fit, since a multi-round bracket won't fit a phone screen at once either
+  way. Both views open the same live `MatchScreen` when you tap a playable
+  match, so you can score directly from the tree. The list view skips bye
+  matches entirely — nothing to score, nothing to decide — while the tree
+  keeps every node, since its connector-line layout depends on each bracket
+  position being present.
+- **Bulk participant entry**: "Incolla un elenco" in the tournament setup
+  screen accepts a pasted list, one participant per line, name and score in
+  either order ("Anna Rossi 600" or "600 Anna Rossi" — real scoreboards get
+  pasted both ways) and in any reasonable separator (space, comma, colon,
+  tab, dash). Lines it can't parse are reported rather than silently
+  dropped or guessed at.
+- **Target face size** is a picker over the four real WA sizes
+  (40/60/80/122cm) instead of a stepper whose increments didn't land on
+  any actual target size; the distance stepper is bounded to WA's real
+  competition range (10-90m).
+- **Editable round name**: `session.roundLabel` (the display name shown in
+  Storico/Home/Detail) is now an editable field in `SessionMetaEditor`, with
+  autocomplete suggestions from `ROUND_TYPES`. Purely cosmetic — it doesn't
+  touch the recorded round shape or affect PB/analysis grouping, which is
+  always keyed on the actual distance/face/arrows/ends, not the label — but
+  useful for renaming an imported session (e.g. "WA 70m" as printed on an
+  old scoresheet) to match the label you'd normally recognize it by
+  ("Targa 70m").
+- **Manual reload button** on the Home header — a static page cached by the
+  browser doesn't always pick up a new deploy on its own.
+- **Responsive layout**: every screen's container scales from phone width
+  up through `sm`/`lg` breakpoints instead of staying pinned at a fixed
+  mobile width with empty margins on a tablet or desktop; the bottom nav's
+  background stays full-bleed but its icon row aligns to the same centered
+  column as the content above it.
+- **Round shape shown next to "Nome prova"** ("70m · 122cm", or each
+  stage's shape joined with `+` for a multi-distance session) so you can
+  see exactly what you're naming — a session's actual shape drives every
+  bit of grouping/PB logic, the label never does, so this is what actually
+  matters when deciding what to call something.
+- **Save errors are surfaced, never silent**: session/tournament writes to
+  Supabase used to fail with only a `console.error`, so a tournament that
+  couldn't save (e.g. the `tournaments` table not existing yet) looked fine
+  until the next reload wiped it. A dismissible red banner now shows
+  whenever a save/delete fails, on every screen.
+- **Forfeit / walkover**: any playable match (`WithdrawalControl` in
+  `MatchScreen`) can be declared a walkover — pick who withdrew, the other
+  side is awarded the win and advances exactly like a normal result
+  (`forfeitMatch()`), tagged "W.O." in the bracket. Works at any point in
+  the tournament, not just round 1.
+- **Edit participants & redraw bracket**: while nothing in the draw has
+  been played or forfeited yet (`tournamentHasStarted()`), a "Modifica
+  partecipanti" button on the bracket screen reopens the participant list
+  (add/remove/bulk-paste) and regenerates the whole seeding from scratch
+  (`rebuildTournamentBracket()`) — for a no-show discovered before the
+  first match, or a late arrival. The same screen also lets the final
+  format itself be changed at this point, not just at creation — saving
+  passes both the edited participant list and the chosen format through to
+  the same rebuild. The button disappears once any match has a real result
+  (a completed Lancaster wildcard play-in counts, even if match1 itself
+  hasn't been played yet), since redrawing after that would silently
+  discard it.
+- **Three ways to decide the podium**, chosen per tournament at creation
+  (`FINAL_FORMATS`, stored as `tournament.finalFormat`):
+  - **Finale classica** (default): normal semifinal + final, plus an
+    independent bronze match between the two semifinal losers — the app
+    previously had no bronze match at all, losers were just eliminated.
+  - **Finale a 3**: the semifinal round is still played normally; its two
+    losers play a preliminary decider, and the winner joins the two
+    semifinal winners for a genuine 3-way final. All three shoot every end
+    simultaneously — the end's top score gets 2 set-points, a 2- or 3-way
+    tie for the top score splits 1 point each — first to 6 wins gold
+    outright (`record3WayUnit()`); a tie for the lead once ends run out
+    goes to a 3-way shoot-off among just the tied contenders
+    (`record3WayShootOff()`). Once gold's decided, the other two play on
+    for silver/bronze as an ordinary match, seeded with the exact
+    set-points they already had against each other in the 3-way stage
+    (`startThreeWayRunoff()`) — reuses `MatchScreen` unchanged, including
+    forfeit.
+  - **Finale Lancaster**: skips the bracket's semifinal and final rounds
+    entirely. Once the field is down to its last 4, they're re-ranked by
+    their original qualification seeding score — not by how the bracket
+    happened to pair them, since upsets can put a lower seed through — into
+    a sequential ladder: 4th-seed vs 3rd-seed, winner vs 2nd-seed, winner
+    vs 1st-seed for gold (`seedLancasterLadder()`), three ordinary matches
+    chained together. Before that first match is played, a collapsed
+    "Ripescaggio" control lets the organizer bring one already-eliminated
+    competitor back as a wildcard, challenging the 4th seed for their ladder
+    spot in an extra play-in match (`setLancasterWildcard()`) — anyone not
+    currently one of the 4 semifinalists qualifies, since Lancaster's final
+    stage is only ever reached via a strict single-elimination bracket, so
+    everyone else has necessarily already lost. The play-in's winner feeds
+    match1 exactly the way match1's winner feeds match2 — one extra optional
+    link at the front of the same chain. Reversible ("Annulla ripescaggio")
+    right up until the play-in itself is scored.
+  - All three reduce to the existing 2-way match engine except the 3-way
+    final's own pre-gold phase, which is the one genuinely new piece
+    (`ThreeWayFinalScreen`). Tournaments saved before this feature default
+    to "Finale classica" with no bronze match (`normalizeTournament()`),
+    exactly how they behaved before.
+- **Reset tournament**: once a tournament has started (`tournamentHasStarted()`),
+  a "Reset torneo" button on the bracket screen expands into a small panel
+  (tap to open, same collapsed-by-default pattern as the withdrawal
+  control) offering the final-format picker — defaulted to the tournament's
+  current format — plus an explicit confirm, before wiping every match
+  result and redrawing the bracket from scratch against the exact same
+  seeded participant list (`resetTournamentBracket()` — same rebuild the
+  edit-participants flow uses, just fed the tournament's own current
+  `participants` instead of an edited list). A do-over, not a redraw: who's
+  entered and how they're seeded doesn't change, only the results played so
+  far are discarded (confirming without touching the pre-selected format
+  reproduces a plain reset). Available at any point, including after the
+  tournament's finished, unlike editing participants which locks once play
+  begins — this is the only place the final format can be changed once a
+  result already exists, since a reset already wipes them anyway.
+- **Superuser mode** (desktop only): pressing `q` toggles a mode where
+  opening a match docks its scoring card in a side panel next to the
+  bracket instead of navigating full-screen over it. No extra plumbing was
+  needed for the bracket to update live as each end is saved — match
+  updates already flow straight back into tournament state after every
+  unit via `applyMatchResult()` (see "Live scoring" above), so the bracket
+  card for that match simply re-renders with the new score as you score it.
+  Gated to real desktop input (`pointer: fine` + `innerWidth >= 1024`) so a
+  stray "q" while typing on a touch device never triggers it, and ignored
+  while focus is in a text field. Toggling mid-match folds/unfolds the
+  split view without losing your place — turning it on while a match is
+  open full-screen brings the bracket back on screen with that match now
+  docked beside it; turning it off pops the docked match back to
+  full-screen. While it's on, the keyboard also mirrors the Keypad
+  (`keyToScore()`): digits `1`-`9`, `0` for a plain 10, `x` for an X, `m`
+  for a miss, `Enter` to confirm a set/end (only once both sides have
+  enough arrows, same as the button), `Backspace` to undo the active
+  side's last arrow, `←`/`→` to switch the active side (cycles 0/1/2 in the
+  3-way final, restricted to the live contenders during a shoot-off). While
+  browsing the bracket, `↑`/`↓` move a cursor through the playable matches
+  (highlighted with a ring) and `Enter` opens whichever one it's on, docking
+  it exactly like a click would — a full round can be scored without
+  touching the mouse. The scoring digits/`x`/`m` stay undocumented, but
+  every other shortcut (`↑↓`, `←→`, `Invio`, `⌫`) is listed in a banner
+  across the top of the page while the mode is on — in normal document flow
+  rather than a fixed overlay, so it never sits on top of the bracket cards
+  it's describing. Declaring a shoot-off winner still requires a manual tap, keyboard
+  or not, since that's a judgment call. Finishing a match goes one step
+  further than closing it: "Torna al tabellone" skips the bracket entirely
+  and docks whatever's next to score (`nextPlayableRef()`, same ordering the
+  arrow-key cursor uses, wrapping around the bracket if needed) — one click
+  from "match just finished" to "scoring the next one." This only applies to
+  that specific button; the ordinary back-chevron shown mid-match still just
+  un-docks without advancing, since leaving a match half-scored shouldn't
+  skip ahead.
+
+## v1.7 additions
+
+- **Correct a confirmed set/end**: `MatchScreen` now lists every already-
+  scored unit for the open match (`UnitHistory`) with each row tappable to
+  reopen it — previously the only recovery from a scoring mistake was
+  "Reset torneo," which discards every result in the bracket, not just the
+  one wrong entry. Reopening a unit re-seeds the keypad with its recorded
+  arrows and, on save, resubmits just that unit through the existing
+  `recordUnit()` — which already recomputes cumulative set-points from the
+  full unit list regardless of which index changed, so no separate undo
+  data model was needed. This works even on a completed match: correcting
+  an earlier unit can flip the outcome and un-completes the match back to
+  `in_progress` or `shootoff` exactly as if it had never finished.
+- **Password recovery**: the sign-in screen has a "Password dimenticata?"
+  link that calls `supabase.auth.resetPasswordForEmail()`. Clicking the
+  emailed link brings the user back with a `PASSWORD_RECOVERY` auth event,
+  which the root component intercepts (`passwordRecovery` state) to show a
+  dedicated "set a new password" screen (`supabase.auth.updateUser()`)
+  before dropping them into the app — otherwise the recovery session would
+  log them in without ever letting them actually replace the password they
+  forgot.
+- **Tournament creation is a 4-step wizard** (`TournamentCreateScreen`):
+  details → format → participants → final format, mirroring the step
+  pattern `NewSessionScreen` already uses for the personal-session flow,
+  instead of one long unbroken scroll through six decision categories.
+  Each step's "Continua" is gated on that step's own requirement (a name,
+  at least 2 participants); the final step's button generates the bracket
+  exactly as before.
+- **Scroll-fade on overflowing chip rows**: Storico's three filter rows
+  (round shape, session type, bow) get a standing edge mask
+  (`ScrollFadeRow`) so a row with more chips than fit on screen fades at
+  the edge instead of hard-clipping with no indication more options exist
+  off to the side.
+- **Full-width layout**: every screen's outer wrapper dropped the
+  `max-w-...-6xl` column cap in favor of `w-full` — on a wide desktop
+  screen the app now fills the available viewport instead of sitting in a
+  centered column with the bottom nav bar spanning wider than the content
+  above it. `TargetFace` keeps its own `max-w-2xl` cap so the target
+  diagram doesn't balloon to viewport width on an ultra-wide monitor;
+  charts and lists scale with the new full-width columns as intended.
+  **Partly reverted in v1.19** — content screens are capped at `max-w-3xl`
+  again; only the two bracket screens stayed full-bleed.
+- **`ChipSelect` signals its mode**: a multi-select row (`multi` prop,
+  currently just "Altre condizioni") now shows a small checkbox glyph on
+  each chip, filled when active — single-select rows stay plain pills.
+  Previously both modes looked identical, so there was no visual cue
+  for whether tapping a chip would toggle it independently or swap out
+  the whole selection.
+- **Auth inputs have `aria-label`s**: email/password fields across sign-in,
+  password reset, and set-new-password relied on placeholder text alone
+  for a screen reader.
+- **More breathing room under the bracket screen's last section**:
+  `BracketScreen`'s bottom padding grew from `pb-8` to `pb-12` so the
+  final podium-format section never sits flush against the sticky bottom
+  nav.
+
+## v1.8 additions — `/impeccable audit` fixes
+
+- **Semantic page titles**: every screen's title (`Storico`, `Tornei`,
+  `Scorecard`, the per-step tournament/session wizard titles, match
+  titles, etc.) is now an `<h1>` instead of a plain `<div>` — 18 sites.
+  Screen readers previously had zero page-structure landmarks anywhere in
+  the app; now every screen announces its topic.
+- **Every icon-only button has an `aria-label`**: back chevrons (11
+  sites), import/export/sign-out, edit-participants, add/remove
+  participant, refresh, new-tournament, and both delete-with-confirm
+  buttons (which now announce "Elimina sessione/torneo" unarmed and
+  "Conferma eliminazione" once armed, matching their actual behavior)
+  were previously blank buttons to assistive tech.
+- **`T.textFaint` now clears WCAG AA contrast**: lightened from `#6B707A`
+  to `#8B929F` (same cool-gray hue, ~1.3x brighter) — the old value
+  measured 3.64:1 against `T.bg` and 3.13:1 against `T.surfaceAlt` (need
+  4.5:1), despite being used for real text throughout (category labels,
+  "Annulla" links, nav labels), not just decorative borders. The new
+  value clears 4.5:1 against every surface tone in the app while staying
+  the faintest of the three text tiers.
+- **Touch targets cleared to 44×44px**: `FilterChip` and `ChipSelect`
+  chips, and every icon-only button, get `min-w-11 min-h-11` (or
+  `min-h-11` alone for chips, whose width already comes from their
+  label). Verified live — Storico alone had 33 of 37 interactive
+  elements measuring 34-36px before this; all now clear 44px except the
+  bottom nav tabs, whose full-height flex-1 hit area is generous despite
+  being narrower than 44px wide.
+- **Stray hex colors tokenized**: the ~10 scattered `'#fff'` literals
+  (white text on a red delete-confirm background) became `T.onRed`; the
+  arrow-mark outline in `TargetFace` became `T.markStroke`. Every color
+  in the file now lives in the `T`/`SCORE_COLORS` token objects — no
+  loose hex values elsewhere.
+
+## v1.9 additions
+
+- **Standardized, non-editable session names**: the free-text "Nome prova"
+  field is gone — every session's display name is now always computed
+  (`sessionDisplayName()`) from its round shape instead of typed by hand.
+  Single-stage sessions reuse `roundShapeLabel()`'s existing preset match
+  (a recognized shape like "Targa 70m" or "Indoor 18m" still wins over a
+  raw "70m · 122cm"; an unrecognized shape — most "Personalizzata"
+  rounds — falls back to that raw "Xm · Ycm" form). A 4-stage session
+  gets named "WA 1440 (d1/d2/d3/d4m)", since that's this club's own
+  FITARCO/WA aggregate convention; any other stage count just lists its
+  distances (e.g. a 2-stage indoor+18m combo becomes "25/18m"). `roundLabel`
+  is no longer written to new sessions at all — nothing reads it anymore,
+  so there's nothing for a future bulk import to fill in either.
+
+## v1.10 additions — Statistiche redesign
+
+`Statistiche` becomes the app's real analysis home; `Storico` goes back to
+being a pure browse/filter/list screen (see below). Also fixes a real
+rendering bug: every Recharts `<Bar>`/`<Line>`/`<Area>` in the app now sets
+`isAnimationActive={false}` — Recharts' entrance animation was getting stuck
+at its first frame in some environments, leaving charts visually blank
+despite correct data reaching them.
+
+- **Round-shape matching loosened to distance+face only** (`roundShapeKey()`,
+  `sameRound()`) — previously also compared arrows-per-end and ends, which
+  incorrectly split a standalone "Targa 70m" session from a WA1440's 70m
+  stage into two separate groups despite being the same round. This also
+  means groups can now mix sessions with different arrow counts (e.g. 60
+  vs 72 arrows), so every score comparison that used to total the raw
+  score now uses **average score per arrow** instead throughout
+  (`bestByShape()`, Statistiche's trend line, personal-best comparisons) —
+  the only fair unit once "same round" no longer implies "same arrow count."
+- **Session naming recognizes more archetypes**: a 2-stage session whose
+  distances include both 25m and 18m is now named "WA Combined," the
+  standard FITARCO indoor aggregate, alongside the existing 4-stage "WA
+  1440" recognition. `sessionDisplayName()` now returns `{name,
+  isArchetype}`; the new `SessionName` component dims non-archetype names
+  (`T.textFaint`) so a "Personalizzata" round that doesn't match a known
+  shape is visually distinguishable from a real archetype at a glance,
+  everywhere a session name is shown.
+- **`Statistiche` restructured around a per-round-shape selector** instead
+  of one lifetime view blending every round type together (distance and
+  face size vary too much between round types for a blended average to
+  mean anything). Top to bottom: a lifetime header (session/arrow/X counts
+  only, no blended average), a tappable "Le tue prove" list
+  (`bestByShape()` — per-arrow average and personal best, one row per
+  round shape), secondary type/bow filter chips, then a scoped analysis
+  section for the selected round shape + filters.
+- **Two new charts in the scoped section**:
+  - **"Andamento per volée"** — a candlestick-style chart
+    (`endRangeStats()`) showing, per end position (1 through the round's
+    max ends) across every session of that round shape, the min/average/max
+    arrow score at that end. Built as a Recharts `<ComposedChart>`: a
+    floating `<Bar dataKey="range">` fed a `[min, max]` 2-element array per
+    point renders the range, with a `<Line dataKey="avg">` overlaid.
+  - **"Andamento colori nel tempo"** — a 100%-stacked `<AreaChart>`
+    (`colorTrendByShape()`, five `<Area>`s sharing one `stackId`) showing
+    the percentage of arrows landing in each ring-color band over time
+    across sessions of that round shape.
+- **Stats with no usable data show a placeholder, not an empty/misleading
+  chart**: applies generally now, not just to position-based (grouping)
+  stats — "Gruppo cumulativo" shows a dashed-border "record more sessions
+  to unlock this analysis"-style message when no arrow in the current
+  filter has a recorded position (i.e. every arrow was keypad-entered),
+  instead of an empty target face.
+- **`Storico` simplified back to browse/filter/list**: the stat tiles,
+  trend chart, fatigue chart, cumulative group, and "Analisi avanzata"
+  block that used to appear when filtering to a round shape are gone from
+  this screen entirely — that whole section moved into `Statistiche`
+  above. `Storico` now only ever renders its three filter chip rows plus
+  the session list.
+
+## v1.11 additions
+
+- **"Costanza" consistency chart**: Statistiche's scoped analysis section now
+  shows each session's arrow-score standard deviation over time
+  (`scoreStdDevBySession()`), right below the existing average-per-arrow
+  trend. Two sessions can share the same average and be very different
+  achievements — one nervy with a wide spread of scores, one tight and
+  repeatable — and this is the first chart on the page that distinguishes
+  them. Lower is better (tighter grouping of scores), the opposite reading
+  direction from every other trend chart here; no explanatory copy is added
+  for this, consistent with the app's existing habit of a labeled axis over
+  annotation. Gated on the same 2-session minimum the average chart uses,
+  not the 5-session "Analisi avanzata" threshold — it's a peer of the
+  average chart, not part of that deeper section.
+
+## v1.12 additions — Tournament sharing
+
+- **Public spectator link**: a "Condividi torneo" control on the bracket
+  screen generates a `?share=<token>` link that anyone can open without
+  logging in, to watch the bracket update as it's scored
+  (`SharedTournamentScreen`, mounted directly by `site/entry.jsx` — it
+  never touches Supabase auth at all). The token
+  (`crypto.randomUUID()`) lives inside the tournament's own `data` blob,
+  same as every other tournament field, so no database migration was
+  needed. The only public read path is a new `security definer` SQL
+  function, `get_shared_tournament()` (`supabase/schema.sql`) — it can
+  only ever return the one row whose token matches what the caller
+  already has, so (unlike a table-level RLS policy would) it can't be used
+  to enumerate every tournament anyone has ever shared. "Disattiva
+  condivisione" clears the token, turning existing copies of the link into
+  a plain "no longer shared" message on their next check.
+- **Deliberately polling, not push**: the public screen re-checks every
+  45 seconds once the tournament has its first result (plus a manual
+  refresh icon) rather than using a live subscription — but it only ever
+  re-renders when the fetched data's `updated_at` actually changed, so an
+  unchanged bracket never flickers. Before the first result, it polls
+  every 5 minutes instead (`tournamentHasStarted()` gates the interval) —
+  a freshly-shared link to a bracket nobody's played yet has nothing to
+  refresh quickly for. True zero-polling push was considered and
+  rejected: Supabase Realtime subscriptions are filtered by table-level
+  RLS, not by a security-definer function, so enabling it for anonymous
+  spectators would have meant re-opening the exact "list every shared
+  tournament" leak the RPC design exists to avoid.
+
+## v1.13 additions — Tournament logo + accent color
+
+- **Logo upload**: a "Carica logo" control on the bracket screen lets an
+  organizer upload an image for a tournament, shown on both the organizer's
+  own bracket screen and the public spectator page. Stored in a new public
+  Supabase Storage bucket (`tournament-logos`, `supabase/schema.sql`) at a
+  fixed `{user_id}/{tournament_id}.png` path — writes are locked to the
+  owner's own folder via Storage RLS policies (insert/update/delete *and*
+  select — the select policy is easy to miss but required, since the
+  client uploads with `{ upsert: true }` and Storage's upsert path checks
+  for an existing row first, which needs its own RLS-gated SELECT or every
+  upsert is rejected with a misleading "row-level security policy"
+  error). Reads are public (a plain URL, no auth check), appropriate here
+  since a logo isn't sensitive the way bracket/score data is. Resized
+  client-side (canvas, max 512px edge, re-encoded as PNG to preserve
+  transparency against the app's dark background) before upload, so every
+  stored file stays small regardless of the original.
+- **Public-page accent color**: uploading a logo extracts a representative
+  color from it (`extractAccentColor()` — averages only the "colorful"
+  pixels, filtering out near-white/near-black/low-saturation ones a plain
+  average would get dragged toward) and, if that color clears a WCAG 3:1
+  contrast check against the page's dark background, swaps it in for gold
+  across the public spectator page's podium, match cards, and winner
+  markers (`MatchCard`/`CompactMatchCard`/`BracketTree`/
+  `ThreeWayFinalCard`/`PodiumCard` all gained an optional `accentColor`
+  prop, defaulting to the normal gold — the organizer's own screen never
+  passes it, so it looks exactly as it always has). A logo whose color
+  fails the contrast check, or that has none, falls back to gold rather
+  than rendering something unreadable.
+- **Bracket round labels fixed for Lancaster/3-way finals**: labels
+  ("Ottavi di finale", "Quarti di finale", ecc.) were computed from
+  `tournament.rounds.length`, but that array is deliberately shorter than
+  the tournament's real depth for these two final formats — their actual
+  final happens in a separate `finalStage` object, not as a normal bracket
+  round. The last kept round was mislabeling itself "Finale" even though
+  the real final was the Lancaster ladder or 3-way final shown below it.
+  Fixed by computing label depth from `tournament.bracketSize` instead
+  (`trueRoundCount()`), which reflects the tournament's true bracket depth
+  regardless of how many of its rounds got moved into `finalStage`.
+- **Bracket tree uses more of the screen**: widened the tree's column/card
+  dimensions, and dropped its old `maxHeight`/inner-vertical-scroll wrapper
+  (kept horizontal-only scroll) so a tall bracket extends the page's own
+  scroll instead of trapping the podium and final-stage sections below it
+  inside a separately-scrolling confined box.
+
+## v1.14 additions — Offline-resilient saves + more bracket round labels
+
+- **Offline-resilient saves**: every session/tournament save or delete used
+  to be fire-and-forget straight to Supabase, with no local copy — a
+  failed write (marginal signal at the range is the realistic case) was
+  gone the moment the tab reloaded, and the app's own error banner used to
+  say as much. Fixed with a small localStorage outbox
+  (`archery-scorecard-pending-v1`): `upsertSessionRemote`/
+  `deleteSessionRemote`/`upsertTournamentRemote`/`deleteTournamentRemote`
+  now record the write there *before* attempting the network call, and only
+  clear it on confirmed success. On boot, `flushPending()` retries anything
+  left over, and `applyPending()` overlays whatever's still stuck onto the
+  freshly-loaded remote data, so a device that's still offline at boot
+  shows its last edit instead of reverting to stale server state. A
+  `window.addEventListener('online', ...)` also retries immediately when
+  connectivity returns mid-session, rather than waiting for the next
+  reload. The save-error banner copy was updated to match — it now says
+  the change is saved locally and will sync automatically, not that it'll
+  be lost.
+- **More bracket round labels**: `roundName()` only named the last four
+  rounds (Finale/Semifinale/Quarti/Ottavi), so a round of 32 fell through
+  to the generic "Turno 1" instead of its real name. Added "Sedicesimi di
+  finale" (round of 32) and "Trentaduesimi di finale" (round of 64).
+
+## v1.15 additions — Participant self-scoring
+
+Lets a tournament organizer attach an email to any participant (a new
+"Gestisci email partecipanti" panel on the bracket screen — works whether
+or not the tournament has started). That participant can then open the
+existing public share link, tap "Sei un partecipante?", and identify
+themselves with that email + their name to score their own current match
+from their phone — the same arrow-by-arrow entry screen the organizer
+uses, tap-only (no keyboard-scoring mode, which stays an organizer-only
+convenience).
+
+A match only ever updates once **both** participants have independently
+submitted it, and their arrows are compared per unit as a sorted set
+rather than requiring the same entry order (so "10-9-8" and "10-8-9" count
+as the same end). A mismatch clears both submissions silently — the next
+time either participant reopens their link, they just see the entry form
+again. Everything is stored in a new `pendingSubmissions` field alongside
+the tournament's existing data (no schema migration), written by two new
+`security definer` SQL functions (`identify_participant`,
+`submit_participant_match`) that re-derive identity from email+name on
+every call and never touch bracket structure directly — only the
+organizer's own app, which polls for pending submissions every 30s while a
+tournament is open, ever calls `applyMatchResult()` to actually advance
+the bracket. No email is ever sent by the app; the organizer shares the
+link themselves.
+
+The 3-way final (`{ kind: 'threeFinal' }`) is deliberately excluded from
+self-scoring — it renders through a structurally different 3-sided
+component (`ThreeWayFinalScreen`, not `MatchScreen`) and a gold/silver/
+bronze final is realistically always run live by the organizer anyway.
+
+## v1.16 additions
+
+- **Miss button in target-tap mode**: the tap-on-target-face input had no
+  direct way to log a miss — the only options were switching to
+  "Tastierino" (which has an M key) or tapping the thin margin just outside
+  the face (easy to miss on a touchscreen, not an obvious affordance). A
+  "Freccia a vuoto (M)" button now sits right under `TargetFace` whenever
+  `mode === 'face'`, calling the same `handleAddArrow(0, false, null,
+  null)` path a keypad miss already uses — no position recorded, exactly
+  like any other keypad-entered arrow.
+- **80cm target face is now a 6-ring face**: the real 80cm competition face
+  (Targa 50m/40m/30m) only prints scoring rings 5-10 — rings 1-4 don't
+  exist on it, they're blank margin. `TargetFace` previously drew the same
+  full 10-ring layout at every face size, so scoring showed rings that
+  don't exist on the real target. Fixed in both directions: `TargetFace`
+  now filters `RING_SPECS` down to score ≥ `minScoringRing(faceCm)` before
+  rendering (blank outer margin for an 80cm face, unchanged for every other
+  size), and `scoreFromRadiusUnits(d, faceCm)` — previously ignorant of
+  face size entirely — now takes `faceCm` and returns a miss instead of a
+  1-4 score for a tap landing in that band. 40/60/122cm faces are
+  unaffected; nothing changes for existing recorded arrows, only new taps.
+
+## v1.17 additions
+
+- **Zoom always crops around the target's true center**: reverts the v1.1
+  "zoom recentring" behavior, which followed the last-3-volée group's
+  centroid at 2×/4× instead of the bullseye. A scorer zooming in expects
+  "the middle of the target" to mean the actual center, not wherever their
+  group happens to be — `TargetFace`'s `focus` prop is gone; the viewBox is
+  now always `[-half, -half, half*2, half*2]` regardless of zoom or group
+  position. The group-centroid crosshair/dashed-radius indicator (driven
+  separately by the `centroid` prop) is unchanged — only the zoom crop
+  itself stopped following it.
+- **Confirm a full volée before it locks in**: `ShootingScreen` used to
+  write each arrow straight into session state (and sync it to Supabase)
+  the instant it was tapped, so the moment the last arrow of an end landed,
+  the screen had already silently advanced to the next (empty) one — there
+  was no way to tell what that last arrow actually scored without digging
+  back through history. Arrows for the end in progress are now buffered
+  locally (`pending`) and only committed via a new "Conferma volée" button
+  (disabled until the end has its full arrow count, mirroring the
+  tournament match screen's "Conferma set"), so the full end — sorted
+  chips, running total — stays on screen for review before it's locked in
+  and saved. `EndChips`, `TargetFace`'s points, and every live stat
+  (total/media/proiezione/ritmo PB/gruppo) read off a `displayStage` that
+  overlays `pending` on the real stage, so they still update live as you
+  score, exactly as before — only the actual write to session state (and
+  the advance to the next end) now waits for the explicit confirm tap.
+  "Annulla" pops the still-unconfirmed end first (a free local edit, since
+  nothing's saved yet) before falling through to reopening the last
+  *confirmed* end, same as it already did.
+
+## v1.18 additions — Automated tests + installable offline PWA
+
+- **Automated test suite** (`test/`, `npm test`): the app had grown a lot of
+  intricate pure logic — bracket seeding/propagation, the 3-way final's
+  point-allocation engine, Lancaster's wildcard play-in, the offline
+  outbox's overlay/reconciliation, personal-best/pace comparisons — with
+  only manual click-through verification before every change. `test/load.cjs`
+  compiles `ArcheryScorecard.jsx` (JSX + ESM) to CJS in memory via esbuild
+  (already a devDependency for the site build — no new dependency) and
+  requires it directly, so tests call the same functions the app runs
+  without a browser, a bundler config, or any Supabase network access. A
+  single `export { ... }` block at the bottom of the component file (test
+  code never runs in the shipped bundle) is the only source change; adding
+  a function to the tested surface is a one-line addition there. Runs on
+  Node's built-in test runner (`node --test`, stable since Node 18 — no new
+  dependency there either) — 68 tests across bracket generation, match/
+  3-way/Lancaster scoring, personal scorecard core, the offline outbox, and
+  a couple of full-tournament integration tests that play a bracket
+  end-to-end through `applyMatchResult` and check the final podium. One
+  test is a direct regression guard for a real bug caught earlier this
+  project (the 3-way runoff carrying over the wrong starting score) and
+  another for the 80cm-face 6-ring fix — the two most fiddly pieces of
+  logic in the file. `npm test` now also runs in CI (`deploy-pages.yml`)
+  before the build step, so a broken change fails the workflow instead of
+  reaching production.
+- **Installable, offline-capable PWA**: the whole app was already a single
+  self-contained `index.html` (see README.md), which makes this
+  almost free — `site/sw.js` is a service worker that caches that one
+  document and serves it back (network-first, falling back to the cached
+  copy only once actually offline) so the app still opens at a
+  connectivity-dead range instead of failing to load at all. It never
+  touches cross-origin requests, so Supabase calls always hit the network
+  directly and the existing offline-outbox logic (see "Offline-resilient
+  saves" above) keeps handling writes made while offline exactly as
+  before — this only covers the app *shell* loading, not data. `site/build.js`
+  now also inlines a web app manifest (`data:application/manifest+json,...`,
+  reusing the existing target-face SVG as its icon — installable and
+  correctly iconed on desktop/Android, though iOS Safari's home-screen icon
+  specifically ignores SVG manifest icons and falls back to a screenshot) and
+  bakes a fresh cache-version stamp into `sw.js` on every build, so
+  `activate` always purges the previous deploy's cached shell rather than
+  serving a stale version forever — an online scorer always gets whatever
+  was just deployed.
+## v1.19 additions — Audit pass
+
+No new features. A four-pass audit of the whole file: deduplication, dead
+code, correctness, and claims the code made but didn't support. Full
+reasoning is in the four commit messages; the parts that change what you
+see or rely on:
+
+- **Engine coverage joined the v1.18 test suite**
+  (`test/bracket-engine.test.js`): all three final formats played through
+  to a podium at every field size 2-8, plus correction cascades, the 3-way
+  runoff carry-over, and the participant-submission replay path. Worth
+  noting how the v1.18 suite behaved here — 68 of 68 passing while the
+  3-competitor deadlock below was live on the deployed site, because no
+  test in it ever built a field of 3.
+- **Three engine bugs the harness found**, all the same shape — state
+  updated when something happened rather than derived from what's true. A
+  3-competitor field deadlocked on both the Finale a 3 and Lancaster
+  formats (the empty 4th slot is a bye, a bye is never *played*, so it
+  never seeded its side of the final stage). Correcting a confirmed set
+  left the downstream match holding the previous winner's arrows while
+  reporting "Da giocare". `propagateWinner()` mutated match objects still
+  referenced by the previous React state.
+- **Participant submissions are replayed, not applied**: reconciliation
+  used to take the whole submitted match object once the arrows agreed —
+  but `winnerSlot`, `status`, `slotA`/`slotB`, `shootOff` and `forfeit`
+  aren't derived from arrows, so two participants could agree on every
+  arrow and still submit a different verdict on who won. The agreed
+  arrows are now replayed onto the bracket's own match
+  (`rebuildMatchFromUnits()`) and range-checked; nothing else in a
+  submission is trusted.
+- **The offline outbox is keyed per account**: it used one global
+  localStorage key, so on a shared device the first archer's queued
+  writes were replayed under whoever signed in next. Anything left under
+  the old key is adopted once, on first load.
+- **Import is shape-checked first**: a bad file used to be upserted to
+  Supabase *before* rendering, so it persisted and then crashed every
+  render of Storico until the rows were deleted server-side.
+- **Statistics that overstated their own confidence**: condition buckets
+  now need 3 sessions each (the "Analisi avanzata" gate of 5 total says
+  nothing about any single bucket, and buckets of one were drawn as
+  bars); the fatigue line needs two standard errors of the session's own
+  arrow spread rather than a flat 0.4 points; `sessionInsight` no longer
+  counts its baseline once per stage; the group-offset line reports the
+  offset instead of blaming the release, since a sight setting moves a
+  group at least as often.
+- **Personal bests need a matching arrow count**: a 72-arrow Targa 70m
+  always beat a 36-arrow WA1440 70m stage however well the latter was
+  shot. Round *grouping* still ignores length (seeing all your 70m work
+  together is useful), and a group that mixes lengths now says
+  "· lunghezze diverse" rather than implying per-arrow averaging makes
+  them equivalent — it only would if fatigue weren't real, and this app
+  charts fatigue as a feature.
+- **`WA 1440` / `WA Combined` are recognized by shape**, not stage count —
+  four rounds at 18m used to be named and styled as a real WA1440.
+- **Layout**: 19 `w-full mx-auto` wrappers were no-ops with no max width.
+  Content screens are `max-w-3xl`; the two bracket screens stay full-bleed
+  on purpose.
+- **Schema**: a partial unique index on `data->>'shareToken'` — the
+  `get_shared_tournament()` comment reasoned about "the one row whose
+  token matches", which nothing enforced. **Needs running by hand against
+  the live database**; `supabase/schema.sql` has never had a migration
+  runner.
+- Also: deleting a tournament now deletes its logo from Storage; the date
+  picker is fed a local date rather than a UTC one (a session started just
+  after midnight showed the previous day); the accent-colour contrast gate
+  is 4.5:1, not the large-text 3:1; `extractAccentColor()` buckets by hue
+  instead of averaging every colourful pixel into a hue present nowhere in
+  the logo.
+
+Deduplication in the same pass: `TournamentBody` renders the bracket and
+every final-stage block for both `BracketScreen` and the public
+`SharedTournamentScreen` (the two copies had already drifted — the
+spectator page rendered the Lancaster play-in differently and missed
+`accentColor` on its round list); `makeStore`/`STORES` replace two
+identical load/upsert/delete triplets; `Disclosure` replaces six copies of
+collapsed-button-expands-to-panel, whose footers now uniformly read
+"Chiudi" (three said "Annulla").
+
+Not fixed, deliberately: **arrows tapped on the face and arrows entered on
+the keypad are not scored identically** — a tap is a dimensionless point,
+so it can only round *down* at a ring boundary, while a keypad arrow
+carries the called score with line-cutters rounded up. Applying a shaft
+width would fix future scoring and silently rescore it against every past
+session. Use the keypad when the score matters.
+
+## v1.20 additions — Indoor target face variants
+
+Indoor rounds (18m/25m) now offer real WA/FITARCO/Vegas target variants
+beyond the plain single full face, picked at session creation same as any
+other round preset — no separate variant-picker step, just more entries in
+the "Indoor 18m"/"Indoor 25m" categories.
+
+- **Data model**: a round stage gains two optional fields, `spotLayout`
+  (`'single'` default, or `'vertical3'`/`'triangular3'`) and `ringClass`
+  (`'full'` default, or `'outdoor6'`/`'indoor6C'`/`'spot6R'`/`'spot6C'` —
+  see `ringGeometry()`). `ringClass` replaces the old implicit
+  `faceCm === 80` check the outdoor 6-ring fix used; the 80cm outdoor
+  rounds now carry `ringClass: 'outdoor6'` explicitly. `sameRound()` and
+  `roundShapeKey()` both now include spot layout + ring class, so a single
+  face and a triple face at the same distance/faceCm are correctly treated
+  as different rounds for personal-best and Statistiche grouping — they're
+  not the same challenge just because they share a diameter.
+- **Ring geometry, two real shapes**: a margin-cut face (`outdoor6`,
+  `indoor6C`) is physically full-size with its outer rings simply left
+  unprinted; an isolated-spot face (`spot6R`, `spot6C` — WA/Vegas triples)
+  is genuinely smaller paper, the inner half (by radius) of a full face
+  with no blank margin, rescaled so its kept rings fill the spot edge to
+  edge. Compound's 10-ring is half the diameter of recurve's in every
+  class that has one (`COMPOUND_TEN_SCALE`). `TargetFace` and
+  `scoreFromRadiusUnits` both read off the same `ringGeometry()` output, so
+  drawing and scoring can't drift apart.
+- **Multi-spot target face**: `TargetFace` now renders 1-3 independent
+  mini-faces (`spotOffsets()` — vertical column or a triangle with one spot
+  at the apex) instead of always one, reusing the same ring-drawing code
+  per spot (`SpotRings`). Tap detection checks each spot's own circle and
+  reports `(spotIdx, x, y)`. Zoom is single-spot only — a multi-spot face's
+  individual spots are already small enough to tap directly.
+- **One arrow per spot per end**: a real rule, not a UI nicety.
+  `ShootingScreen` tracks which spots already have an arrow in the
+  in-progress end and rejects a second one for the same spot (silent
+  no-op, same guard pattern used elsewhere in the app), and drives a
+  keypad-mode spot selector (reusing `SegmentedControl`) that auto-advances
+  to the next open spot after each fill.
+- **New presets**: WA/FITARCO triple vertical and triangular (recurve and
+  compound) at both 18m and 25m, indoor single-spot compound at both
+  distances, and Vegas 3-Spot (18m/40cm, triangular, but a shorter 30-arrow
+  round — 10 ends, not 20 — so it's its own preset rather than a
+  spotLayout variant of Indoor 18m).
+- **Known follow-up**: a session's displayed name/history-row label
+  doesn't always resolve to its matching preset the way the round-filter
+  chips do for the same shape — cosmetic only, doesn't affect scoring,
+  personal-best bucketing, or ring behavior (all verified correct via the
+  automated tests and live scoring runs); tracked to fix in a follow-up
+  pass rather than block this release.
+
+## v1.21 additions — Interrupted sessions
+
+Rain, light, a broken nock, running out of time: a round that gets
+abandoned used to sit in `in_progress` forever, cluttering Home's resume
+list and counting for nothing. "Termina la sessione qui" on the shooting
+screen closes it as `partial`, a third status alongside
+`in_progress`/`completed`, and "Riprendi la sessione" on the detail screen
+puts it back exactly where it was.
+
+- **How a partial counts** (`closeSessionEarly`, `entryIsRankable`,
+  `entryCountsForStats`): records — personal bests and the `best` column —
+  use only rounds shot end to end, because a 30-arrow half-round can't be
+  ranked against a 60-arrow one and per-arrow averaging doesn't fix that
+  (this app charts fatigue as a real effect precisely because the back half
+  is harder). Arrow-weighted aggregates and diagnostics *do* include
+  partials: those arrows were really shot and every one of those figures is
+  already weighted by arrow count. Below `MIN_ARROWS_FOR_PARTIAL_STATS`
+  (12) the session is kept for the record but counts for nothing.
+- **A finished stage inside a partial session is still a finished round**,
+  so abandoning a WA1440 at the third distance leaves the first two
+  eligible for personal bests.
+
+## v1.22 additions — Analysis pass
+
+A review of what the analysis layer claimed versus what the data supports,
+plus everything the app was collecting and never reading.
+
+### Corrections
+
+- **Dispersion and drift were still pooling multi-spot faces.**
+  `dispersionTrend()` ran every arrow on a triple face through one
+  centroid, which puts the centre between the spots and books the distance
+  between them as scatter — the exact error `groupStatsBySpot()` exists to
+  prevent, still live after the group readouts were fixed. Dispersion is
+  now the arrow-weighted mean of the per-spot dispersions (unchanged for a
+  single-spot round), and drift is only a *direction* when there is one aim
+  point: a multi-spot round gets one distance-from-centre series per spot
+  instead, since averaging three directions produces a vector pointing
+  nowhere.
+- **The trend chart abandoned the app's own significance rule.**
+  `sessionInsight` won't call fatigue without two standard errors and
+  `groupOffsetIsReal` won't call an offset real without them, but the chart
+  plotted bare point estimates — and the standard error on a 60-arrow
+  average is around a quarter point, larger than most of the session-to-
+  session movement. Every session now carries a ±2 SE band
+  (`avgTrendWithBands`), and `trendVerdict()` states in words whether the
+  line is actually sloping (OLS slope against its own standard error).
+- **"Costanza" mostly re-plotted the average.** Arrow scores are capped at
+  10, so as a group tightens every arrow converges on the ceiling and σ is
+  dragged down with it: an archer improving from 8.0 to 9.5 shows falling σ
+  whether or not they got steadier. `consistencyTrend()` now fits σ against
+  the session average over the archer's own history and plots the residual
+  — how much steadier or streakier the session was than its own quality
+  predicts. Self-calibrating, so it needs no reference table; below
+  `CONSISTENCY_FIT_MIN_SESSIONS` it falls back to raw σ and says so.
+- **The volée chart's min-max band could only widen.** The range between
+  the best and worst a volée has gone is not a property of the archer — it
+  grows with sample size by construction, so a well-practised round shape
+  looked *more* erratic. `endRangeStats()` now reports median and
+  interquartile band, and carries `n` per volée.
+- **Condition buckets** carry a two-sigma error bar and say out loud that
+  sampling error is not the only problem: wind, season and form travel
+  together and this comparison doesn't separate them.
+
+### Points, not centimetres
+
+The group readout spoke in centimetres, which is the wrong currency — a
+centimetre on a 122cm face and on a Vegas spot are not the same mistake.
+Fitting the arrows as a 2D normal (centroid + per-axis spread, all of which
+`computeGroupStats` already returned) and integrating it over the ring
+boundaries gives an expected score per arrow; re-running it with the
+centroid at zero gives the two numbers actually worth knowing:
+
+- **what centring the group is worth**, in points per arrow — routinely far
+  less than the centimetre offset makes it feel, which is the point;
+- **what the spread costs**, which no sight setting can recover.
+
+Deliberately a model (`expectedScorePerArrow`, `pointsBreakdown`): it
+assumes a normal group, and it's printed next to the real average so a bad
+fit is visible rather than implied. `separateFlyers()` splits arrows past
+3σ (elliptical, so a legitimately tall group isn't punished) from the group
+they missed, since one thrown arrow sets `maxRadiusCm` alone and drags
+`meanRadiusCm` with it.
+
+### Collected but never read
+
+- **`location`** was recorded on every session and only ever printed back —
+  stage entries dropped it entirely, which is why nothing could be broken
+  down by field. Now carried through, grouped case- and whitespace-
+  insensitively, displayed under the spelling used most (`scoreByLocation`).
+- **Training volume**: nothing tracked how much you shoot, which is odd for
+  a training log. `weeklyVolume()` buckets arrows into Monday weeks and
+  leaves gaps as gaps; `daysSinceLastSession()` sits beside it.
+- **Position within the end**: ordered data present since v1, never looked
+  at. `arrowPositionStats()` breaks the average down by first/second/third
+  arrow and two-sigma tests the first against the rest.
+- **X rate**: one lifetime tile became a per-session trend and a scoped
+  tile — for compound it's the tie-break that decides placings.
+- **Gara vs allenamento**: the app could always *filter* by type and never
+  *contrast* them. `typeContrast()` does, with a two-sigma test, ignoring
+  the tipo chip (you can't contrast what you've filtered away) but keeping
+  round shape and bow.
+- **Per-spot score**, not just per-spot geometry: a spot quietly averaging
+  half a point below the others states plainly what the offsets hint at.
+- **Match arrows**: every arrow of every tournament match was recorded and
+  never reached the statistics tab. `ownMatchRecord()` identifies the
+  archer by the email the organizer recorded against a participant — the
+  only link that exists between an account and a name in a bracket, and
+  nothing guesses from names. Kept out of the round-shape statistics on
+  purpose: a set match isn't a round.
+- **Recency**: `sessionInsight`'s baseline was all history, so an improving
+  archer was compared against a worse version of themselves indefinitely.
+  Now a rolling window (`INSIGHT_BASELINE_SESSIONS`).
+
+### Cross-round comparability
+
+Every figure in the app is locked to one round shape, so there was no way
+to ask "am I shooting better at 18m or at 70m" — scores aren't comparable
+and neither are centimetres. `angularDispersionMrad()` divides the group by
+the distance, leaving the angle the archer's form subtends; 1 mrad is 1cm
+at 10m. It appears in every group readout and as a lifetime per-round-shape
+chart (`angularByShape`).
+
+This is a physical normalization, **not** a handicap or rating: it says
+nothing about how two distances compare in difficulty. A proper cross-round
+rating needs a published scheme (Archery GB's handicap tables are the
+established one; World Archery has no official equivalent) and is
+deliberately not invented here.
+
+### Rhythm
+
+Ends now carry `at`, stamped when the volée is confirmed
+(`sessionConfirmEnd`). The gap between consecutive stamps is how long that
+volée took to shoot **and** score — the app is used at the target as often
+as at the line, so this is pace of work, not draw time, and the UI says so.
+Gaps past `REST_GAP_SECONDS` are dropped as breaks. `paceContrast()` splits
+each session's volées at that session's own median pace and contrasts the
+halves, so a slow day and a fast archer are never compared with each other.
+Ends saved before this release simply have no `at` and every reader skips
+them, so the panel fills in as sessions accumulate.
+
+### Layout fixes found by driving it on a phone
+
+- **Chart tooltips could scroll the whole page sideways.** A recharts
+  tooltip is absolutely positioned with `nowrap` items, and recharts only
+  nudges it away from the cursor — it never shrinks it. A wordy label
+  ("1.51 mrad su 561 frecce") rendered as a 326px unbreakable box inside a
+  402px viewport, pushing the document wider than the screen. `TOOLTIP_STYLE`
+  now caps the width and lets the text wrap, shared by all 17 tooltips;
+  `ChartCard` clips horizontally as a backstop (`clip`, not `hidden`, which
+  would make it a scroll container and break sticky positioning).
+- **The shooting screen's control row overflowed at narrow widths.** Adding
+  the 8× step for compound faces made the mode + zoom row wider than a small
+  phone. It wraps now instead of pushing the page sideways.
+
+### Not done
+
+Folding match arrows into the round-shape statistics. Matches are shot to
+sets, over different distances and volée lengths than any round in
+`ROUND_TYPES`; mixing them into per-round averages would compare things
+that aren't comparable. They get their own summary instead.
+## v1.23 additions — Council review follow-up
+
+Three changes, all from measuring rather than guessing. No new features.
+
+- **The participant score path no longer reports sends that never
+  happened.** This is the one write in the app with no outbox behind it —
+  a participant scoring from the public share link has no auth session, so
+  nothing queues the write and nothing retries it. Two failures compounded
+  there. `handleComplete` awaited `submit_participant_match` and never
+  looked at the returned error, so on marginal signal (an outdoor range,
+  the normal case) the archer was told "inviato" for a score that never
+  left the phone. And reconciliation deleted *both* submissions whenever
+  the two archers' arrows disagreed, telling nobody — justified on the
+  grounds that they'd "see the entry form again next time," which the
+  first bug guaranteed they had no reason to do. Now: the error is
+  checked and the scored match is offered back with a **Riprova** button,
+  and a discarded pair leaves a marker the participant page reads to
+  explain why it's asking again. The reconciliation decision came out of
+  the effect it was buried in (`reconcilePendingSubmissions()`) and has
+  seven tests — the first coverage this path has ever had.
+- **The spectator page has its own build: 934 KB → 342 KB.** Following a
+  share link used to download the entire organizer app to look at a
+  bracket. Measured against the bundle: recharts and its d3 tail were
+  338 KB of it, and the public page renders no charts at all.
+  `site/share.jsx` imports only `SharedTournamentScreen`, so esbuild drops
+  the rest; no code had to move, the tree-shaking was simply never asked
+  for. "Condividi torneo" now hands out `share.html`, and `index.html`
+  still handles `?share=` so links copied earlier keep working. The
+  spectator page deliberately does **not** register the service worker —
+  `sw.js` caches every navigation under one `SHELL_URL` key, so a
+  spectator's visit would have overwritten the organizer's cached app
+  shell — and gets no web manifest, since there's nothing there to
+  install.
+- **`@supabase/realtime-js` is aliased to a stub** (`site/realtime-stub.js`),
+  removing 56 KB from both pages. supabase-js constructs a `RealtimeClient`
+  whether or not anything wants one, and this app has no realtime call
+  sites and will never gain any — Realtime filters by table-level RLS
+  rather than by the security-definer RPC that gates share tokens, which
+  is exactly why the public page polls instead (see v1.12). `setAuth()`
+  stays silent because supabase-js calls it on every auth state change;
+  `channel()` throws, so anyone actually trying to use realtime is told
+  the build can't rather than watching a subscription do nothing.
+
+Considered and rejected in the same pass: memoization, a state library,
+TypeScript, and splitting the component file. The render-cost concerns
+were unmeasured, and at this data scale a network poll costs three orders
+of magnitude more than any re-render. The app's own code is 143 KB of what
+it ships — it was never the app that was heavy.
