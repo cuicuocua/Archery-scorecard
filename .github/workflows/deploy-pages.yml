@@ -2,7 +2,7 @@ name: Deploy scorecard to GitHub Pages
 
 on:
   push:
-    branches: [claude/arcieri-senesi-scorecard-52a25z]
+    branches: [main]
     paths:
       - 'ArcheryScorecard.jsx'
       - 'site/**'
