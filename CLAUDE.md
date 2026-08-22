@@ -19,4 +19,8 @@ Build with `npm run build`.
 
 ## Knowledge graph
 
-There's a workspace graph at `/Users/teo/Claude/graphify-out/`. For codebase questions run `graphify query "<question>"` (also `graphify path "<A>" "<B>"` and `graphify explain "<concept>"`) before falling back to grep, and `graphify update .` after changing code.
+This project's graph lives in `archery-scorecard/graphify-out/` (gitignored) — that's what `graphify update .` writes when run from here. There's also a workspace-wide graph at `/Users/teo/Claude/graphify-out/`, but it is a **separate, older** artifact covering every sibling project; `graphify update .` never refreshes it. Don't confuse the two.
+
+For codebase questions run `graphify query "<question>"` (also `graphify path "<A>" "<B>"` and `graphify explain "<concept>"`) before falling back to grep, and `graphify update .` after changing code — **and before trusting a query, if the tree has moved since the last build.** A stale graph answers confidently and wrongly: it simply won't contain a function added since it was built, and reports "No matching nodes found" as though the symbol didn't exist.
+
+One trap worth knowing: for a "how does X work" question the graph often ranks `docs/superpowers/` plan and spec nodes above the code. Those describe what was *intended* at the time they were written, and every one of them has since shipped and moved on — they're marked as historical for exactly this reason. Prefer nodes whose `src` is `ArcheryScorecard.jsx`.

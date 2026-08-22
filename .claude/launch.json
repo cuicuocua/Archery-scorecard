@@ -4,7 +4,7 @@
     {
       "name": "static",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["serve", "-l", "8934", "site/dist"],
+      "runtimeArgs": ["esbuild", "--servedir=site/dist", "--serve=8934"],
       "port": 8934
     }
   ]

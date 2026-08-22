@@ -218,15 +218,29 @@ Numbers stay stable as they close; resolved ones are struck through.
    and build something that shipped months ago. The six specs carry no such
    banner and were left alone.
 
-8. **`.claude/launch.json` runs `npx serve`, not a devDependency.** Every
-   dev-server start fetches it from the network. Add `serve` to
-   `devDependencies`, or leave it?
+8. ~~**`.claude/launch.json` runs `npx serve`, not a devDependency.**~~
+   **RESOLVED — better than proposed.** Rather than adding `serve` as a
+   dependency, the config now uses `esbuild --servedir`, which is already a
+   devDependency: no network fetch, no new package. It also fixes a real
+   behavioural difference — `serve` rewrites `/page.html?x=1` to `/page` and
+   **drops the query string**, which during this session's probe work
+   produced a `p_token: null` that looked like an app bug and was not.
+   esbuild serves the path as-is. Verified through the preview harness.
 
-9. **Which knowledge graph is canonical?** `CLAUDE.md` points at
-   `/Users/teo/Claude/graphify-out/`, last built 2026-07-28, but the command
-   it gives — `graphify update .` — run from this project writes a second,
-   project-scoped graph here. Should the rule say
-   `graphify update /Users/teo/Claude` instead?
+9. ~~**Which knowledge graph is canonical?**~~ **RESOLVED: the
+   project-local one.** The rule named the workspace graph but gave an
+   update command that builds a project graph, so the thing you were told
+   to query was never the thing you refreshed. `CLAUDE.md` now names
+   `archery-scorecard/graphify-out/` and says plainly that the workspace
+   graph is a separate, older artifact.
+
+   Two traps found while checking this, both now written into the rule. The
+   graph was 11 days stale, so `graphify query "reconcilePendingSubmissions"`
+   answered **"No matching nodes found"** for a function that exists — a
+   stale graph denies rather than admits ignorance. And a conceptual query
+   returned *only* `docs/superpowers/` plan and spec nodes, zero code: it
+   would have sent a reader to documents describing the intended design of
+   the very code they were asking about. Graph refreshed, 399 → 610 nodes.
 
 ## 6. Rule conflicts and deviations
 
