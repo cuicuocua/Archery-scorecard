@@ -1085,3 +1085,51 @@ Folding match arrows into the round-shape statistics. Matches are shot to
 sets, over different distances and volée lengths than any round in
 `ROUND_TYPES`; mixing them into per-round averages would compare things
 that aren't comparable. They get their own summary instead.
+## v1.23 additions — Council review follow-up
+
+Three changes, all from measuring rather than guessing. No new features.
+
+- **The participant score path no longer reports sends that never
+  happened.** This is the one write in the app with no outbox behind it —
+  a participant scoring from the public share link has no auth session, so
+  nothing queues the write and nothing retries it. Two failures compounded
+  there. `handleComplete` awaited `submit_participant_match` and never
+  looked at the returned error, so on marginal signal (an outdoor range,
+  the normal case) the archer was told "inviato" for a score that never
+  left the phone. And reconciliation deleted *both* submissions whenever
+  the two archers' arrows disagreed, telling nobody — justified on the
+  grounds that they'd "see the entry form again next time," which the
+  first bug guaranteed they had no reason to do. Now: the error is
+  checked and the scored match is offered back with a **Riprova** button,
+  and a discarded pair leaves a marker the participant page reads to
+  explain why it's asking again. The reconciliation decision came out of
+  the effect it was buried in (`reconcilePendingSubmissions()`) and has
+  seven tests — the first coverage this path has ever had.
+- **The spectator page has its own build: 934 KB → 342 KB.** Following a
+  share link used to download the entire organizer app to look at a
+  bracket. Measured against the bundle: recharts and its d3 tail were
+  338 KB of it, and the public page renders no charts at all.
+  `site/share.jsx` imports only `SharedTournamentScreen`, so esbuild drops
+  the rest; no code had to move, the tree-shaking was simply never asked
+  for. "Condividi torneo" now hands out `share.html`, and `index.html`
+  still handles `?share=` so links copied earlier keep working. The
+  spectator page deliberately does **not** register the service worker —
+  `sw.js` caches every navigation under one `SHELL_URL` key, so a
+  spectator's visit would have overwritten the organizer's cached app
+  shell — and gets no web manifest, since there's nothing there to
+  install.
+- **`@supabase/realtime-js` is aliased to a stub** (`site/realtime-stub.js`),
+  removing 56 KB from both pages. supabase-js constructs a `RealtimeClient`
+  whether or not anything wants one, and this app has no realtime call
+  sites and will never gain any — Realtime filters by table-level RLS
+  rather than by the security-definer RPC that gates share tokens, which
+  is exactly why the public page polls instead (see v1.12). `setAuth()`
+  stays silent because supabase-js calls it on every auth state change;
+  `channel()` throws, so anyone actually trying to use realtime is told
+  the build can't rather than watching a subscription do nothing.
+
+Considered and rejected in the same pass: memoization, a state library,
+TypeScript, and splitting the component file. The render-cost concerns
+were unmeasured, and at this data scale a network poll costs three orders
+of magnitude more than any re-render. The app's own code is 143 KB of what
+it ships — it was never the app that was heavy.
