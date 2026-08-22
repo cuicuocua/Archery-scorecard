@@ -1,5 +1,11 @@
 # Statistiche Redesign Implementation Plan
 
+> **Shipped in v1.10** — Statistiche redesign. This is a historical planning record, not open work.
+> Its step checkboxes below were never ticked; they are left as they were written rather than
+> back-filled with a completion record nobody witnessed. See `CHANGELOG.md` for what actually
+> shipped. **The "REQUIRED SUB-SKILL" note that follows no longer applies** — there is nothing
+> here left to implement.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Move all per-round analysis out of `StoricoScreen` (currently gated behind a filter, easy to miss) into `StatisticheScreen`, which becomes the app's real analysis home — scoped by round shape instead of blended across every round type — and fix the app-wide invisible-chart bug along the way.

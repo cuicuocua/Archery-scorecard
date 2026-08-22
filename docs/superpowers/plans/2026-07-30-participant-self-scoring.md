@@ -1,5 +1,11 @@
 # Participant Self-Scoring Implementation Plan
 
+> **Shipped in v1.15** — Participant self-scoring. This is a historical planning record, not open work.
+> Its step checkboxes below were never ticked; they are left as they were written rather than
+> back-filled with a completion record nobody witnessed. See `CHANGELOG.md` for what actually
+> shipped. **The "REQUIRED SUB-SKILL" note that follows no longer applies** — there is nothing
+> here left to implement.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let a tournament organizer attach an email to any participant so that participant can identify themselves on the existing public share link and submit their own match's score, applied only once their opponent independently submits the same result.

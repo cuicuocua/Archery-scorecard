@@ -1,5 +1,11 @@
 # Statistiche Consistency Trend Chart Implementation Plan
 
+> **Shipped in v1.11** — the "Costanza" consistency chart. This is a historical planning record, not open work.
+> Its step checkboxes below were never ticked; they are left as they were written rather than
+> back-filled with a completion record nobody witnessed. See `CHANGELOG.md` for what actually
+> shipped. **The "REQUIRED SUB-SKILL" note that follows no longer applies** — there is nothing
+> here left to implement.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a "Costanza" line chart to Statistiche's scoped analysis section, showing each session's arrow-score standard deviation over time, so two sessions with the same average but different spread stop looking identical.

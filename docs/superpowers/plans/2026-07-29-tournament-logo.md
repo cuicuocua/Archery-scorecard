@@ -1,5 +1,11 @@
 # Tournament Logo + Accent Color Implementation Plan
 
+> **Shipped in v1.13** — Tournament logo + accent colour. This is a historical planning record, not open work.
+> Its step checkboxes below were never ticked; they are left as they were written rather than
+> back-filled with a completion record nobody witnessed. See `CHANGELOG.md` for what actually
+> shipped. **The "REQUIRED SUB-SKILL" note that follows no longer applies** — there is nothing
+> here left to implement.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let a tournament organizer upload a logo, show it on both the organizer's and the public spectator's bracket screens, and swap the public page's gold accent for a color extracted from that logo (falling back to gold if the extracted color fails a contrast check).

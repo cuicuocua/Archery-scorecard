@@ -207,10 +207,16 @@ Numbers stay stable as they close; resolved ones are struck through.
    deleting it was unrecoverable. One finding was still live and was fixed
    rather than discarded — see the appendix.
 
-7. **The five plans' step checkboxes all read `- [ ]`** — 98 of them, none
-   checked, for features that all shipped. Committed verbatim rather than
-   ticked, since marking them retroactively fabricates a record. Leave, or
-   add a one-line "shipped in vX.Y" header to each?
+7. ~~**The five plans' step checkboxes all read `- [ ]`**~~ **RESOLVED:
+   headers added, boxes untouched.** Each plan now opens with the version it
+   shipped in (v1.10, v1.11, v1.12, v1.13, v1.15) and says plainly that the
+   unticked boxes are a historical record, not open work. The boxes stay as
+   written rather than back-filled with a completion nobody witnessed.
+   The headers also neutralise each plan's "REQUIRED SUB-SKILL: use
+   superpowers:executing-plans to implement this plan task-by-task" banner,
+   which was the sharper half of the problem — it instructs an agent to go
+   and build something that shipped months ago. The six specs carry no such
+   banner and were left alone.
 
 8. **`.claude/launch.json` runs `npx serve`, not a devDependency.** Every
    dev-server start fetches it from the network. Add `serve` to
