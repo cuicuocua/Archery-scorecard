@@ -17,13 +17,19 @@ Build with `npm run build`.
 - Round definitions are assumptions to verify against FITARCO / World Archery rules. Cite the source when changing one.
 - `@supabase/realtime-js` is aliased to a stub at build time (`site/realtime-stub.js`) — supabase-js builds a client for it unconditionally and this app has no realtime call sites by design. Restore the real package before trying to use channels; `channel()` throws to say so.
 - Rounds are scoped by bow (v1.26). A round carrying `bows: [...]` is only
-  offered to those bows; an untagged one is offered to all. Tag a round
-  ONLY where the bow changes the face itself — indoors it does, because
-  compound's ten-ring is half the diameter (`COMPOUND_TEN_SCALE`), so the
-  `C` and `R` variants are different scoring faces. Outdoor rounds are
-  untagged on purpose: the face is identical for every bow and only the
-  competition distance differs, which is a rule about the archer. The
-  picker demotes, never removes — `roundsForBow()` returns `{suited,
+  offered to those bows; an untagged one is offered to all. **Tag a round
+  only where FITARCO's Regolamento Tecnico Libro 2 ties its face to a
+  division independently of AGE CLASS**, and cite the article in a comment.
+  Two cases qualify today: indoors, art. 7.2.2.3's table gives the 10-ring
+  two diameters ("10 Compound" 3cm/2cm vs "10 Arco Olimpico" 6cm/4cm,
+  i.e. `COMPOUND_TEN_SCALE`) with no third row, so Arco Nudo scores as
+  Olimpico and `RECURVE_BOWS` is ricurvo+nudo; and outdoors, art. 4.5.1.7's
+  50m Round Arco Nudo on the 122cm face. Everything else outdoors stays
+  untagged because the distance moves with the age class (art. 4.5.1.4 and
+  its bis/ter hand 60m/40m/25m to different classes of one division) and
+  this app stores no age class. Don't tag from the round's NAME: 70m and
+  60m read "(Arco Ricurvo-Olimpico)" and are still untagged for that
+  reason. The picker demotes, never removes — `roundsForBow()` returns `{suited,
   others}` and the others sit behind a disclosure, so any bow can still
   shoot any face. `NEW_SESSION_STEPS` asks for the bow before the round;
   don't reorder it without moving the filter too.

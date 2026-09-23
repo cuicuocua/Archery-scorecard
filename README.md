@@ -38,7 +38,9 @@ Edit the `ROUND_TYPES` array at the top of the file.
 
 A round may carry `bows: ['ricurvo', ...]`, which scopes it to those bow
 types in the picker (see v1.26 in CHANGELOG.md); leaving it off offers the
-round to everyone, which is what the outdoor rounds do deliberately.
+round to everyone. Tag a round only where FITARCO's Regolamento Tecnico
+Libro 2 ties its face to a division regardless of age class, and cite the
+article — see the comment above `RECURVE_BOWS` for the two that qualify.
  Every round is a list
 of `stages` (distance, face diameter, arrows/end, number of ends per
 stage) — nothing about a round is hardcoded elsewhere. Most rounds are one
@@ -51,13 +53,22 @@ Assumptions made, to check against FITARCO/World Archery rules:
   versions — the full ten-ring one for ricurvo/nudo and a compound one
   scoring the inner 10, per the Las Vegas Shoot's compound divisions and
   the same World Archery indoor rule the compound triples already use.
-- **Indoor 25m**: 60cm face, 3×20 — mirrors the 18m structure for the
-  Italian indoor 25+18 combined round.
+- **Indoor 25m**: 60cm face, 3×20 — mirrors the 18m structure. FITARCO
+  Libro 2 art. 4.7.3 recognises the Gara al Chiuso a 25 metri and the
+  Combinata (25m+18m) for Olimpico, Arco Nudo and Compound alike, and
+  art. 7.2.2 lists single, triple-triangular and triple-vertical 60cm
+  faces, so all three 25m variants here are real faces.
 - **Targa 90m / 70m / 60m**: 122cm face, 6×12 (72 frecce) — 90/70m are the
   WA1440 long distances (70m is also the current WA outdoor ranking-round
   distance); 60m covers some categories (para, juniors).
-- **Targa 50m / 40m / 30m**: 80cm face, 6×12 — the WA1440 short distances,
-  and the standard compound/barebow distances.
+- **Targa 50m / 40m / 30m**: 80cm face, 6×12 — the WA1440 short distances.
+  50m/80cm is also FITARCO's 50 metri Compound Round (Libro 2 art. 4.5.1.3),
+  but recurve shoots 50m on the 80cm face in the 1440 too, so it is not
+  scoped to compound.
+- **Targa 50m — arco nudo**: 122cm face, 6×12 (72 frecce). Barebow's own
+  qualification round (FITARCO Libro 2 art. 4.5.1.7), and the only outdoor
+  distance+face the rules give to a single division — everyone else
+  shooting 50m is on the 80cm face.
 - **Personalizzata**: fully editable at session start (distance, face,
   arrows/end, ends per stage), and lets you add more stages via
   "+ Aggiungi tappa" — this is how WA1440 (any of its several age/gender

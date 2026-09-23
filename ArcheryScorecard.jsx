@@ -47,16 +47,33 @@ import { createClient } from '@supabase/supabase-js';
 // stage is compared against every other 70m stage ever shot, whether it
 // came from a standalone Targa 70m session or from inside another
 // multi-stage round. See stageEntries() below.
-// A round carries `bows` only where the BOW CHANGES THE FACE. Indoors it
-// does: compound's 10-ring is half the diameter of everyone else's, so the
-// compound and recurve versions of the same triple are different scoring
-// faces wearing the same name (see COMPOUND_TEN_SCALE). Barebow shoots the
-// recurve face, hence the pair below.
-// Outdoors nothing is tagged, deliberately: a 122cm face is a 122cm face
-// whatever is pointed at it. What differs there is which distance a
-// category competes at, which is a rule about the archer, not about the
-// target — and an archer training at any distance is doing nothing wrong.
-// An untagged round is offered to every bow.
+// A round carries `bows` only where the RULES assign its face to a
+// division independently of the archer's age class. Two cases qualify, and
+// both come straight out of FITARCO's Regolamento Tecnico di Tiro Libro 2
+// (in vigore dal 1 settembre 2022, agg. 26 luglio 2023):
+//
+//   Indoors, art. 7.2.2.3's scoring table gives the 10-ring two diameters:
+//   "10 Compound" is 3cm on the 60cm face and 2cm on the 40cm face, "10
+//   Arco Olimpico" is 6cm and 4cm. Half, exactly — which is what
+//   COMPOUND_TEN_SCALE models. There is no third row, so Arco Nudo scores
+//   on the Olimpico ten, and art. 4.5.2.1 puts 18m on "bersagli singoli o
+//   tripli da 40 cm, per tutte le classi" — all classes, so barebow may
+//   shoot the triples. Hence RECURVE_BOWS covers ricurvo AND nudo.
+//   (World Archery's own site describes barebow on a single-spot face;
+//   that is WA's indoor event format, not FITARCO's domestic rule, and
+//   this app's "gara" is explicitly FITARCO.)
+//
+//   Outdoors, only 50m on the 122cm face qualifies: art. 4.5.1.7's "50
+//   metri Round Arco Nudo" is the one outdoor distance+face pairing the
+//   rules give to a single division outright.
+//
+// Everything else outdoors stays untagged on purpose. The named rounds do
+// belong to divisions — 70m and 60m read "(Arco Ricurvo-Olimpico)", 50m on
+// 80cm is the "50 metri Compound Round" — but the distance moves with the
+// AGE CLASS: art. 4.5.1.4 gives 60m to Allievi and Master, 4.5.1.4 bis
+// gives Ragazzi 40m, 4.5.1.4 ter gives Giovanissimi 25m, and 50m/80cm is a
+// 1440 distance for recurve too. This app records no age class, so a
+// division-only tag would be wrong more often than right.
 const RECURVE_BOWS = ['ricurvo', 'nudo'];
 
 // Indoor face variants beyond the plain single full-face: WA/FITARCO's
@@ -108,6 +125,13 @@ const ROUND_TYPES = [
     stages: [{ distanceM: 70, faceCm: 122, arrowsPerEnd: 6, ends: 12 }] },
   { id: 'targa60', label: 'Targa 60m', category: 'Targa 122cm', editable: false,
     stages: [{ distanceM: 60, faceCm: 122, arrowsPerEnd: 6, ends: 12 }] },
+  // FITARCO Libro 2 art. 4.5.1.7: "Il 50 metri Round Arco Nudo consiste in
+  // 72 frecce da tirare a 50 metri su bersagli da 122 cm di diametro."
+  // Barebow's own qualification round, and the only outdoor distance+face
+  // the rules hand to one division outright — everyone else shooting 50m
+  // is on the 80cm face.
+  { id: 'targa50Nudo', label: 'Targa 50m — arco nudo', category: 'Targa 122cm', editable: false, bows: ['nudo'],
+    stages: [{ distanceM: 50, faceCm: 122, arrowsPerEnd: 6, ends: 12 }] },
 
   // The 80cm face only ever prints rings 5-10 (see ringGeometry's
   // 'outdoor6' — a margin-cut face, not an isolated spot: the paper itself

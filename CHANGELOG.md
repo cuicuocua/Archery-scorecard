@@ -1171,3 +1171,48 @@ the wrong ten-ring.
 filter that always returns true fails 8, the old step order fails 1,
 removing the auto-open guard fails 1, scoring the compound Vegas on the
 recurve ten-ring fails 1, and untagging it fails 3.
+
+## v1.27 additions — The rules, not the guesswork
+
+The bow scoping in v1.26 was reasoned from the ring geometry already in
+the code rather than from any rulebook, and said so. Checked against
+FITARCO's Regolamento Tecnico di Tiro Libro 2 (in vigore dal 1 settembre
+2022, aggiornato al 26 luglio 2023), the reasoning held — but only one of
+the two things it was resting on was actually right for the right reason,
+and it was missing a round.
+
+- **Indoor scoping confirmed, and now cited.** Art. 7.2.2.3's table gives
+  the indoor 10-ring two diameters and only two: "10 Compound" at 3cm on
+  the 60cm face and 2cm on the 40cm, "10 Arco Olimpico" at 6cm and 4cm.
+  Exactly half, which is what `COMPOUND_TEN_SCALE` models. There is no
+  third row, so **Arco Nudo scores on the Olimpico ten** — and art. 4.5.2.1
+  puts the 18m round on "bersagli singoli o tripli da 40 cm, per tutte le
+  classi", so barebow may shoot the triples. `RECURVE_BOWS` covering
+  ricurvo and nudo was right. (World Archery's own site describes barebow
+  on a single-spot face; that is WA's event format, not FITARCO's domestic
+  rule, and this app's "gara" is explicitly FITARCO.)
+- **The 25m round is real, and so are its triples.** Art. 4.7.3 recognises
+  the Gara al Chiuso a 25 metri and the Combinata (25m+18m) for Olimpico,
+  Arco Nudo and Compound alike; art. 7.2.2 lists 60cm faces in single,
+  triple-triangular and triple-vertical. The README's note that this
+  "mirrors the 18m structure" was an assumption and is now a citation.
+- **Barebow was missing its outdoor round.** Art. 4.5.1.7: "Il 50 metri
+  Round Arco Nudo consiste in 72 frecce da tirare a 50 metri su bersagli
+  da 122 cm di diametro." It had no entry at all — the only way to log it
+  was Personalizzata. Added as **Targa 50m — arco nudo**, scoped to nudo,
+  since it is the one outdoor distance+face the rules hand to a single
+  division outright. Everyone else shooting 50m is on the 80cm face.
+- **Outdoor stays unscoped, now for a stated reason rather than a hunch.**
+  The named rounds really are per-division — 70m and 60m read "(Arco
+  Ricurvo-Olimpico)", 50m/80cm is the "50 metri Compound Round" — but the
+  distance moves with the AGE CLASS: art. 4.5.1.4 gives 60m to Allievi and
+  Master, its bis gives Ragazzi 40m, its ter gives Giovanissimi 25m. This
+  app records no age class, so a division-only tag would be wrong more
+  often than right. 50m/80cm is a 1440 distance for recurve as well, so it
+  is not compound's alone either.
+
+The rule for future rounds: tag a face only where Libro 2 ties it to a
+division regardless of age class, and cite the article next to it.
+
+32 tests across the two files, 14 walking the real wizard. Untagging the
+new barebow round fails 3.

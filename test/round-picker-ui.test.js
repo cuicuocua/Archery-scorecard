@@ -93,11 +93,25 @@ describe('the round list answers the bow it was given', () => {
     ui.unmount();
   });
 
-  it('barebow is offered the recurve faces, not a list of its own', () => {
+  it('barebow is offered the recurve faces indoors', () => {
     const { ui } = startWith('Nudo');
     assert.ok(hasRound(ui, 'Vegas 3 punti'));
     assert.ok(!ui.has('(compound)'));
     ui.unmount();
+  });
+
+  // FITARCO Libro 2 art. 4.5.1.7 — barebow's own outdoor round, and the
+  // only one the rules give to a single division.
+  it('and gets its own 50m round outdoors, which nobody else sees', () => {
+    const { ui } = startWith('Nudo');
+    assert.ok(hasRound(ui, 'Targa 50m — arco nudo'), 'barebow shoots 50m on the 122cm face');
+    ui.unmount();
+    for (const bow of ['Ricurvo', 'Compound']) {
+      const other = startWith(bow);
+      assert.ok(!hasRound(other.ui, 'Targa 50m — arco nudo'), `${bow} does not compete on it`);
+      assert.ok(hasRound(other.ui, 'Targa 50m'), 'but still shoots 50m on the 80cm face');
+      other.ui.unmount();
+    }
   });
 
   it('leaves the outdoor rounds alone for every bow', () => {

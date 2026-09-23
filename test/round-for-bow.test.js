@@ -96,14 +96,33 @@ describe('roundsForBow splits the catalogue without losing any of it', () => {
     assert.equal(idsFor(null).length, m.ROUND_TYPES.length);
   });
 
-  // The outdoor faces are identical whatever is pointed at them; what
-  // differs is which distance a category competes at, and training at any
-  // distance is not an error worth hiding a round over.
-  it('demotes nothing outdoors for any bow', () => {
+  // Outdoors the rules tie a face to a division exactly once — FITARCO
+  // Libro 2 art. 4.5.1.7's 50m Round Arco Nudo, on the 122cm face. Every
+  // other outdoor distance moves with the archer's AGE CLASS (art. 4.5.1.4
+  // and its bis/ter give 60m, 40m and 25m to different classes of the same
+  // division), and this app records no age class, so nothing else may be
+  // scoped by bow.
+  it('demotes only the one outdoor round the rules assign to a division', () => {
+    for (const bow of ['ricurvo', 'compound']) {
+      assert.deepEqual(othersFor(bow).filter(id => !byId(id).category.startsWith('Indoor')),
+        ['targa50Nudo'], `${bow}: only the barebow 50m round may be demoted outdoors`);
+    }
+    assert.deepEqual(othersFor('nudo').filter(id => !byId(id).category.startsWith('Indoor')),
+      [], 'barebow keeps its own round in the main list');
+  });
+
+  it('gives barebow the 50m round on the full 122cm face, per art. 4.5.1.7', () => {
+    const r = byId('targa50Nudo');
+    assert.deepEqual(r.bows, ['nudo']);
+    assert.equal(r.stages[0].distanceM, 50);
+    assert.equal(r.stages[0].faceCm, 122, 'barebow shoots 50m on 122cm, not the 80cm face');
+    assert.equal(r.stages[0].arrowsPerEnd * r.stages[0].ends, 72, '72 frecce');
+    assert.equal(r.stages[0].ringClass, undefined, 'the full ten-zone face, not a cut one');
+  });
+
+  it('keeps 50m on the 80cm face open to everyone, since recurve shoots it in the 1440', () => {
     for (const bow of ['ricurvo', 'compound', 'nudo']) {
-      const demoted = othersFor(bow).map(id => byId(id));
-      assert.ok(demoted.every(r => r.category.startsWith('Indoor')),
-        `${bow}: only indoor faces should ever be demoted, got ${othersFor(bow)}`);
+      assert.ok(idsFor(bow).includes('targa50'), `${bow} may shoot 50m on 80cm`);
     }
   });
 
