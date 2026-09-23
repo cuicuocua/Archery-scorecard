@@ -16,6 +16,17 @@ Build with `npm run build`.
 - There **is** a service worker (`site/sw.js`, v1.18): the app shell opens with no connectivity and installs as a PWA. It caches the shell only — data still comes from Supabase, so offline *reads* of your sessions are not covered. This rule used to say the opposite; it was written before v1.18 shipped one.
 - Round definitions are assumptions to verify against FITARCO / World Archery rules. Cite the source when changing one.
 - `@supabase/realtime-js` is aliased to a stub at build time (`site/realtime-stub.js`) — supabase-js builds a client for it unconditionally and this app has no realtime call sites by design. Restore the real package before trying to use channels; `channel()` throws to say so.
+- Rounds are scoped by bow (v1.26). A round carrying `bows: [...]` is only
+  offered to those bows; an untagged one is offered to all. Tag a round
+  ONLY where the bow changes the face itself — indoors it does, because
+  compound's ten-ring is half the diameter (`COMPOUND_TEN_SCALE`), so the
+  `C` and `R` variants are different scoring faces. Outdoor rounds are
+  untagged on purpose: the face is identical for every bow and only the
+  competition distance differs, which is a rule about the archer. The
+  picker demotes, never removes — `roundsForBow()` returns `{suited,
+  others}` and the others sit behind a disclosure, so any bow can still
+  shoot any face. `NEW_SESSION_STEPS` asks for the bow before the round;
+  don't reorder it without moving the filter too.
 - Conditions are scoped by environment (v1.25). A condition dimension or tag carrying `env: 'indoor' | 'outdoor'` is only offered where it can be answered — wind and sun outdoors, `Illuminazione` indoors, rain outdoors only. A session's environment comes from `sessionEnvironment()`: the archer's stored answer if there is one, otherwise read off the round shape (`roundIsIndoor`), so pre-v1.25 history needs no migration. When adding a condition, mark its `env` or it will be asked everywhere.
 
 ## Tests

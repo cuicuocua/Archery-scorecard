@@ -60,10 +60,16 @@ function mount(element) {
     has: (s) => container.textContent.includes(s),
     buttons: () => buttons().map((b) => b.textContent.trim()),
     // Exact-match first so '10' never picks up a button labelled '100'.
+    // aria-label comes next, because an icon-only button (back arrows, the
+    // bin) has no text at all and is otherwise unclickable from a test.
     click(label) {
       const b = buttons().find((x) => x.textContent.trim() === label)
+             || buttons().find((x) => x.getAttribute('aria-label') === label)
              || buttons().find((x) => x.textContent.trim().includes(label));
-      if (!b) throw new Error(`no button ${JSON.stringify(label)}; have: ${JSON.stringify(api.buttons())}`);
+      if (!b) {
+        const have = buttons().map((x) => x.textContent.trim() || `[aria: ${x.getAttribute('aria-label')}]`);
+        throw new Error(`no button ${JSON.stringify(label)}; have: ${JSON.stringify(have)}`);
+      }
       if (b.disabled) throw new Error(`button ${JSON.stringify(label)} is disabled`);
       act(() => { b.dispatchEvent(new window.MouseEvent('click', { bubbles: true })); });
       return api;

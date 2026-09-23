@@ -34,7 +34,12 @@ handled by Supabase as above.
 
 ## Round definitions
 
-Edit the `ROUND_TYPES` array at the top of the file. Every round is a list
+Edit the `ROUND_TYPES` array at the top of the file.
+
+A round may carry `bows: ['ricurvo', ...]`, which scopes it to those bow
+types in the picker (see v1.26 in CHANGELOG.md); leaving it off offers the
+round to everyone, which is what the outdoor rounds do deliberately.
+ Every round is a list
 of `stages` (distance, face diameter, arrows/end, number of ends per
 stage) — nothing about a round is hardcoded elsewhere. Most rounds are one
 stage; a few (WA1440, WA Combined) are shot as several distances back to

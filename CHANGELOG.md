@@ -1121,3 +1121,44 @@ analysis afterwards.
 
 27 tests, 9 of them driving the editor itself. Three fail against the old
 unconditional version, checked by reverting it.
+
+## v1.26 additions — The bow picks the target
+
+The round picker offered all seventeen faces to every archer, in one
+undifferentiated list, with the compound and recurve versions of the same
+round sitting next to each other under near-identical names — "tripla
+verticale" and "tripla verticale (compound)". Telling them apart was left
+entirely to the archer, and picking wrong meant scoring a whole round on
+the wrong ten-ring.
+
+- **The bow is asked before the round.** The wizard is now
+  *tipo → arco → prova → dettagli*. Which faces are the right ones is a
+  fact about the bow, so asking first is what lets the list be an answer
+  rather than a catalogue.
+- **Indoor faces are filtered by bow.** Compound's ten-ring is half the
+  diameter of everyone else's (`COMPOUND_TEN_SCALE`), so the compound and
+  recurve versions of a round really are different scoring faces wearing
+  almost the same name. A compound archer now sees the three compound
+  faces per distance; a recurve or barebow archer sees theirs. Barebow
+  shoots the recurve paper and gets the recurve list.
+- **Outdoor faces are deliberately not filtered.** A 122cm face is a 122cm
+  face whatever is pointed at it. What differs outdoors is which distance
+  a category competes at — a rule about the archer, not about the target —
+  and training at any distance is not a mistake worth hiding a round over.
+- **Nothing is ever removed, only demoted.** Everything not meant for the
+  chosen bow stays one tap away under **Altre prove — bersagli di un altro
+  arco, si possono usare lo stesso**, because shooting another bow's face
+  is a normal thing to do in training. Picking from there is a real
+  choice, not a dead end: the session starts on that face with the bow the
+  archer actually said they were using.
+- **Declining to say which bow filters nothing.** "Non specificato" shows
+  the full list and no disclosure, since filtering on an unanswered
+  question would hide rounds for no reason.
+- **Going back to change the bow never hides a tick.** If the round already
+  chosen ends up on the wrong side of the split, the disclosure opens by
+  itself rather than the selection being dropped or the checkmark
+  disappearing behind a closed panel.
+
+26 tests, 11 of them walking the real wizard. Verified by mutation: a
+filter that always returns true fails 8, the old step order fails 1, and
+removing the auto-open guard fails 1.

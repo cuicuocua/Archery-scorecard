@@ -47,6 +47,18 @@ import { createClient } from '@supabase/supabase-js';
 // stage is compared against every other 70m stage ever shot, whether it
 // came from a standalone Targa 70m session or from inside another
 // multi-stage round. See stageEntries() below.
+// A round carries `bows` only where the BOW CHANGES THE FACE. Indoors it
+// does: compound's 10-ring is half the diameter of everyone else's, so the
+// compound and recurve versions of the same triple are different scoring
+// faces wearing the same name (see COMPOUND_TEN_SCALE). Barebow shoots the
+// recurve face, hence the pair below.
+// Outdoors nothing is tagged, deliberately: a 122cm face is a 122cm face
+// whatever is pointed at it. What differs there is which distance a
+// category competes at, which is a rule about the archer, not about the
+// target — and an archer training at any distance is doing nothing wrong.
+// An untagged round is offered to every bow.
+const RECURVE_BOWS = ['ricurvo', 'nudo'];
+
 // Indoor face variants beyond the plain single full-face: WA/FITARCO's
 // triple vertical/triangular (recurve and compound — compound's 10-ring is
 // half the diameter, see COMPOUND_TEN_SCALE) and the Vegas 3-Spot round.
@@ -57,27 +69,29 @@ import { createClient } from '@supabase/supabase-js';
 // spotLayout" — it gets its own entry with its own end count.
 function indoorTripleVariants(distanceM, faceCm) {
   return [
-    { id: `indoor${distanceM}TripleVerticaleR`, label: `Indoor ${distanceM}m — tripla verticale`, category: `Indoor ${distanceM}m`, editable: false,
+    { id: `indoor${distanceM}TripleVerticaleR`, label: `Indoor ${distanceM}m — tripla verticale`, category: `Indoor ${distanceM}m`, editable: false, bows: RECURVE_BOWS,
       stages: [{ distanceM, faceCm, arrowsPerEnd: 3, ends: 20, spotLayout: 'vertical3', ringClass: 'spot6R' }] },
-    { id: `indoor${distanceM}TripleTriangolareR`, label: `Indoor ${distanceM}m — tripla triangolare`, category: `Indoor ${distanceM}m`, editable: false,
+    { id: `indoor${distanceM}TripleTriangolareR`, label: `Indoor ${distanceM}m — tripla triangolare`, category: `Indoor ${distanceM}m`, editable: false, bows: RECURVE_BOWS,
       stages: [{ distanceM, faceCm, arrowsPerEnd: 3, ends: 20, spotLayout: 'triangular3', ringClass: 'spot6R' }] },
-    { id: `indoor${distanceM}TripleVerticaleC`, label: `Indoor ${distanceM}m — tripla verticale (compound)`, category: `Indoor ${distanceM}m`, editable: false,
+    { id: `indoor${distanceM}TripleVerticaleC`, label: `Indoor ${distanceM}m — tripla verticale (compound)`, category: `Indoor ${distanceM}m`, editable: false, bows: ['compound'],
       stages: [{ distanceM, faceCm, arrowsPerEnd: 3, ends: 20, spotLayout: 'vertical3', ringClass: 'spot6C' }] },
-    { id: `indoor${distanceM}TripleTriangolareC`, label: `Indoor ${distanceM}m — tripla triangolare (compound)`, category: `Indoor ${distanceM}m`, editable: false,
+    { id: `indoor${distanceM}TripleTriangolareC`, label: `Indoor ${distanceM}m — tripla triangolare (compound)`, category: `Indoor ${distanceM}m`, editable: false, bows: ['compound'],
       stages: [{ distanceM, faceCm, arrowsPerEnd: 3, ends: 20, spotLayout: 'triangular3', ringClass: 'spot6C' }] },
-    { id: `indoor${distanceM}SingoloC`, label: `Indoor ${distanceM}m — singolo (compound)`, category: `Indoor ${distanceM}m`, editable: false,
+    { id: `indoor${distanceM}SingoloC`, label: `Indoor ${distanceM}m — singolo (compound)`, category: `Indoor ${distanceM}m`, editable: false, bows: ['compound'],
       stages: [{ distanceM, faceCm, arrowsPerEnd: 3, ends: 20, spotLayout: 'single', ringClass: 'indoor6C' }] },
   ];
 }
 
 const ROUND_TYPES = [
-  { id: 'indoor18', label: 'Indoor 18m', category: 'Indoor 18m', editable: false,
+  // The plain full face is the recurve/barebow one: compound's equivalent
+  // at the same distance is "singolo (compound)", with the tighter 10.
+  { id: 'indoor18', label: 'Indoor 18m', category: 'Indoor 18m', editable: false, bows: RECURVE_BOWS,
     stages: [{ distanceM: 18, faceCm: 40, arrowsPerEnd: 3, ends: 20 }] },
   ...indoorTripleVariants(18, 40),
-  { id: 'vegas3spot', label: 'Vegas 3 punti', category: 'Indoor 18m', editable: false,
+  { id: 'vegas3spot', label: 'Vegas 3 punti', category: 'Indoor 18m', editable: false, bows: RECURVE_BOWS,
     stages: [{ distanceM: 18, faceCm: 40, arrowsPerEnd: 3, ends: 10, spotLayout: 'triangular3', ringClass: 'spot6R' }] },
 
-  { id: 'indoor25', label: 'Indoor 25m', category: 'Indoor 25m', editable: false,
+  { id: 'indoor25', label: 'Indoor 25m', category: 'Indoor 25m', editable: false, bows: RECURVE_BOWS,
     stages: [{ distanceM: 25, faceCm: 60, arrowsPerEnd: 3, ends: 20 }] },
   ...indoorTripleVariants(25, 60),
 
@@ -107,17 +121,36 @@ const ROUND_TYPES = [
     stages: [{ distanceM: 30, faceCm: 40, arrowsPerEnd: 3, ends: 10 }] },
 ];
 
-// ROUND_TYPES grouped by category, in declaration order — drives the
-// grouped headings in the round picker without hardcoding group names twice.
-const ROUND_GROUPS = (() => {
+// Rounds grouped by category, in declaration order — drives the grouped
+// headings in the round picker without hardcoding group names twice. Takes
+// a list rather than reading ROUND_TYPES directly so the picker can group
+// the rounds that suit the chosen bow and the rest with the same code.
+function groupRounds(rounds) {
   const groups = [];
-  ROUND_TYPES.forEach(r => {
+  rounds.forEach(r => {
     const last = groups[groups.length - 1];
     if (last && last.category === r.category) last.rounds.push(r);
     else groups.push({ category: r.category, rounds: [r] });
   });
   return groups;
-})();
+}
+
+const ROUND_GROUPS = groupRounds(ROUND_TYPES);
+
+// An untagged round suits every bow, and so does everything when the archer
+// declined to say which bow they're using — filtering on an unanswered
+// question would hide rounds for no reason.
+const roundSuitsBow = (r, bowId) => !bowId || !r.bows || r.bows.includes(bowId);
+
+// The picker never drops a round, it only demotes it: anything not meant
+// for this bow stays reachable behind a disclosure, because shooting a face
+// your bow doesn't compete on is a normal thing to do in training.
+function roundsForBow(bowId) {
+  return {
+    suited: groupRounds(ROUND_TYPES.filter(r => roundSuitsBow(r, bowId))),
+    others: groupRounds(ROUND_TYPES.filter(r => !roundSuitsBow(r, bowId))),
+  };
+}
 
 const BOW_TYPES = [
   { id: 'ricurvo', label: 'Ricurvo' },
@@ -3008,8 +3041,11 @@ function Stepper({ label, value, onChange, min, max, step }) {
   );
 }
 
-const NEW_SESSION_STEPS = ['type', 'round', 'bow', 'details'];
-const NEW_SESSION_TITLES = { type: 'Che tipo di sessione?', round: 'Che prova?', bow: 'Con che arco?', details: 'Ultimi dettagli' };
+// Bow before round: which faces are the right ones is a fact about the bow,
+// so asking for the bow first is what lets the round list be an answer
+// rather than a catalogue.
+const NEW_SESSION_STEPS = ['type', 'bow', 'round', 'details'];
+const NEW_SESSION_TITLES = { type: 'Che tipo di sessione?', bow: 'Con che arco?', round: 'Che prova?', details: 'Ultimi dettagli' };
 
 // Short one-line summary shown under a round's name in the picker.
 function roundSummary(r) {
@@ -3031,9 +3067,34 @@ function NewSessionScreen({ onCreate, onCancel }) {
   const [free, setFree] = useState(() => customDef.stages.map(s => ({ ...s })));
   const [location, setLocation] = useState('');
   const [note, setNote] = useState('');
+  const [showOtherRounds, setShowOtherRounds] = useState(false);
 
   const selected = ROUND_TYPES.find(r => r.id === selectedId);
   const effective = selected && selected.editable ? { ...selected, stages: free } : selected;
+  const { suited, others } = useMemo(() => roundsForBow(bowType), [bowType]);
+  // Going back to change the bow can leave the already-picked round on the
+  // wrong side of the disclosure. Rather than dropping the choice, open the
+  // section holding it so the tick is never hidden behind a closed panel.
+  const othersOpen = showOtherRounds || (!!selected && !roundSuitsBow(selected, bowType));
+
+  function renderRoundGroups(groups) {
+    return groups.map(g => (
+      <div key={g.category} className="flex flex-col gap-2">
+        <div className="text-xs uppercase tracking-wide" style={{ color: T.textFaint }}>{g.category}</div>
+        {g.rounds.map(r => (
+          <button key={r.id} onClick={() => chooseRound(r.id)}
+            className="text-left rounded-2xl px-4 py-3 flex items-center justify-between"
+            style={{ background: r.id === selectedId ? T.surfaceAlt : T.surface, border: `1px solid ${r.id === selectedId ? T.gold : T.border}` }}>
+            <div>
+              <div className="font-semibold">{r.label}</div>
+              <div className="text-xs" style={{ color: T.textDim }}>{roundSummary(r)}</div>
+            </div>
+            {r.id === selectedId && <Check color={T.gold} size={20} />}
+          </button>
+        ))}
+      </div>
+    ));
+  }
 
   function goBack() {
     const idx = NEW_SESSION_STEPS.indexOf(step);
@@ -3046,20 +3107,20 @@ function NewSessionScreen({ onCreate, onCancel }) {
     // Gara sociale rounds are usually made up on the spot, so land directly
     // on the custom distance/face picker instead of the fixed presets.
     if (id === 'sociale') setSelectedId('custom');
-    setStep('round');
+    setStep('bow');
   }
 
   function chooseRound(id) {
     setSelectedId(id);
     const r = ROUND_TYPES.find(x => x.id === id);
-    if (!r.editable) setStep('bow');
+    if (!r.editable) setStep('details');
     // editable (custom) rounds stay on this step so the steppers are visible;
     // advancing happens via the explicit "Continua" button below.
   }
 
   function chooseBow(id) {
     setBowType(id);
-    setStep('details');
+    setStep('round');
   }
 
   function handleStart() {
@@ -3099,23 +3160,26 @@ function NewSessionScreen({ onCreate, onCancel }) {
       {step === 'round' && (
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-3">
-            {ROUND_GROUPS.map(g => (
-              <div key={g.category} className="flex flex-col gap-2">
-                <div className="text-xs uppercase tracking-wide" style={{ color: T.textFaint }}>{g.category}</div>
-                {g.rounds.map(r => (
-                  <button key={r.id} onClick={() => chooseRound(r.id)}
-                    className="text-left rounded-2xl px-4 py-3 flex items-center justify-between"
-                    style={{ background: r.id === selectedId ? T.surfaceAlt : T.surface, border: `1px solid ${r.id === selectedId ? T.gold : T.border}` }}>
-                    <div>
-                      <div className="font-semibold">{r.label}</div>
-                      <div className="text-xs" style={{ color: T.textDim }}>{roundSummary(r)}</div>
-                    </div>
-                    {r.id === selectedId && <Check color={T.gold} size={20} />}
-                  </button>
-                ))}
-              </div>
-            ))}
+            {renderRoundGroups(suited)}
           </div>
+
+          {others.length > 0 && (
+            <div className="flex flex-col gap-3">
+              <button onClick={() => setShowOtherRounds(v => !v)}
+                className="flex items-center justify-between rounded-xl px-4 py-3 text-left"
+                style={{ background: T.surfaceAlt, border: `1px dashed ${T.border}` }}>
+                <div>
+                  <div className="text-sm font-semibold" style={{ color: T.textDim }}>Altre prove</div>
+                  <div className="text-xs" style={{ color: T.textFaint }}>
+                    Bersagli di un altro arco — si possono usare lo stesso
+                  </div>
+                </div>
+                <ChevronRight color={T.textFaint} size={18}
+                  style={{ transform: othersOpen ? 'rotate(90deg)' : 'none', transition: 'transform 120ms' }} />
+              </button>
+              {othersOpen && renderRoundGroups(others)}
+            </div>
+          )}
 
           {selected && selected.editable && (
             <>
@@ -3141,7 +3205,7 @@ function NewSessionScreen({ onCreate, onCancel }) {
                   + Aggiungi tappa
                 </button>
               </div>
-              <button onClick={() => setStep('bow')} className="rounded-2xl py-3.5 font-bold" style={{ background: T.gold, color: GOLD_TEXT }}>
+              <button onClick={() => setStep('details')} className="rounded-2xl py-3.5 font-bold" style={{ background: T.gold, color: GOLD_TEXT }}>
                 Continua
               </button>
             </>
@@ -3155,13 +3219,13 @@ function NewSessionScreen({ onCreate, onCancel }) {
             {BOW_TYPES.map(b => (
               <button key={b.id} onClick={() => chooseBow(b.id)}
                 className="text-left rounded-2xl px-4 py-4 flex items-center justify-between"
-                style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+                style={{ background: b.id === bowType ? T.surfaceAlt : T.surface, border: `1px solid ${b.id === bowType ? T.gold : T.border}` }}>
                 <div className="font-semibold text-lg">{b.label}</div>
                 <ChevronRight color={T.textDim} />
               </button>
             ))}
           </div>
-          <button onClick={() => setStep('details')} className="text-sm py-2" style={{ color: T.textDim }}>
+          <button onClick={() => chooseBow(null)} className="text-sm py-2" style={{ color: T.textDim }}>
             Non specificato
           </button>
         </div>
@@ -7574,6 +7638,9 @@ export {
   // conditions: indoor vs outdoor
   roundIsIndoor, sessionEnvironment, entryEnvironment, conditionDimensionsFor,
   emptyConditions, ENVIRONMENTS, LIGHT_LEVELS, CONDITION_DIMENSIONS, CONDITION_TAGS,
+  // round picker: which faces suit which bow
+  roundSuitsBow, roundsForBow, groupRounds, RECURVE_BOWS, BOW_TYPES, NEW_SESSION_STEPS,
+  ROUND_TYPES, ROUND_GROUPS,
   bestByShape, sessionInsight,
   // personal scorecard: group model + uncertainty
   separateFlyers, expectedScorePerArrow, pointsBreakdown, angularDispersionMrad,
@@ -7604,5 +7671,5 @@ export {
   // tournaments: participant self-scoring
   unitsMatch, rebuildMatchFromUnits, reconcilePendingSubmissions, SUBMISSION_MISMATCH_KEY,
   // components, for the DOM tests in test/ (see test/dom.cjs)
-  AuthGate, ConditionsEditor,
+  AuthGate, ConditionsEditor, NewSessionScreen,
 };
