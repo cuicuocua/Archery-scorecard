@@ -156,8 +156,18 @@ const SUN_POSITIONS = [
   { id: 'controluce', label: 'Controluce' },
 ];
 
+// Indoors the sun is replaced by whatever the hall has. Halls differ wildly,
+// and a dim one, a patchy one, or one throwing glare onto the face is the
+// indoor equivalent of shooting into the sun.
+const LIGHT_LEVELS = [
+  { id: 'buona', label: 'Buona' },
+  { id: 'fioca', label: 'Fioca' },
+  { id: 'irregolare', label: 'Irregolare' },
+  { id: 'riflessi', label: 'Riflessi' },
+];
+
 const CONDITION_TAGS = [
-  { id: 'pioggia', label: 'Pioggia' },
+  { id: 'pioggia', label: 'Pioggia', env: 'outdoor' },
   { id: 'freddo', label: 'Freddo' },
   { id: 'caldo', label: 'Caldo' },
   { id: 'rumore', label: 'Rumore/folla' },
@@ -165,14 +175,53 @@ const CONDITION_TAGS = [
   { id: 'materiale_nuovo', label: 'Materiale nuovo' },
 ];
 
+const ENVIRONMENTS = [
+  { id: 'outdoor', label: 'All’aperto' },
+  { id: 'indoor', label: 'Al chiuso' },
+];
+
+// `env` marks a dimension — or a single tag — as belonging to one
+// environment only. Wind and sun don't exist in a hall; hall lighting
+// doesn't exist on a field. Asking anyway put four dead questions in front
+// of the archer after every indoor session, and four empty bars in the
+// analysis afterwards.
 const CONDITION_DIMENSIONS = [
-  { id: 'wind', label: 'Vento', options: WIND_LEVELS },
+  { id: 'wind', label: 'Vento', options: WIND_LEVELS, env: 'outdoor' },
+  { id: 'sun', label: 'Sole', options: SUN_POSITIONS, env: 'outdoor' },
+  { id: 'light', label: 'Luce', options: LIGHT_LEVELS, env: 'indoor' },
   { id: 'timeOfDay', label: 'Momento', options: TIME_OF_DAY },
-  { id: 'sun', label: 'Sole', options: SUN_POSITIONS },
   { id: 'tags', label: 'Altro', options: CONDITION_TAGS },
 ];
 
-function emptyConditions() { return { wind: null, timeOfDay: null, sun: null, tags: [] }; }
+const inEnv = (item, env) => !item.env || item.env === env;
+const conditionDimensionsFor = (env) => CONDITION_DIMENSIONS.filter((d) => inEnv(d, env));
+
+function emptyConditions() {
+  return { environment: null, wind: null, timeOfDay: null, sun: null, light: null, tags: [] };
+}
+
+// Indoor rounds in ROUND_TYPES all carry a category starting "Indoor", but a
+// session only ever snapshots the stage shape, never the round it came from
+// — so sessions recorded before the environment existed, and custom rounds,
+// are read off the shape instead. WA indoor is 18m/40cm and 25m/60cm; every
+// outdoor target round is both longer and on a bigger face.
+const roundIsIndoor = (round) => round.distanceM <= 25 && round.faceCm <= 60;
+
+function environmentOf(conditions, rounds) {
+  if (conditions?.environment) return conditions.environment;
+  return rounds.length && rounds.every(roundIsIndoor) ? 'indoor' : 'outdoor';
+}
+
+function sessionEnvironment(session) {
+  return environmentOf(session?.conditions, (session?.stages || []).map((st) => st.round));
+}
+
+// stageEntries() flattens a session into one entry per stage, carrying the
+// session's conditions along — so a multi-distance session's 18m stage is
+// judged on its own shape rather than the whole session's.
+function entryEnvironment(entry) {
+  return environmentOf(entry?.conditions, entry?.round ? [entry.round] : []);
+}
 
 // Personal-best / pace comparisons and the deeper analysis charts are scoped
 // per round + arco + tipo — a gara score and an allenamento score aren't the
@@ -840,7 +889,16 @@ function createSession(roundDef, meta) {
     stages,
     sessionType: meta.sessionType || 'allenamento',
     bowType: meta.bowType || null,
-    conditions: emptyConditions(),
+    // Preset indoor rounds are categorised "Indoor 18m"/"Indoor 25m"; a
+    // custom round has no category worth trusting, so it falls back to the
+    // shape. Either way the archer can change it in the conditions editor —
+    // this only decides which questions are worth putting in front of them.
+    conditions: {
+      ...emptyConditions(),
+      environment: /^Indoor/.test(roundDef.category || '')
+        ? 'indoor'
+        : (stages.every((st) => roundIsIndoor(st.round)) ? 'indoor' : 'outdoor'),
+    },
     status: 'in_progress',
     startedAt: new Date().toISOString(),
     completedAt: null,
@@ -2556,16 +2614,37 @@ function ChipSelect({ label, options, value, onChange, multi = false }) {
 
 function ConditionsEditor({ session, onUpdate }) {
   const conditions = session.conditions || emptyConditions();
+  const env = sessionEnvironment(session);
   function patch(fields) {
     onUpdate(s => ({ ...s, conditions: { ...(s.conditions || emptyConditions()), ...fields } }));
+  }
+  // Switching environment clears the answers that no longer apply, so a
+  // session mislabelled outdoor and then corrected doesn't keep a wind
+  // reading nobody could have taken in a hall.
+  function setEnvironment(next) {
+    if (!next || next === env) return;
+    const keptTags = (conditions.tags || []).filter(
+      id => inEnv(CONDITION_TAGS.find(t => t.id === id) || {}, next));
+    patch(next === 'indoor'
+      ? { environment: next, wind: null, sun: null, tags: keptTags }
+      : { environment: next, light: null, tags: keptTags });
   }
   return (
     <div className="flex flex-col gap-3 w-full rounded-2xl p-4" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
       <div className="text-sm font-semibold" style={{ color: T.textDim }}>Condizioni</div>
-      <ChipSelect label="Vento" options={WIND_LEVELS} value={conditions.wind} onChange={(v) => patch({ wind: v })} />
+      <ChipSelect label="Ambiente" options={ENVIRONMENTS} value={env} onChange={setEnvironment} />
+      {env === 'outdoor' && (
+        <ChipSelect label="Vento" options={WIND_LEVELS} value={conditions.wind} onChange={(v) => patch({ wind: v })} />
+      )}
+      {env === 'outdoor' && (
+        <ChipSelect label="Posizione del sole" options={SUN_POSITIONS} value={conditions.sun} onChange={(v) => patch({ sun: v })} />
+      )}
+      {env === 'indoor' && (
+        <ChipSelect label="Illuminazione" options={LIGHT_LEVELS} value={conditions.light} onChange={(v) => patch({ light: v })} />
+      )}
       <ChipSelect label="Momento della giornata" options={TIME_OF_DAY} value={conditions.timeOfDay} onChange={(v) => patch({ timeOfDay: v })} />
-      <ChipSelect label="Posizione del sole" options={SUN_POSITIONS} value={conditions.sun} onChange={(v) => patch({ sun: v })} />
-      <ChipSelect label="Altre condizioni" options={CONDITION_TAGS} value={conditions.tags} onChange={(v) => patch({ tags: v })} multi />
+      <ChipSelect label="Altre condizioni" options={CONDITION_TAGS.filter(t => inEnv(t, env))}
+        value={conditions.tags} onChange={(v) => patch({ tags: v })} multi />
     </div>
   );
 }
@@ -3671,7 +3750,18 @@ function StatisticheScreen({ sessions, tournaments = [], userEmail = null }) {
   const hasPositions = useMemo(() => !!activeShape && allArrows.some(a => a.x != null), [allArrows, activeShape]);
   const dispersion = useMemo(() => (filterId ? dispersionTrend(completed) : []), [completed, filterId]);
   const distribution = useMemo(() => (filterId ? scoreDistribution(completed) : []), [completed, filterId]);
-  const byCondition = useMemo(() => (filterId ? scoreByCondition(completed, conditionDim) : []), [completed, filterId, conditionDim]);
+  // A round shape can have been shot in both environments — 18m indoors all
+  // winter, 18m on the field in summer — so a dimension is offered when ANY
+  // session in scope could answer it, rather than guessed from the shape.
+  const conditionDims = useMemo(() => {
+    const envs = new Set(completed.map(entryEnvironment));
+    if (!envs.size) return conditionDimensionsFor('outdoor');
+    return CONDITION_DIMENSIONS.filter(d => !d.env || envs.has(d.env));
+  }, [completed]);
+  const activeConditionDim = conditionDims.some(d => d.id === conditionDim)
+    ? conditionDim
+    : (conditionDims[0]?.id || 'tags');
+  const byCondition = useMemo(() => (filterId ? scoreByCondition(completed, activeConditionDim) : []), [completed, filterId, activeConditionDim]);
   const deepAnalysisReady = filterId != null && completed.length >= MIN_SESSIONS_FOR_DEEP_ANALYSIS;
 
   if (!completedSessions.length) {
@@ -4122,7 +4212,7 @@ function StatisticheScreen({ sessions, tournaments = [], userEmail = null }) {
                     </div>
                   </div>
                   <div className="overflow-x-auto pb-1">
-                    <SegmentedControl options={CONDITION_DIMENSIONS} value={conditionDim} onChange={setConditionDim} small />
+                    <SegmentedControl options={conditionDims} value={activeConditionDim} onChange={setConditionDim} small />
                   </div>
                   <div className="h-40 overflow-x-clip">
                     {byCondition.length ? (
@@ -7481,6 +7571,9 @@ export {
   // personal scorecard: analysis
   describeBias, endRangeStats, scoreStdDevBySession, dispersionTrend,
   scoreDistribution, scoreByCondition, hitRateByColor, colorTrendByShape,
+  // conditions: indoor vs outdoor
+  roundIsIndoor, sessionEnvironment, entryEnvironment, conditionDimensionsFor,
+  emptyConditions, ENVIRONMENTS, LIGHT_LEVELS, CONDITION_DIMENSIONS, CONDITION_TAGS,
   bestByShape, sessionInsight,
   // personal scorecard: group model + uncertainty
   separateFlyers, expectedScorePerArrow, pointsBreakdown, angularDispersionMrad,
@@ -7511,5 +7604,5 @@ export {
   // tournaments: participant self-scoring
   unitsMatch, rebuildMatchFromUnits, reconcilePendingSubmissions, SUBMISSION_MISMATCH_KEY,
   // components, for the DOM tests in test/ (see test/dom.cjs)
-  AuthGate,
+  AuthGate, ConditionsEditor,
 };

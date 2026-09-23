@@ -1086,3 +1086,38 @@ ship from the component layer in a single day.
 
 221 tests. Still no coverage of the tournament organizer's own screens —
 this covers the flows that actually failed, not all 64 components.
+
+## v1.25 additions — Indoor conditions
+
+After finishing a round the app asked about wind and the position of the
+sun whether or not the round had been shot in a hall. Four questions with
+no possible answer, every indoor session, and four empty bars in the
+analysis afterwards.
+
+- **Conditions now depend on where you shot.** A session carries an
+  `environment` (`indoor` / `outdoor`), shown as the first row of the
+  conditions editor so it can always be corrected in one tap. Outdoors asks
+  wind and sun as before; indoors asks **Illuminazione** instead — buona,
+  fioca, irregolare, riflessi — because halls vary enormously and a dim
+  one, a patchy one, or one throwing glare onto the face is the indoor
+  equivalent of shooting into the sun. Momento della giornata and the free
+  tags stay in both. **Pioggia** is outdoor-only.
+- **Nobody has to answer it twice.** The environment is defaulted when the
+  session is created: preset indoor rounds are already categorised
+  "Indoor 18m"/"Indoor 25m", and anything else falls back to the round
+  shape (WA indoor is 18m/40cm and 25m/60cm — every outdoor target round is
+  both longer and on a bigger face). Sessions recorded before this existed
+  are read the same way, so old history needs no migration and no rewrite.
+- **Correcting it clears what can no longer be true.** Moving a session
+  indoors drops its wind and sun readings and the rain tag rather than
+  leaving them in the record for the analysis to average over later; moving
+  it outdoors drops the lighting answer.
+- **Statistiche offers the same dimensions the sessions can answer.** The
+  "Media per condizioni" selector is built from the environments actually
+  present in the current round-shape scope — so a shape shot both indoors
+  in winter and on the field in summer still offers all of them, while an
+  indoor-only shape stops offering wind and sun. The selection falls back
+  automatically if the previously chosen dimension isn't available.
+
+27 tests, 9 of them driving the editor itself. Three fail against the old
+unconditional version, checked by reverting it.
