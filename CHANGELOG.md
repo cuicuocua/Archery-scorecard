@@ -1256,3 +1256,39 @@ those distances. May, not must.
   bucket.
 
 9 tests. Putting `outdoor6` back on Targa 50m fails 4 of them.
+
+## v1.29 additions — Binding the presets to the scoring
+
+v1.28's bug survived a suite of 280 passing tests, and the reason is worth
+recording: every test of `scoreFromRadiusUnits` fed it a hand-written ring
+class, and every test of `ROUND_TYPES` checked the data sat there
+correctly. Nothing bound the two. No test ever asked what a named preset
+actually scores. `test/preset-scoring-sweep.test.js` now does, walking
+every stage of every preset through the functions it really drives — 276
+assertions generated from `ROUND_TYPES` itself, so a round added later is
+swept the moment it exists.
+
+It immediately found a second bug of the same family.
+
+- **The keypad offered scores the face cannot award.** `Keypad` rendered
+  10 down to 1 regardless of the round, so on any 40cm triple an archer
+  could enter a 5, 4, 3, 2 or 1 — scores that face does not print. FITARCO
+  Libro 2 art. 7.2.2.1, on the triples: "la bassa zona di punteggio è
+  pertanto il sei (Azzurro)". Tapping the target face had always refused
+  those, so the app's two input methods disagreed about what a round could
+  score: exactly the same split that hid the 80cm bug, on 15 of the 23
+  preset rounds. `keypadKeysFor(round)` now derives the keys from the same
+  `ringGeometry` the face is drawn from, so the two can no longer drift.
+- **Tournament match scoring is unchanged.** It stores no ring class, so
+  `Keypad` falls back to the full layout there exactly as before, rather
+  than silently losing keys.
+
+The sweep's invariants, for every preset: dead centre is an X; the
+outermost printed ring scores `minRing` rather than a miss; past the paper
+is a miss; every score from 10 down to `minRing` is reachable and nothing
+below it is; the keypad offers exactly that set; the ten-ring has a real
+size on that paper; a tight central group models above 9.5; and each
+single-stage preset is still recognised as itself by `matchedPreset`.
+
+283 tests added across the sweep and a rendered keypad test. Reverting
+`keypadKeysFor` to the unconditional layout fails 15 of them.

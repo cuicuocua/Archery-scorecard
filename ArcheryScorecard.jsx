@@ -2556,10 +2556,23 @@ function GroupAnalysis({ round, arrows, dense = true }) {
   );
 }
 
-function Keypad({ onScore }) {
+// The keys this round's face can actually award. On a 40cm triple the
+// lowest printed ring is the six — FITARCO Libro 2 art. 7.2.2.1, on the
+// triples: "la bassa zona di punteggio è pertanto il sei (Azzurro)" — so a
+// 5 there is not a poor arrow, it is an arrow that cannot exist, and a
+// keypad accepting one records a score no judge could award. Tapping the
+// face has always refused those; the keypad went on offering them.
+// Without a round (tournament match scoring, which stores no ring class)
+// the full layout stands, exactly as before.
+function keypadKeysFor(round) {
+  const { minRing } = ringGeometry(round ? roundRingClass(round) : 'full');
+  return KEYPAD_LAYOUT.filter(k => k.score === 0 || k.score >= minRing);
+}
+
+function Keypad({ round, onScore }) {
   return (
     <div className="grid grid-cols-4 gap-2">
-      {KEYPAD_LAYOUT.map((k, i) => {
+      {keypadKeysFor(round).map((k, i) => {
         const c = SCORE_COLORS[k.score === 0 ? 'miss' : ringGroupForScore(k.score)];
         return (
           <button key={i} onClick={() => onScore(k.score, k.isX)}
@@ -3010,7 +3023,7 @@ function ShootingScreen({ session, sessions, onUpdate, onExit }) {
                     options={Array.from({ length: spotCount(spotLayout) }, (_, i) => ({ id: i, label: String(i + 1) }))}
                     value={activeSpot} onChange={setActiveSpot} />
                 )}
-                <Keypad onScore={(score, isX) => handleAddArrow(score, isX, null, null, activeSpot)} />
+                <Keypad round={round} onScore={(score, isX) => handleAddArrow(score, isX, null, null, activeSpot)} />
               </div>
             )}
           </div>
@@ -7673,6 +7686,8 @@ export default function ArcheryScorecard() {
 export {
   // personal scorecard: scoring + arrows
   ringGroupForScore, scoreRank, ringGeometry, scoreFromRadiusUnits,
+  KEYPAD_LAYOUT, FACE_R, X_OUTER, RING_SPECS,
+  keypadKeysFor,
   roundSpotLayout, roundRingClass, spotCount, spotFaceCm, spotOffsets,
   groupStatsBySpot, tenRingRadiusCm, groupOffsetIsReal, describeGroupShape,
   spotsDifferSignificantly, widestSpotGap, assessSightAdjustment,
@@ -7728,5 +7743,5 @@ export {
   // tournaments: participant self-scoring
   unitsMatch, rebuildMatchFromUnits, reconcilePendingSubmissions, SUBMISSION_MISMATCH_KEY,
   // components, for the DOM tests in test/ (see test/dom.cjs)
-  AuthGate, ConditionsEditor, NewSessionScreen,
+  AuthGate, ConditionsEditor, NewSessionScreen, Keypad,
 };

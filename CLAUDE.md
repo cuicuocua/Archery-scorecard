@@ -45,6 +45,8 @@ Build with `npm run build`.
 
 The `--test-force-exit` in the test script is load-bearing, not decoration: jsdom and React's scheduler each hold a handle that outlives the last assertion, so without it the suite passes and then hangs forever. In CI that's a stuck job rather than a red build.
 
+`test/preset-scoring-sweep.test.js` is a third kind: it generates its assertions from `ROUND_TYPES` itself, binding every preset to the scoring functions it drives. It exists because two scoring bugs shipped past a green suite that tested `scoreFromRadiusUnits` only against hand-written ring classes and `ROUND_TYPES` only as data, never the two together. Add a round and the sweep covers it automatically; if it fails, the round and its face disagree.
+
 These exist because the component layer shipped three silent failures in one day that the pure-logic suite could not see — a submit reporting success after a failed RPC, a re-entry screen wiping every set confirmed into it, and a sign-in blaming the password for a dead network. When adding a UI test, check it fails against the unfixed code before trusting it.
 
 ## Knowledge graph
