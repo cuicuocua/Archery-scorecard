@@ -1159,6 +1159,15 @@ the wrong ten-ring.
   itself rather than the selection being dropped or the checkmark
   disappearing behind a closed panel.
 
-26 tests, 11 of them walking the real wizard. Verified by mutation: a
-filter that always returns true fails 8, the old step order fails 1, and
-removing the auto-open guard fails 1.
+- **Vegas gets a compound entry.** It had exactly one, scored on the full
+  ten-ring, so compound archers had no correct Vegas at all — and the
+  filtering above would have quietly hidden the only one there was. The
+  Las Vegas Shoot's compound divisions score the inner 10, the same World
+  Archery indoor rule `COMPOUND_TEN_SCALE` already models for the triples,
+  so it is a second entry rather than a relabelled one: the same paper,
+  the same 30 arrows, a different ten-ring.
+
+29 tests, 12 of them walking the real wizard. Verified by mutation: a
+filter that always returns true fails 8, the old step order fails 1,
+removing the auto-open guard fails 1, scoring the compound Vegas on the
+recurve ten-ring fails 1, and untagging it fails 3.

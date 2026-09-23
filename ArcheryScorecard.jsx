@@ -88,8 +88,15 @@ const ROUND_TYPES = [
   { id: 'indoor18', label: 'Indoor 18m', category: 'Indoor 18m', editable: false, bows: RECURVE_BOWS,
     stages: [{ distanceM: 18, faceCm: 40, arrowsPerEnd: 3, ends: 20 }] },
   ...indoorTripleVariants(18, 40),
+  // Vegas is shot by both, on the same paper, scored differently: the
+  // Las Vegas Shoot's compound divisions use the inner 10 (outer 10 scores
+  // 9), which is the same World Archery indoor rule COMPOUND_TEN_SCALE
+  // already models for the triples above. Two entries, not one, because
+  // one face cannot have two 10-rings.
   { id: 'vegas3spot', label: 'Vegas 3 punti', category: 'Indoor 18m', editable: false, bows: RECURVE_BOWS,
     stages: [{ distanceM: 18, faceCm: 40, arrowsPerEnd: 3, ends: 10, spotLayout: 'triangular3', ringClass: 'spot6R' }] },
+  { id: 'vegas3spotC', label: 'Vegas 3 punti (compound)', category: 'Indoor 18m', editable: false, bows: ['compound'],
+    stages: [{ distanceM: 18, faceCm: 40, arrowsPerEnd: 3, ends: 10, spotLayout: 'triangular3', ringClass: 'spot6C' }] },
 
   { id: 'indoor25', label: 'Indoor 25m', category: 'Indoor 25m', editable: false, bows: RECURVE_BOWS,
     stages: [{ distanceM: 25, faceCm: 60, arrowsPerEnd: 3, ends: 20 }] },

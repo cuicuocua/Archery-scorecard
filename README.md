@@ -47,6 +47,10 @@ back within a single session.
 
 Assumptions made, to check against FITARCO/World Archery rules:
 - **Indoor 18m**: 40cm face, 3 frecce/volée, 20 volée (60 frecce) — standard.
+- **Vegas 3 punti**: 18m/40cm triangular triple, 3×10 (30 frecce), in two
+  versions — the full ten-ring one for ricurvo/nudo and a compound one
+  scoring the inner 10, per the Las Vegas Shoot's compound divisions and
+  the same World Archery indoor rule the compound triples already use.
 - **Indoor 25m**: 60cm face, 3×20 — mirrors the 18m structure for the
   Italian indoor 25+18 combined round.
 - **Targa 90m / 70m / 60m**: 122cm face, 6×12 (72 frecce) — 90/70m are the

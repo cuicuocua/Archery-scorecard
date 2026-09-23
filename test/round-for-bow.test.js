@@ -55,8 +55,32 @@ describe('roundsForBow splits the catalogue without losing any of it', () => {
     assert.ok(suited.includes('indoor18SingoloC'));
     assert.ok(suited.includes('indoor18TripleTriangolareC'));
     assert.ok(!suited.includes('indoor18'), 'the plain 40cm face is the recurve one');
-    assert.ok(!suited.includes('vegas3spot'), 'Vegas 3-spot as modelled here is the recurve face');
     assert.ok(othersFor('compound').includes('indoor18'), 'still reachable, just demoted');
+  });
+
+  // Vegas is shot by both bows on the same paper: the compound divisions
+  // score the inner 10, which is a different face as far as this app is
+  // concerned, so each bow gets its own entry.
+  it('gives each bow its own Vegas', () => {
+    assert.ok(idsFor('compound').includes('vegas3spotC'));
+    assert.ok(!idsFor('compound').includes('vegas3spot'));
+    for (const bow of ['ricurvo', 'nudo']) {
+      assert.ok(idsFor(bow).includes('vegas3spot'), `${bow} shoots the full-10 Vegas`);
+      assert.ok(!idsFor(bow).includes('vegas3spotC'));
+    }
+  });
+
+  it('scores the two Vegas entries differently, which is the whole point', () => {
+    const r = byId('vegas3spot').stages[0];
+    const c = byId('vegas3spotC').stages[0];
+    assert.equal(r.ringClass, 'spot6R');
+    assert.equal(c.ringClass, 'spot6C');
+    assert.ok(m.isCompoundRingClass(c.ringClass), 'the compound one must use the inner 10');
+    assert.ok(!m.isCompoundRingClass(r.ringClass));
+    // Same paper, same round length — only the ten-ring differs.
+    for (const k of ['distanceM', 'faceCm', 'arrowsPerEnd', 'ends', 'spotLayout']) {
+      assert.equal(c[k], r[k], `${k} should match the recurve Vegas`);
+    }
   });
 
   it('a recurve archer leads with the recurve faces', () => {
