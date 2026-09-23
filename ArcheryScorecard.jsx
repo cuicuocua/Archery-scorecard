@@ -133,14 +133,35 @@ const ROUND_TYPES = [
   { id: 'targa50Nudo', label: 'Targa 50m — arco nudo', category: 'Targa 122cm', editable: false, bows: ['nudo'],
     stages: [{ distanceM: 50, faceCm: 122, arrowsPerEnd: 6, ends: 12 }] },
 
-  // The 80cm face only ever prints rings 5-10 (see ringGeometry's
-  // 'outdoor6' — a margin-cut face, not an isolated spot: the paper itself
-  // is still 80cm, just blank beyond ring 5).
+  // There are TWO 80cm faces, and until v1.27 this app only had the second
+  // one. FITARCO Libro 2 art. 7.2.2 lists "visuale da 80 cm, di 80 cm di
+  // diametro" AND "visuale da 80 cm/sei zone di punteggio (per disposizione
+  // multipla con zone di punteggio 5-10)". Art. 7.2.3 makes the plain one
+  // the default — "Per le distanze di 50, 40 e 30 metri, si userà il
+  // bersaglio da 80 cm" — and art. 7.2.2.1 says the six-zone one "possono
+  // essere usate" at those distances, i.e. may, not must. So the full face
+  // scores 1-10 like any other, and the cut one is its own set of rounds
+  // below.
   { id: 'targa50', label: 'Targa 50m', category: 'Targa 80cm', editable: false,
-    stages: [{ distanceM: 50, faceCm: 80, arrowsPerEnd: 6, ends: 12, ringClass: 'outdoor6' }] },
+    stages: [{ distanceM: 50, faceCm: 80, arrowsPerEnd: 6, ends: 12 }] },
   { id: 'targa40', label: 'Targa 40m', category: 'Targa 80cm', editable: false,
-    stages: [{ distanceM: 40, faceCm: 80, arrowsPerEnd: 6, ends: 12, ringClass: 'outdoor6' }] },
+    stages: [{ distanceM: 40, faceCm: 80, arrowsPerEnd: 6, ends: 12 }] },
   { id: 'targa30', label: 'Targa 30m', category: 'Targa 80cm', editable: false,
+    stages: [{ distanceM: 30, faceCm: 80, arrowsPerEnd: 6, ends: 12 }] },
+
+  // The six-zone face: same 80cm paper, rings 1-4 simply not printed (see
+  // ringGeometry's 'outdoor6' — margin-cut, not an isolated spot), so an
+  // arrow out there is a genuine miss. Used when the boss carries several
+  // faces at once, which art. 7.2.3 makes compulsory for compound at 30m
+  // ("è obbligatoria la sistemazione a quattro centri delle visuali da 80
+  // cm") and art. 7.2.3.4 uses for the Compound Match Round at 50m. Not
+  // scoped by bow: art. 7.2.3 also gives it to Ragazzi and Giovanissimi
+  // Arco Olimpico at their two shortest distances.
+  { id: 'targa50Multi', label: 'Targa 50m — 6 zone', category: 'Targa 80cm · 6 zone', editable: false,
+    stages: [{ distanceM: 50, faceCm: 80, arrowsPerEnd: 6, ends: 12, ringClass: 'outdoor6' }] },
+  { id: 'targa40Multi', label: 'Targa 40m — 6 zone', category: 'Targa 80cm · 6 zone', editable: false,
+    stages: [{ distanceM: 40, faceCm: 80, arrowsPerEnd: 6, ends: 12, ringClass: 'outdoor6' }] },
+  { id: 'targa30Multi', label: 'Targa 30m — 6 zone', category: 'Targa 80cm · 6 zone', editable: false,
     stages: [{ distanceM: 30, faceCm: 80, arrowsPerEnd: 6, ends: 12, ringClass: 'outdoor6' }] },
 
   // Fully custom: one or more stages, each with its own pickable
@@ -432,6 +453,11 @@ function scoreRank(a) { return a.isX ? 11 : a.score; }
 //   - a "margin-cut" face ('outdoor6'/'indoor6C') is physically full-size
 //     with its outer rings simply left unprinted — a tap out there is a
 //     miss, but the target paper itself is the same size as a full face.
+//     'outdoor6' is the SIX-ZONE 80cm face, which is a real but OPTIONAL
+//     face: the plain 80cm prints all ten rings and is what FITARCO Libro 2
+//     art. 7.2.3 puts at 50/40/30m by default. Don't apply it to an 80cm
+//     round just because it is 80cm — that was a v1.16 mistake that made
+//     every 1-4 at those distances score as a miss, fixed in v1.27.
 //   - an "isolated spot" face ('spot6R'/'spot6C') is a genuinely smaller
 //     piece of paper — the WA/Vegas triple's 20cm spot *is* the inner half
 //     (by radius) of a 40cm face, printed on its own with no blank margin

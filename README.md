@@ -75,9 +75,15 @@ Assumptions made, to check against FITARCO/World Archery rules:
   distance combinations), WA Combined, or any club-invented multi-distance
   round get logged, since there's no single fixed distance list that
   covers every WA1440 variant. Available for both allenamento and gara.
-- The 80cm face (Targa 50m/40m/30m) is modelled as a 6-ring face — see
-  `minScoringRing()` in v1.16 of CHANGELOG.md. 40/60/122cm faces are the
-  full 10-zone face, for every bow type.
+- There are **two** 80cm faces, and both are here (FITARCO Libro 2
+  art. 7.2.2). The plain one prints all ten rings and is the default at
+  50/40/30m per art. 7.2.3 — that is Targa 50m/40m/30m. The
+  "80 cm/sei zone di punteggio" prints only rings 5–10 and is used when the
+  boss carries several faces at once (compulsory for compound at 30m,
+  art. 7.2.3; the Compound Match Round face, art. 7.2.3.4) — that is the
+  "— 6 zone" set, carrying `ringClass: 'outdoor6'`. v1.16 applied the cut
+  face to every 80cm round, which scored every 1–4 at those distances as a
+  miss; corrected in v1.27. 40/60/122cm faces are the full 10-zone face.
 
 Scoring: 10 zones, X is the inner half of the 10 ring (worth 10, counted
 separately). Ring colours centre-out: gold, gold, red, red, blue, blue,

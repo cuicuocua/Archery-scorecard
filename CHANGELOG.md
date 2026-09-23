@@ -1216,3 +1216,43 @@ division regardless of age class, and cite the article next to it.
 
 32 tests across the two files, 14 walking the real wizard. Untagging the
 new barebow round fails 3.
+
+## v1.28 additions — Two 80cm faces, not one
+
+Reading Libro 2 for the bow scoping turned up a scoring bug that had been
+live since v1.16. That release declared "the real 80cm competition face
+(Targa 50m/40m/30m) only prints scoring rings 5-10 — rings 1-4 don't
+exist on it, they're blank margin" and gave all three rounds
+`ringClass: 'outdoor6'`. The premise is half right: that face exists, but
+it is not the only 80cm face and it is not the default one.
+
+Art. 7.2.2 lists both — "visuale da 80 cm, di 80 cm di diametro" and
+"visuale da 80 cm/sei zone di punteggio (per disposizione multipla con
+zone di punteggio 5-10)". Art. 7.2.3 then says which goes where: "Per le
+distanze di 50, 40 e 30 metri, si userà il bersaglio da 80 cm" — the
+plain one. Art. 7.2.2.1 says the six-zone one "possono essere usate" at
+those distances. May, not must.
+
+- **Targa 50m / 40m / 30m now score 1 to 10.** Every arrow landing in the
+  black or white outer bands at those distances used to be recorded as a
+  miss when entered by tapping the face — a windy 50m end could lose real
+  points to the scorecard rather than to the wind. The keypad had always
+  offered 1-4 at the same time, so the app disagreed with itself depending
+  on how the arrow was entered.
+- **The six-zone face is still there, as its own rounds.** "Targa 50m/40m/
+  30m — 6 zone", carrying the old `outdoor6`. It is the multi-face
+  arrangement: compulsory for compound at 30m ("è obbligatoria la
+  sistemazione a quattro centri delle visuali da 80 cm", art. 7.2.3) and
+  the Compound Match Round face at 50m (art. 7.2.3.4). Not scoped by bow —
+  art. 7.2.3 also gives it to Ragazzi and Giovanissimi Arco Olimpico at
+  their two shortest distances. Removing it would have been the same
+  mistake in the other direction: an arrow in the unprinted margin of a
+  real six-zone face IS a miss.
+- **Nothing already recorded changes.** Stages snapshot their own round
+  config, so a session shot before this keeps `outdoor6` and goes on being
+  read, drawn and modelled as the cut face — its scores were entered under
+  those rules. `roundShapeKey` and `sameRound` already included the ring
+  class, so the two faces were never at risk of sharing a personal-best
+  bucket.
+
+9 tests. Putting `outdoor6` back on Targa 50m fails 4 of them.
