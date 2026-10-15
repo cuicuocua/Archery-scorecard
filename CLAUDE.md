@@ -4,7 +4,7 @@ Scorecard web app for tracking archery rounds and scores, deployed to GitHub Pag
 
 ## Architecture
 
-`ArcheryScorecard.jsx` is the app — a single-file React component (React + recharts + lucide-react + supabase-js, Tailwind core utilities only). **It's the only file whose contents matter for behavior.** Everything under `site/` is publishing plumbing: `build.js` bundles it with esbuild + Tailwind into **two** self-contained pages — `index.html` (the app, from `entry.jsx`) and `share.html` (the public spectator page, from `share.jsx`, which imports only `SharedTournamentScreen` so esbuild drops recharts and the rest of the personal scorecard). `.github/workflows/deploy-pages.yml` builds and deploys on every push. Data lives in Supabase Postgres; schema in `supabase/schema.sql`.
+`ArcheryScorecard.jsx` is the app — a single-file React component (React + recharts + lucide-react + supabase-js, Tailwind core utilities only). **It holds all of the app's logic.** Everything under `site/` is publishing plumbing except `sw.js` (the offline shell) and `realtime-stub.js` (see Rules), which change runtime behavior: `build.js` bundles it with esbuild + Tailwind into **two** self-contained pages — `index.html` (the app, from `entry.jsx`) and `share.html` (the public spectator page, from `share.jsx`, which imports only `SharedTournamentScreen` so esbuild drops recharts and the rest of the personal scorecard). `.github/workflows/deploy-pages.yml` builds and deploys on every push. Data lives in Supabase Postgres; schema in `supabase/schema.sql`.
 
 Build with `npm run build`.
 
@@ -13,9 +13,9 @@ Build with `npm run build`.
 - Round definitions live in the `ROUND_TYPES` array at the top of `ArcheryScorecard.jsx` — nothing about a round is hardcoded anywhere else. Add or change rounds there.
 - The Supabase URL and publishable ("anon") key are inlined near the top of the JSX **deliberately**. That key is meant to be public; security comes from the RLS policies in `supabase/schema.sql`. Don't report or "fix" it as a leaked secret.
 - Every write **by the signed-in owner** goes through a per-account localStorage outbox before Supabase, so a save made offline isn't lost. Keep that path intact when touching save logic. One write does not: a participant submitting their own match score from the public share page has no auth session and no outbox, so that's a bare RPC — don't assume the outbox covers it. Because nothing retries it for them, that path has to surface its own failures, and does: the RPC's error is checked and the scored match is offered back with a retry button. Don't let it go back to reporting success unconditionally.
-- There **is** a service worker (`site/sw.js`, v1.18): the app shell opens with no connectivity and installs as a PWA. It caches the shell only — data still comes from Supabase, so offline *reads* of your sessions are not covered. This rule used to say the opposite; it was written before v1.18 shipped one.
+- There **is** a service worker (`site/sw.js`, v1.18): the app shell opens with no connectivity and installs as a PWA. It caches the shell only — data still comes from Supabase, so offline *reads* of your sessions are not covered.
 - Round definitions are assumptions to verify against FITARCO / World Archery rules. Cite the source when changing one. FITARCO's Regolamento Tecnico di Tiro governs (this club shoots FITARCO, and the app's "gara" says so), and it beats World Archery's event formats where they differ: Libro 2 has the rounds (ch. 4) and the target faces (ch. 7), Libro 3 has equipment and match procedure. The PDFs at fitarco-italia.org/cartefederali/ have a real text layer; World Archery's Book 3 is scanned images.
-- `ringClass` is a property of the FACE, not of the face's SIZE. There are two 80cm outdoor faces — the plain ten-ring one (the default at 50/40/30m, Libro 2 art. 7.2.3) and the six-zone one for multi-face layouts (`outdoor6`, rings 5-10). v1.16 conflated them and made every 1-4 at those distances score as a miss; v1.28 split them. Never infer a ring class from `faceCm` alone.
+- `ringClass` is a property of the FACE, not of the face's SIZE. There are two 80cm outdoor faces — the plain ten-ring one (the default at 50/40/30m, Libro 2 art. 7.2.3) and the six-zone one for multi-face layouts (`outdoor6`, rings 5-10). Treating them as one makes every 1-4 at those distances score as a miss, so never infer a ring class from `faceCm` alone.
 - `@supabase/realtime-js` is aliased to a stub at build time (`site/realtime-stub.js`) — supabase-js builds a client for it unconditionally and this app has no realtime call sites by design. Restore the real package before trying to use channels; `channel()` throws to say so.
 - Rounds are scoped by bow (v1.26). A round carrying `bows: [...]` is only
   offered to those bows; an untagged one is offered to all. **Tag a round
@@ -38,7 +38,7 @@ Build with `npm run build`.
 
 ## Tests
 
-`npm test` runs everything under `test/` with `node --test`. Two kinds live there:
+`npm test` runs everything under `test/` with `node --test`. Three kinds live there:
 
 - **Pure logic** (`bracket*`, `analysis`, `match-scoring`, `offline-outbox`, …) — loaded through `test/load.cjs`, which transpiles the component file and reads the test-only export block at the bottom of it. Fast, and where most coverage is.
 - **Rendered components** (`*-ui.test.js`) — loaded through `test/dom.cjs`, which stands up jsdom, mounts real components, and fakes only the network. Require `dom.cjs`, never `load.cjs`, from these: the DOM has to exist before `react-dom` is imported.
@@ -47,12 +47,12 @@ The `--test-force-exit` in the test script is load-bearing, not decoration: jsdo
 
 `test/preset-scoring-sweep.test.js` is a third kind: it generates its assertions from `ROUND_TYPES` itself, binding every preset to the scoring functions it drives. It exists because two scoring bugs shipped past a green suite that tested `scoreFromRadiusUnits` only against hand-written ring classes and `ROUND_TYPES` only as data, never the two together. Add a round and the sweep covers it automatically; if it fails, the round and its face disagree.
 
-These exist because the component layer shipped three silent failures in one day that the pure-logic suite could not see — a submit reporting success after a failed RPC, a re-entry screen wiping every set confirmed into it, and a sign-in blaming the password for a dead network. When adding a UI test, check it fails against the unfixed code before trusting it.
+The rendered tests exist because the component layer shipped three silent failures in one day that the pure-logic suite could not see — a submit reporting success after a failed RPC, a re-entry screen wiping every set confirmed into it, and a sign-in blaming the password for a dead network. When adding a UI test, check it fails against the unfixed code before trusting it.
 
 ## Knowledge graph
 
 This project's graph lives in `archery-scorecard/graphify-out/` (gitignored) — that's what `graphify update .` writes when run from here. There's also a workspace-wide graph at `/Users/teo/Claude/graphify-out/`, but it is a **separate, older** artifact covering every sibling project; `graphify update .` never refreshes it. Don't confuse the two.
 
-For codebase questions run `graphify query "<question>"` (also `graphify path "<A>" "<B>"` and `graphify explain "<concept>"`) before falling back to grep, and `graphify update .` after changing code — **and before trusting a query, if the tree has moved since the last build.** A stale graph answers confidently and wrongly: it simply won't contain a function added since it was built, and reports "No matching nodes found" as though the symbol didn't exist.
+`graphify query "<question>"` (also `graphify path "<A>" "<B>"` and `graphify explain "<concept>"`) answers cross-file questions about the codebase. It knows only what its last `graphify update .` saw, so refresh it before trusting an answer if the tree has moved since. A stale graph answers confidently and wrongly: it simply won't contain a function added since it was built, and reports "No matching nodes found" as though the symbol didn't exist.
 
-One trap worth knowing: for a "how does X work" question the graph often ranks `docs/superpowers/` plan and spec nodes above the code. Those describe what was *intended* at the time they were written, and every one of them has since shipped and moved on — they're marked as historical for exactly this reason. Prefer nodes whose `src` is `ArcheryScorecard.jsx`.
+One trap worth knowing: for a "how does X work" question the graph often ranks `docs/superpowers/` plan and spec nodes above the code. Those describe what was *intended* when they were written, and every one has since shipped and moved on. The plans say so in a banner at the top; the specs carry no marking, so treat them the same way. Prefer nodes whose `src` is `ArcheryScorecard.jsx`.
